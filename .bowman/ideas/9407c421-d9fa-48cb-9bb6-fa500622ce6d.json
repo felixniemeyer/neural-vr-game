@@ -1,0 +1,26 @@
+{
+  "id": "9407c421-d9fa-48cb-9bb6-fa500622ce6d",
+  "text": "Learn from movies: estimate camera motion from video (Infinite Nature style)",
+  "description": "An alternative to the no-real-data approach: drone or movie clips with camera poses recovered via SfM. Infinite Nature trained exactly this way.",
+  "archived": false,
+  "color": "#2d613b",
+  "tags": [
+    "training",
+    "alternative"
+  ],
+  "supportingConnections": [],
+  "supportedIdeas": [
+    "069be3ea-befd-4613-b5d1-d2af9c76e2f4"
+  ],
+  "committedIn": [],
+  "status": {
+    "state": "open",
+    "comment": "",
+    "date": 1795165953017
+  },
+  "intrinsicValue": 0,
+  "selfWeight": 1,
+  "duration": 1,
+  "costVariance": 0,
+  "valueVariance": 0
+}

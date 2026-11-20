@@ -1,0 +1,25 @@
+{
+  "id": "d6c3bd32-978b-47e8-bfc0-e689dbd3fb09",
+  "text": "Warp, then refine: reproject the previous RGB-D frame by head pose, and a tiny net fills only the holes",
+  "description": "About 90% of pixels come from explicit depth reprojection, so head motion responds instantly at 90 Hz. The network only fills disocclusions, stylises, and lets the world evolve. Related work: Infinite Nature (render, refine, repeat), ASW-style reprojection.",
+  "archived": false,
+  "color": "#37736d",
+  "tags": [
+    "rendering"
+  ],
+  "supportingConnections": [],
+  "supportedIdeas": [
+    "ea8719aa-4554-4122-a393-61d4f3e657b0"
+  ],
+  "committedIn": [],
+  "status": {
+    "state": "open",
+    "comment": "",
+    "date": 1795165916773
+  },
+  "intrinsicValue": 0,
+  "selfWeight": 1,
+  "duration": 1,
+  "costVariance": 0,
+  "valueVariance": 0
+}

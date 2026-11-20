@@ -1,0 +1,26 @@
+{
+  "id": "f71406f6-c7fa-4f3f-8f53-05baacb4595f",
+  "text": "Tiny one-pass U-Net refiner (feed-forward, no iterations)",
+  "description": "A single forward pass per frame, like neural supersampling or frame generation. Could be distilled from a slower teacher (diffusion or NCA) into a one-step generator.",
+  "archived": false,
+  "color": "#28614d",
+  "tags": [
+    "rendering",
+    "model"
+  ],
+  "supportingConnections": [],
+  "supportedIdeas": [
+    "ea8719aa-4554-4122-a393-61d4f3e657b0"
+  ],
+  "committedIn": [],
+  "status": {
+    "state": "open",
+    "comment": "",
+    "date": 1795165917339
+  },
+  "intrinsicValue": 0,
+  "selfWeight": 1,
+  "duration": 1,
+  "costVariance": 0,
+  "valueVariance": 0
+}

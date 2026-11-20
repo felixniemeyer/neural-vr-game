@@ -1,0 +1,25 @@
+{
+  "id": "af18a4e1-a8e6-4bd5-a459-2914e5f669cf",
+  "text": "Living world motion: DyNCA-style dynamics in hidden channels",
+  "description": "Swaying, pulsing, flowing crystals; light sweeping as the planet spins. Related work: Self-Organising Textures (Distill 2021), DyNCA (CVPR 2023). Players and projectiles stay explicit sprites driven by game state.",
+  "archived": false,
+  "color": "#306e70",
+  "tags": [
+    "rendering"
+  ],
+  "supportingConnections": [],
+  "supportedIdeas": [
+    "ea8719aa-4554-4122-a393-61d4f3e657b0"
+  ],
+  "committedIn": [],
+  "status": {
+    "state": "open",
+    "comment": "",
+    "date": 1795165917607
+  },
+  "intrinsicValue": 0,
+  "selfWeight": 1,
+  "duration": 1,
+  "costVariance": 0,
+  "valueVariance": 0
+}

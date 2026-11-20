@@ -1,0 +1,25 @@
+{
+  "id": "39981fe7-fc95-4617-b079-824ae15d03d1",
+  "text": "The planet spins very fast: day and night yield different worlds",
+  "description": "A sphere planet whose day/night phase switches the world's character (palette, structures, behaviour). Sun phase as a global conditioning input.",
+  "archived": false,
+  "color": "#29613d",
+  "tags": [
+    "world"
+  ],
+  "supportingConnections": [],
+  "supportedIdeas": [
+    "f15f1791-6c85-40b1-be2f-c1ba62ec9bdc"
+  ],
+  "committedIn": [],
+  "status": {
+    "state": "open",
+    "comment": "",
+    "date": 1795166007279
+  },
+  "intrinsicValue": 0,
+  "selfWeight": 1,
+  "duration": 1,
+  "costVariance": 0,
+  "valueVariance": 0
+}

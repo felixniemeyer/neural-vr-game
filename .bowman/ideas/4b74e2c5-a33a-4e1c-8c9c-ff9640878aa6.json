@@ -1,0 +1,26 @@
+{
+  "id": "4b74e2c5-a33a-4e1c-8c9c-ff9640878aa6",
+  "text": "Local testing without a headset: desktop stereo viewer + Monado simulated HMD",
+  "description": "A side-by-side L/R + depth viewer with mouse/WASD head motion. The OpenXR loader 1.1.60 is already installed; Monado or SteamVR can provide the runtime.",
+  "archived": false,
+  "color": "#453164",
+  "tags": [
+    "platform",
+    "testing"
+  ],
+  "supportingConnections": [],
+  "supportedIdeas": [
+    "54ea744e-c784-44a9-9701-f34a35ae1eb1"
+  ],
+  "committedIn": [],
+  "status": {
+    "state": "open",
+    "comment": "",
+    "date": 1795166008256
+  },
+  "intrinsicValue": 0,
+  "selfWeight": 1,
+  "duration": 1,
+  "costVariance": 0,
+  "valueVariance": 0
+}

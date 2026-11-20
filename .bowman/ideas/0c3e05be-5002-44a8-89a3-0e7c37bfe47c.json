@@ -1,0 +1,25 @@
+{
+  "id": "0c3e05be-5002-44a8-89a3-0e7c37bfe47c",
+  "text": "Artsy, slightly comic style; never realistic",
+  "archived": false,
+  "color": "#2a612b",
+  "tags": [
+    "world",
+    "style"
+  ],
+  "supportingConnections": [],
+  "supportedIdeas": [
+    "f15f1791-6c85-40b1-be2f-c1ba62ec9bdc"
+  ],
+  "committedIn": [],
+  "status": {
+    "state": "open",
+    "comment": "",
+    "date": 1795166007423
+  },
+  "intrinsicValue": 0,
+  "selfWeight": 1,
+  "duration": 1,
+  "costVariance": 0,
+  "valueVariance": 0
+}

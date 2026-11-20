@@ -1,0 +1,26 @@
+{
+  "id": "6f775e1f-4272-44f1-acfe-e2221e43cc1e",
+  "text": "Server-shared coarse geometry guidance (low-res SDF render as conditioning) to stop drift",
+  "description": "Keeps all players in the same world: the net handles appearance and detail, while coarse structure comes from shared state. Contradicts the pure neural world on purpose; it's an option.",
+  "archived": false,
+  "color": "#306158",
+  "tags": [
+    "rendering",
+    "multiplayer"
+  ],
+  "supportingConnections": [],
+  "supportedIdeas": [
+    "ea8719aa-4554-4122-a393-61d4f3e657b0"
+  ],
+  "committedIn": [],
+  "status": {
+    "state": "open",
+    "comment": "",
+    "date": 1795165917739
+  },
+  "intrinsicValue": 0,
+  "selfWeight": 1,
+  "duration": 1,
+  "costVariance": 0,
+  "valueVariance": 0
+}

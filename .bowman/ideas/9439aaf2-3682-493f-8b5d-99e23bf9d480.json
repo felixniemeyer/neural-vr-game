@@ -1,0 +1,26 @@
+{
+  "id": "9439aaf2-3682-493f-8b5d-99e23bf9d480",
+  "text": "Neural pull-push pyramid fill: holes of any size filled in one pass",
+  "description": "More instant than an NCA, much cheaper than diffusion. Build a certainty-weighted mip pyramid (pull), then push coarse levels back into low-certainty pixels, with a tiny learned conv at each level adding detail and style. The cost is O(1) passes regardless of hole size, which makes it a natural fit for certainty weights.",
+  "archived": false,
+  "color": "#2d6b55",
+  "tags": [
+    "rendering",
+    "model"
+  ],
+  "supportingConnections": [],
+  "supportedIdeas": [
+    "ea8719aa-4554-4122-a393-61d4f3e657b0"
+  ],
+  "committedIn": [],
+  "status": {
+    "state": "open",
+    "comment": "",
+    "date": 1795165917234
+  },
+  "intrinsicValue": 0,
+  "selfWeight": 1,
+  "duration": 1,
+  "costVariance": 0,
+  "valueVariance": 0
+}

@@ -1,0 +1,27 @@
+{
+  "id": "2bff4ef8-805a-47ef-ba97-7c0ed835ce31",
+  "text": "Latent reprojection: hidden channels are learned per-point descriptors that travel with depth",
+  "description": "Reproject latent features together with RGB-D, since every latent sits on a 3D point. Prior art: Neural Point-Based Graphics (Aliev 2020), ADOP. VAE latents (as in GameNGen/Stable Diffusion) warp badly, because 8×8 patches aren't shift-equivariant; EQ-VAE-style work tries to fix that. Prefer per-pixel latents at low resolution over patch latents.",
+  "archived": false,
+  "color": "#2f6759",
+  "tags": [
+    "rendering",
+    "model",
+    "latent"
+  ],
+  "supportingConnections": [],
+  "supportedIdeas": [
+    "ea8719aa-4554-4122-a393-61d4f3e657b0"
+  ],
+  "committedIn": [],
+  "status": {
+    "state": "open",
+    "comment": "",
+    "date": 1795166749093
+  },
+  "intrinsicValue": 0,
+  "selfWeight": 1,
+  "duration": 1,
+  "costVariance": 0,
+  "valueVariance": 0
+}

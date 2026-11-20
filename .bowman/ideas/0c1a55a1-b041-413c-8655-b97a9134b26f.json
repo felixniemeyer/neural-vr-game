@@ -1,0 +1,26 @@
+{
+  "id": "0c1a55a1-b041-413c-8655-b97a9134b26f",
+  "text": "Skyscraper-sized twisted crystals: transparent with refraction (by day and/or night)",
+  "description": "A forest that mixes organic and constructional forms, solarpunk, 3D noisy and twisting. Analytic SDF: a twist domain warp plus noise warp on elongated hexagonal prisms; raymarching makes refraction cheap.",
+  "archived": false,
+  "color": "#2b624c",
+  "tags": [
+    "world",
+    "style"
+  ],
+  "supportingConnections": [],
+  "supportedIdeas": [
+    "f15f1791-6c85-40b1-be2f-c1ba62ec9bdc"
+  ],
+  "committedIn": [],
+  "status": {
+    "state": "open",
+    "comment": "",
+    "date": 1795166007349
+  },
+  "intrinsicValue": 0,
+  "selfWeight": 1,
+  "duration": 1,
+  "costVariance": 0,
+  "valueVariance": 0
+}

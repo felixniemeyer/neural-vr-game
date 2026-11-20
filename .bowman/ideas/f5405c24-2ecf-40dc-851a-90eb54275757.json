@@ -1,0 +1,25 @@
+{
+  "id": "f5405c24-2ecf-40dc-851a-90eb54275757",
+  "text": "Foveation: more information density at the centre",
+  "description": "2160×2160 per eye is a lot. Steam Frame has eye tracking with foveated streaming, so the gaze could drive where the net spends cells (log-polar or warped grid). Fallback: fixed lens-centre foveation, since the lens edges are blurrier anyway.",
+  "archived": false,
+  "color": "#296360",
+  "tags": [
+    "rendering"
+  ],
+  "supportingConnections": [],
+  "supportedIdeas": [
+    "ea8719aa-4554-4122-a393-61d4f3e657b0"
+  ],
+  "committedIn": [],
+  "status": {
+    "state": "open",
+    "comment": "",
+    "date": 1795165917527
+  },
+  "intrinsicValue": 0,
+  "selfWeight": 1,
+  "duration": 1,
+  "costVariance": 0,
+  "valueVariance": 0
+}

@@ -1,0 +1,26 @@
+{
+  "id": "b4adb73e-6af0-435b-9d41-c661d2100f46",
+  "text": "Neural cellular automaton with dilated multi-scale taps (1, 2, 4, 8, 16 px, sparser further out)",
+  "description": "Tiny (about 5–8k params) local update rule, runs as a shader anywhere. Dilated taps let the thick borders exposed after a head turn close in about log2(width) steps. Open question: is it \"instant\" enough, since it needs several iterations?",
+  "archived": false,
+  "color": "#306a5a",
+  "tags": [
+    "rendering",
+    "model"
+  ],
+  "supportingConnections": [],
+  "supportedIdeas": [
+    "ea8719aa-4554-4122-a393-61d4f3e657b0"
+  ],
+  "committedIn": [],
+  "status": {
+    "state": "open",
+    "comment": "",
+    "date": 1795165917141
+  },
+  "intrinsicValue": 0,
+  "selfWeight": 1,
+  "duration": 1,
+  "costVariance": 0,
+  "valueVariance": 0
+}

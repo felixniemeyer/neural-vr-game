@@ -1,0 +1,25 @@
+{
+  "id": "90d2813f-497c-42fe-8ebc-0c374a2ea7cf",
+  "text": "Dropout and border regeneration training",
+  "description": "Random pixel dropout plus thick border cut-outs (4–24 px), like after a fast head turn. The net learns to regenerate.",
+  "archived": false,
+  "color": "#2e612b",
+  "tags": [
+    "training"
+  ],
+  "supportingConnections": [],
+  "supportedIdeas": [
+    "069be3ea-befd-4613-b5d1-d2af9c76e2f4"
+  ],
+  "committedIn": [],
+  "status": {
+    "state": "open",
+    "comment": "",
+    "date": 1795165952672
+  },
+  "intrinsicValue": 0,
+  "selfWeight": 1,
+  "duration": 1,
+  "costVariance": 0,
+  "valueVariance": 0
+}

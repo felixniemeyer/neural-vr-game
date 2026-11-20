@@ -1,0 +1,26 @@
+{
+  "id": "97438475-a34f-4620-af40-eee895b60dfa",
+  "text": "Aesthetic priors so it doesn't collapse to fog",
+  "description": "Piecewise-smooth depth, tall vertical structures aligned with the planet up-vector, a 1/f spectrum, contrast, and palette statistics. Optionally a frozen CLIP-like teacher used only during training (\"solarpunk twisted crystal forest\").",
+  "archived": false,
+  "color": "#2a6a3d",
+  "tags": [
+    "training",
+    "style"
+  ],
+  "supportingConnections": [],
+  "supportedIdeas": [
+    "069be3ea-befd-4613-b5d1-d2af9c76e2f4"
+  ],
+  "committedIn": [],
+  "status": {
+    "state": "open",
+    "comment": "",
+    "date": 1795165952938
+  },
+  "intrinsicValue": 0,
+  "selfWeight": 1,
+  "duration": 1,
+  "costVariance": 0,
+  "valueVariance": 0
+}

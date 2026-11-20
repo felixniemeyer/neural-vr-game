@@ -1,0 +1,25 @@
+{
+  "id": "04bc4a0d-de71-4ee4-912d-9578734ae056",
+  "text": "Per-pixel state: colour + depth + certainty (+ hidden channels)",
+  "description": "Certainty works like fabric-artwork's camera-reprojector (domegame/fabric-artwork/src/shaders/reproject-points.fs + reproject-normalize.fs). Previous pixels are splatted as points with a bilinear tent weight; the accumulated weight (alpha) is the coverage/certainty. Depth is accumulated as weighted inverse depth and normalised. Low certainty tells the net where to generate. Certainty could decay over time, so stale regions get re-imagined.",
+  "archived": false,
+  "color": "#2d6c68",
+  "tags": [
+    "rendering"
+  ],
+  "supportingConnections": [],
+  "supportedIdeas": [
+    "ea8719aa-4554-4122-a393-61d4f3e657b0"
+  ],
+  "committedIn": [],
+  "status": {
+    "state": "open",
+    "comment": "",
+    "date": 1795165916856
+  },
+  "intrinsicValue": 0,
+  "selfWeight": 1,
+  "duration": 1,
+  "costVariance": 0,
+  "valueVariance": 0
+}

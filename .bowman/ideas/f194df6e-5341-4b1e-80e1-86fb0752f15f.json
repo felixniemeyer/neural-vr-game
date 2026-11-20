@@ -1,0 +1,25 @@
+{
+  "id": "f194df6e-5341-4b1e-80e1-86fb0752f15f",
+  "text": "Loop-closure consistency: A → B → A must look the same",
+  "description": "Unsupervised spatial consistency (object permanence) along random camera loops, including translation loops.",
+  "archived": false,
+  "color": "#30622c",
+  "tags": [
+    "training"
+  ],
+  "supportingConnections": [],
+  "supportedIdeas": [
+    "069be3ea-befd-4613-b5d1-d2af9c76e2f4"
+  ],
+  "committedIn": [],
+  "status": {
+    "state": "open",
+    "comment": "",
+    "date": 1795165952525
+  },
+  "intrinsicValue": 0,
+  "selfWeight": 1,
+  "duration": 1,
+  "costVariance": 0,
+  "valueVariance": 0
+}

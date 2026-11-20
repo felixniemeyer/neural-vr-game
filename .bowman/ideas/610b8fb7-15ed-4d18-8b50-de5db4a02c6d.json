@@ -1,0 +1,25 @@
+{
+  "id": "610b8fb7-15ed-4d18-8b50-de5db4a02c6d",
+  "text": "Personal time-stop: slow time around you down to a complete halt, limited by stamina",
+  "description": "Affects projectiles and everything else in your bubble. When your stamina runs out, everything frozen around you resumes.",
+  "archived": false,
+  "color": "#336127",
+  "tags": [
+    "gameplay"
+  ],
+  "supportingConnections": [],
+  "supportedIdeas": [
+    "a2b28fc2-3630-4257-8bb2-4aad45e07b5c"
+  ],
+  "committedIn": [],
+  "status": {
+    "state": "open",
+    "comment": "",
+    "date": 1795166007733
+  },
+  "intrinsicValue": 0,
+  "selfWeight": 1,
+  "duration": 1,
+  "costVariance": 0,
+  "valueVariance": 0
+}

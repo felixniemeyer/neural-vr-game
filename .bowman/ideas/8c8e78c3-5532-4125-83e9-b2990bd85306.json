@@ -1,0 +1,25 @@
+{
+  "id": "8c8e78c3-5532-4125-83e9-b2990bd85306",
+  "text": "Explicit reprojection + the camera transform as network input (net corrects, doesn't relearn the warp)",
+  "description": "We do the reprojection (2×2 tent splat), which saves the net work. The net still gets the camera delta (rotation, translation, zoom) as a global conditioning vector (FiLM) plus the per-pixel reprojection offset field. Inputs per eye: the previous frame (unwarped) + the reprojected frame + certainty + depth. Cross-eye reprojection: both previous eyes are splatted into each current eye, so stereo fills many disocclusions for free.",
+  "archived": false,
+  "color": "#2d655a",
+  "tags": [
+    "rendering"
+  ],
+  "supportingConnections": [],
+  "supportedIdeas": [
+    "ea8719aa-4554-4122-a393-61d4f3e657b0"
+  ],
+  "committedIn": [],
+  "status": {
+    "state": "open",
+    "comment": "",
+    "date": 1795165916965
+  },
+  "intrinsicValue": 0,
+  "selfWeight": 1,
+  "duration": 1,
+  "costVariance": 0,
+  "valueVariance": 0
+}

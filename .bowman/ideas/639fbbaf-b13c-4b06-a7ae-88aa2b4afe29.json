@@ -1,0 +1,27 @@
+{
+  "id": "639fbbaf-b13c-4b06-a7ae-88aa2b4afe29",
+  "text": "Clean edges: the net outputs sub-pixel edge fields (MSDF-like), rendered crisp at full resolution",
+  "description": "Instead of blurry low-res colour, each cell outputs signed distances to nearby edges (like MSDF font rendering), so 64×48 cells reconstruct razor-sharp silhouettes at 2160×2160. This fits ink outlines and comic style. Alternative: depth-guided joint bilateral upsampling.",
+  "archived": false,
+  "color": "#356d69",
+  "tags": [
+    "rendering",
+    "style",
+    "edges"
+  ],
+  "supportingConnections": [],
+  "supportedIdeas": [
+    "ea8719aa-4554-4122-a393-61d4f3e657b0"
+  ],
+  "committedIn": [],
+  "status": {
+    "state": "cancelled",
+    "comment": "Junctions where 3+ edges meet make edge fields complicated. Replaced by an edge-restoring net (see the brightness/contrast corridor idea).",
+    "date": 1795167888587
+  },
+  "intrinsicValue": 0,
+  "selfWeight": 1,
+  "duration": 1,
+  "costVariance": 0,
+  "valueVariance": 0
+}

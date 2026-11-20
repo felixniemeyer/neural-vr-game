@@ -1,0 +1,26 @@
+{
+  "id": "e82a589c-c64f-4fba-aa80-36295f39b533",
+  "text": "Reprojection: keep fabric-artwork's 2×2 tent-splat of points (avoids pixelation from single-pixel splats)",
+  "description": "Each reprojected pixel is splatted to 2×2 targets with bilinear tent weights (fabric-artwork reproject-points.vs/.fs). Single-pixel splats give 8 quantised directions and a pixelated look. The accumulated weight is the certainty. This is proven; don't question it lightly.",
+  "archived": false,
+  "color": "#2d614e",
+  "tags": [
+    "rendering",
+    "reprojection"
+  ],
+  "supportingConnections": [],
+  "supportedIdeas": [
+    "ea8719aa-4554-4122-a393-61d4f3e657b0"
+  ],
+  "committedIn": [],
+  "status": {
+    "state": "open",
+    "comment": "",
+    "date": 1795166748997
+  },
+  "intrinsicValue": 0,
+  "selfWeight": 1,
+  "duration": 1,
+  "costVariance": 0,
+  "valueVariance": 0
+}

@@ -1,0 +1,26 @@
+{
+  "id": "6438c660-886b-4cd7-a943-d0cf99e0681b",
+  "text": "Server-generated structures standing along sphere normals; areas change when no player is there",
+  "description": "Objects use sphere normals as coordinates and stand perpendicular to the surface, ignoring elevation. The server generates them (vertex data or SDF) and serves them to clients. Unobserved regions are allowed to evolve.",
+  "archived": false,
+  "color": "#306c4b",
+  "tags": [
+    "world",
+    "server"
+  ],
+  "supportingConnections": [],
+  "supportedIdeas": [
+    "f15f1791-6c85-40b1-be2f-c1ba62ec9bdc"
+  ],
+  "committedIn": [],
+  "status": {
+    "state": "open",
+    "comment": "",
+    "date": 1795166007508
+  },
+  "intrinsicValue": 0,
+  "selfWeight": 1,
+  "duration": 1,
+  "costVariance": 0,
+  "valueVariance": 0
+}

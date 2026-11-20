@@ -1,0 +1,25 @@
+{
+  "id": "d045f64c-116d-41b9-979a-62e7d5de3e86",
+  "text": "Slow rocket-like weapons: hunt an opponent by planting rockets and grenades around their frozen bubble",
+  "description": "You arrange traps until their time-stop stamina runs out, and they explode in what you've placed.",
+  "archived": false,
+  "color": "#4b6128",
+  "tags": [
+    "gameplay"
+  ],
+  "supportingConnections": [],
+  "supportedIdeas": [
+    "a2b28fc2-3630-4257-8bb2-4aad45e07b5c"
+  ],
+  "committedIn": [],
+  "status": {
+    "state": "open",
+    "comment": "",
+    "date": 1795166007803
+  },
+  "intrinsicValue": 0,
+  "selfWeight": 1,
+  "duration": 1,
+  "costVariance": 0,
+  "valueVariance": 0
+}

@@ -1,0 +1,26 @@
+{
+  "id": "7a5c5441-d6e3-43d2-844f-f5d129f9676e",
+  "text": "Amortised denoising: one tiny denoise step per frame, with certainty used as a per-pixel noise level",
+  "description": "Newly revealed pixels start at noise level ≈ 1, while reprojected ones keep their remaining noise level and get one more step each frame. At 90 Hz that's 90 steps per second. Related: Diffusion Forcing (per-token noise levels), Rolling Diffusion, FIFO-Diffusion (diagonal denoising queue for infinite video), StreamDiffusion. The network is the pull-push U-Net with certainty logic, conditioned on the noise-level map.",
+  "archived": false,
+  "color": "#31636a",
+  "tags": [
+    "rendering",
+    "model"
+  ],
+  "supportingConnections": [],
+  "supportedIdeas": [
+    "ea8719aa-4554-4122-a393-61d4f3e657b0"
+  ],
+  "committedIn": [],
+  "status": {
+    "state": "open",
+    "comment": "",
+    "date": 1795166748806
+  },
+  "intrinsicValue": 0,
+  "selfWeight": 1,
+  "duration": 1,
+  "costVariance": 0,
+  "valueVariance": 0
+}

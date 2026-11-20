@@ -1,0 +1,27 @@
+{
+  "id": "f6bc0bef-19e4-4f73-b963-0c371f67b66a",
+  "text": "AI-written structure generators, evolved by player engagement",
+  "description": "The server uses an LLM to write code that generates new kinds of structures. Whether people go there and like it feeds back into the prompts (an evolutionary algorithm). Output geometry gets sanity checks. Seed prompt: \"Write code that uses a fixed vertex contingent to generate beautiful shapes.\"",
+  "archived": false,
+  "color": "#2f6b32",
+  "tags": [
+    "world",
+    "server",
+    "ai"
+  ],
+  "supportingConnections": [],
+  "supportedIdeas": [
+    "f15f1791-6c85-40b1-be2f-c1ba62ec9bdc"
+  ],
+  "committedIn": [],
+  "status": {
+    "state": "open",
+    "comment": "",
+    "date": 1795166007623
+  },
+  "intrinsicValue": 0,
+  "selfWeight": 1,
+  "duration": 1,
+  "costVariance": 0,
+  "valueVariance": 0
+}

@@ -1,0 +1,26 @@
+{
+  "id": "fe29c6ff-3161-4a49-9e7d-a8d13e16a561",
+  "text": "Spontaneous 10-minute alliances: voice connection + no friendly fire",
+  "description": "Social dynamics: people look for a temporary crowd, groups meet, invite or hunt loners (players who haven't joined anyone yet). Communicative and spontaneous.",
+  "archived": false,
+  "color": "#37682a",
+  "tags": [
+    "gameplay",
+    "social"
+  ],
+  "supportingConnections": [],
+  "supportedIdeas": [
+    "a2b28fc2-3630-4257-8bb2-4aad45e07b5c"
+  ],
+  "committedIn": [],
+  "status": {
+    "state": "open",
+    "comment": "",
+    "date": 1795166007915
+  },
+  "intrinsicValue": 0,
+  "selfWeight": 1,
+  "duration": 1,
+  "costVariance": 0,
+  "valueVariance": 0
+}

@@ -1,0 +1,25 @@
+{
+  "id": "8427528c-d9d4-488e-9efb-0de0d1bb91b8",
+  "text": "Remote training on the 4060 Ti (16 GB) via SSH; tiny inference locally",
+  "archived": false,
+  "color": "#2e7046",
+  "tags": [
+    "training",
+    "infra"
+  ],
+  "supportingConnections": [],
+  "supportedIdeas": [
+    "069be3ea-befd-4613-b5d1-d2af9c76e2f4"
+  ],
+  "committedIn": [],
+  "status": {
+    "state": "open",
+    "comment": "",
+    "date": 1795165953146
+  },
+  "intrinsicValue": 0,
+  "selfWeight": 1,
+  "duration": 1,
+  "costVariance": 0,
+  "valueVariance": 0
+}

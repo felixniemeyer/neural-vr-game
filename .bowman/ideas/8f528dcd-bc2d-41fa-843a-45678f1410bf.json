@@ -1,0 +1,26 @@
+{
+  "id": "8f528dcd-bc2d-41fa-843a-45678f1410bf",
+  "text": "Abstract full-res display: each low-res cell becomes a depth-tested shard or brush sprite, re-posed at 90 Hz",
+  "description": "The cheat that allows a 64×48-per-eye \"brain\": sprites live in 3D, so they are stereo-correct and follow the head instantly, while the net ticks at about 30 Hz. The painterly, comic look is a feature.",
+  "archived": false,
+  "color": "#2b5f66",
+  "tags": [
+    "rendering",
+    "style"
+  ],
+  "supportingConnections": [],
+  "supportedIdeas": [
+    "ea8719aa-4554-4122-a393-61d4f3e657b0"
+  ],
+  "committedIn": [],
+  "status": {
+    "state": "open",
+    "comment": "",
+    "date": 1795165917419
+  },
+  "intrinsicValue": 0,
+  "selfWeight": 1,
+  "duration": 1,
+  "costVariance": 0,
+  "valueVariance": 0
+}

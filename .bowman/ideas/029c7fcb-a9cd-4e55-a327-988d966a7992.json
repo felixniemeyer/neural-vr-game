@@ -1,0 +1,27 @@
+{
+  "id": "029c7fcb-a9cd-4e55-a327-988d966a7992",
+  "text": "Edge-restoring net held within a brightness/contrast corridor (implicit eye adaptation)",
+  "description": "One net restores clean edges each frame and keeps global stats (mean luminance, contrast, maybe saturation) inside target bands. Loss: penalise only when the stats leave the corridor, with slow targets, so entering a dark space lights up implicitly over a few seconds. Related: fabric-artwork src/auto-color-grade.ts (mip-averaged luminance stats, 10/90% quantiles).",
+  "archived": false,
+  "color": "#296159",
+  "tags": [
+    "rendering",
+    "edges",
+    "style"
+  ],
+  "supportingConnections": [],
+  "supportedIdeas": [
+    "ea8719aa-4554-4122-a393-61d4f3e657b0"
+  ],
+  "committedIn": [],
+  "status": {
+    "state": "open",
+    "comment": "",
+    "date": 1795167892717
+  },
+  "intrinsicValue": 0,
+  "selfWeight": 1,
+  "duration": 1,
+  "costVariance": 0,
+  "valueVariance": 0
+}

@@ -1,0 +1,25 @@
+{
+  "id": "c5bf4b6f-75ac-467e-a4a1-acbbbe41e5a8",
+  "text": "Synthetic SDF teacher world to bootstrap training",
+  "description": "An analytic crystal planet raymarched in stereo RGB-D gives perfect depth, poses and parallax. It's procedural, not real data; it is used only to get started.",
+  "archived": false,
+  "color": "#2d613a",
+  "tags": [
+    "training"
+  ],
+  "supportingConnections": [],
+  "supportedIdeas": [
+    "069be3ea-befd-4613-b5d1-d2af9c76e2f4"
+  ],
+  "committedIn": [],
+  "status": {
+    "state": "open",
+    "comment": "",
+    "date": 1795165952755
+  },
+  "intrinsicValue": 0,
+  "selfWeight": 1,
+  "duration": 1,
+  "costVariance": 0,
+  "valueVariance": 0
+}

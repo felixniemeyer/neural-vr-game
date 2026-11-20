@@ -1,0 +1,66 @@
+{
+  "id": "f15f1791-6c85-40b1-be2f-c1ba62ec9bdc",
+  "text": "World and content: a fast-spinning crystal planet with day and night worlds",
+  "archived": false,
+  "color": "#2d663f",
+  "tags": [
+    "group",
+    "world"
+  ],
+  "supportingConnections": [
+    {
+      "ideaId": "39981fe7-fc95-4617-b079-824ae15d03d1",
+      "relativePosition": [
+        -3.48,
+        -1.4
+      ],
+      "weight": 1
+    },
+    {
+      "ideaId": "0c1a55a1-b041-413c-8655-b97a9134b26f",
+      "relativePosition": [
+        3.25,
+        1.86
+      ],
+      "weight": 1
+    },
+    {
+      "ideaId": "0c3e05be-5002-44a8-89a3-0e7c37bfe47c",
+      "relativePosition": [
+        -1.25,
+        3.53
+      ],
+      "weight": 1
+    },
+    {
+      "ideaId": "6438c660-886b-4cd7-a943-d0cf99e0681b",
+      "relativePosition": [
+        -1.92,
+        3.22
+      ],
+      "weight": 1
+    },
+    {
+      "ideaId": "f6bc0bef-19e4-4f73-b963-0c371f67b66a",
+      "relativePosition": [
+        2.36,
+        -2.92
+      ],
+      "weight": 1
+    }
+  ],
+  "supportedIdeas": [
+    "cef4ba30-abf6-4a9e-a9f9-0a3adac6a801"
+  ],
+  "committedIn": [],
+  "status": {
+    "state": "open",
+    "comment": "",
+    "date": 1795165859446
+  },
+  "intrinsicValue": 0,
+  "selfWeight": 1,
+  "duration": 1,
+  "costVariance": 0,
+  "valueVariance": 0
+}

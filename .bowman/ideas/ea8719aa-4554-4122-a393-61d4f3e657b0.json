@@ -1,0 +1,154 @@
+{
+  "id": "ea8719aa-4554-4122-a393-61d4f3e657b0",
+  "text": "Neural rendering core: generate the next frame from the previous frame + head motion",
+  "archived": false,
+  "color": "#2d6660",
+  "tags": [
+    "group",
+    "rendering"
+  ],
+  "supportingConnections": [
+    {
+      "ideaId": "d6c3bd32-978b-47e8-bfc0-e689dbd3fb09",
+      "relativePosition": [
+        2.83,
+        2.46
+      ],
+      "weight": 1
+    },
+    {
+      "ideaId": "04bc4a0d-de71-4ee4-912d-9578734ae056",
+      "relativePosition": [
+        3.38,
+        1.62
+      ],
+      "weight": 1
+    },
+    {
+      "ideaId": "8c8e78c3-5532-4125-83e9-b2990bd85306",
+      "relativePosition": [
+        0.77,
+        3.67
+      ],
+      "weight": 1
+    },
+    {
+      "ideaId": "a58c9c95-85d5-420d-b9b9-7e6312e70c46",
+      "relativePosition": [
+        0.28,
+        3.74
+      ],
+      "weight": 1
+    },
+    {
+      "ideaId": "b4adb73e-6af0-435b-9d41-c661d2100f46",
+      "relativePosition": [
+        1.19,
+        3.56
+      ],
+      "weight": 1
+    },
+    {
+      "ideaId": "9439aaf2-3682-493f-8b5d-99e23bf9d480",
+      "relativePosition": [
+        -1.22,
+        -3.54
+      ],
+      "weight": 1
+    },
+    {
+      "ideaId": "f71406f6-c7fa-4f3f-8f53-05baacb4595f",
+      "relativePosition": [
+        -2.07,
+        -3.13
+      ],
+      "weight": 1
+    },
+    {
+      "ideaId": "8f528dcd-bc2d-41fa-843a-45678f1410bf",
+      "relativePosition": [
+        3.47,
+        1.42
+      ],
+      "weight": 1
+    },
+    {
+      "ideaId": "f5405c24-2ecf-40dc-851a-90eb54275757",
+      "relativePosition": [
+        1.74,
+        -3.32
+      ],
+      "weight": 1
+    },
+    {
+      "ideaId": "af18a4e1-a8e6-4bd5-a459-2914e5f669cf",
+      "relativePosition": [
+        1.23,
+        3.54
+      ],
+      "weight": 1
+    },
+    {
+      "ideaId": "6f775e1f-4272-44f1-acfe-e2221e43cc1e",
+      "relativePosition": [
+        3.75,
+        -0.08
+      ],
+      "weight": 1
+    },
+    {
+      "ideaId": "7a5c5441-d6e3-43d2-844f-f5d129f9676e",
+      "relativePosition": [
+        2.52,
+        2.78
+      ],
+      "weight": 1
+    },
+    {
+      "ideaId": "639fbbaf-b13c-4b06-a7ae-88aa2b4afe29",
+      "relativePosition": [
+        -1.3,
+        -3.52
+      ],
+      "weight": 1
+    },
+    {
+      "ideaId": "e82a589c-c64f-4fba-aa80-36295f39b533",
+      "relativePosition": [
+        -3.75,
+        -0.14
+      ],
+      "weight": 1
+    },
+    {
+      "ideaId": "2bff4ef8-805a-47ef-ba97-7c0ed835ce31",
+      "relativePosition": [
+        2.87,
+        2.42
+      ],
+      "weight": 1
+    },
+    {
+      "ideaId": "029c7fcb-a9cd-4e55-a327-988d966a7992",
+      "relativePosition": [
+        -2.14,
+        -3.08
+      ],
+      "weight": 1
+    }
+  ],
+  "supportedIdeas": [
+    "cef4ba30-abf6-4a9e-a9f9-0a3adac6a801"
+  ],
+  "committedIn": [],
+  "status": {
+    "state": "open",
+    "comment": "",
+    "date": 1795165859186
+  },
+  "intrinsicValue": 0,
+  "selfWeight": 1,
+  "duration": 1,
+  "costVariance": 0,
+  "valueVariance": 0
+}

@@ -1,0 +1,25 @@
+{
+  "id": "d96d0297-bf62-46f1-8b2d-e78edf46cd3f",
+  "text": "Self-play explorer: an adversarial camera policy seeks out the model's weaknesses",
+  "description": "A second tiny policy picks camera moves that maximise consistency error, so the generator gets robust where it is weakest.",
+  "archived": false,
+  "color": "#316b3c",
+  "tags": [
+    "training"
+  ],
+  "supportingConnections": [],
+  "supportedIdeas": [
+    "069be3ea-befd-4613-b5d1-d2af9c76e2f4"
+  ],
+  "committedIn": [],
+  "status": {
+    "state": "open",
+    "comment": "",
+    "date": 1795165952845
+  },
+  "intrinsicValue": 0,
+  "selfWeight": 1,
+  "duration": 1,
+  "costVariance": 0,
+  "valueVariance": 0
+}

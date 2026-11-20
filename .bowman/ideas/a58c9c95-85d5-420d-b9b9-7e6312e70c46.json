@@ -1,0 +1,25 @@
+{
+  "id": "a58c9c95-85d5-420d-b9b9-7e6312e70c46",
+  "text": "Stereo joint generation: L+R frames with an epipolar other-eye lookup",
+  "description": "Generate from 2 VR frames: parallax gives edges and 3D understanding. Each pixel reads the other eye at the depth-implied disparity, so the eyes can't drift apart. An alternative is to generate one eye and warp it to the other.",
+  "archived": false,
+  "color": "#2f6150",
+  "tags": [
+    "rendering"
+  ],
+  "supportingConnections": [],
+  "supportedIdeas": [
+    "ea8719aa-4554-4122-a393-61d4f3e657b0"
+  ],
+  "committedIn": [],
+  "status": {
+    "state": "open",
+    "comment": "",
+    "date": 1795165917050
+  },
+  "intrinsicValue": 0,
+  "selfWeight": 1,
+  "duration": 1,
+  "costVariance": 0,
+  "valueVariance": 0
+}

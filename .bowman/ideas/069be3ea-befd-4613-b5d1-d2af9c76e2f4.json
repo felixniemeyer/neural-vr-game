@@ -1,0 +1,90 @@
+{
+  "id": "069be3ea-befd-4613-b5d1-d2af9c76e2f4",
+  "text": "Training without real data: self-supervised / self-play",
+  "archived": false,
+  "color": "#2d6633",
+  "tags": [
+    "group",
+    "training"
+  ],
+  "supportingConnections": [
+    {
+      "ideaId": "f194df6e-5341-4b1e-80e1-86fb0752f15f",
+      "relativePosition": [
+        -1.41,
+        -3.47
+      ],
+      "weight": 1
+    },
+    {
+      "ideaId": "dfc306d4-2901-41b8-966b-3798534f3779",
+      "relativePosition": [
+        -2.67,
+        2.64
+      ],
+      "weight": 1
+    },
+    {
+      "ideaId": "90d2813f-497c-42fe-8ebc-0c374a2ea7cf",
+      "relativePosition": [
+        -1.08,
+        -3.59
+      ],
+      "weight": 1
+    },
+    {
+      "ideaId": "c5bf4b6f-75ac-467e-a4a1-acbbbe41e5a8",
+      "relativePosition": [
+        -0.86,
+        -3.65
+      ],
+      "weight": 1
+    },
+    {
+      "ideaId": "d96d0297-bf62-46f1-8b2d-e78edf46cd3f",
+      "relativePosition": [
+        -3.72,
+        0.46
+      ],
+      "weight": 1
+    },
+    {
+      "ideaId": "97438475-a34f-4620-af40-eee895b60dfa",
+      "relativePosition": [
+        2.13,
+        -3.08
+      ],
+      "weight": 1
+    },
+    {
+      "ideaId": "9407c421-d9fa-48cb-9bb6-fa500622ce6d",
+      "relativePosition": [
+        3.44,
+        -1.49
+      ],
+      "weight": 1
+    },
+    {
+      "ideaId": "8427528c-d9d4-488e-9efb-0de0d1bb91b8",
+      "relativePosition": [
+        -2.48,
+        -2.81
+      ],
+      "weight": 1
+    }
+  ],
+  "supportedIdeas": [
+    "cef4ba30-abf6-4a9e-a9f9-0a3adac6a801"
+  ],
+  "committedIn": [],
+  "status": {
+    "state": "open",
+    "comment": "",
+    "date": 1795165859296
+  },
+  "intrinsicValue": 0,
+  "selfWeight": 1,
+  "duration": 1,
+  "costVariance": 0,
+  "valueVariance": 0
+}

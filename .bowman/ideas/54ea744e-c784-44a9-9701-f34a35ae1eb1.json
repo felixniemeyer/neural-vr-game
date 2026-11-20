@@ -1,0 +1,50 @@
+{
+  "id": "54ea744e-c784-44a9-9701-f34a35ae1eb1",
+  "text": "Platform: OpenXR on Steam Frame, local testing, online play",
+  "archived": false,
+  "color": "#342d66",
+  "tags": [
+    "group",
+    "platform"
+  ],
+  "supportingConnections": [
+    {
+      "ideaId": "ea2ed7e2-773b-48e7-9a6e-a231cb891b2f",
+      "relativePosition": [
+        -2.99,
+        2.26
+      ],
+      "weight": 1
+    },
+    {
+      "ideaId": "4b74e2c5-a33a-4e1c-8c9c-ff9640878aa6",
+      "relativePosition": [
+        1.32,
+        -3.51
+      ],
+      "weight": 1
+    },
+    {
+      "ideaId": "756f69ff-83c2-427d-99c6-57869e2d0350",
+      "relativePosition": [
+        -3.71,
+        0.54
+      ],
+      "weight": 1
+    }
+  ],
+  "supportedIdeas": [
+    "cef4ba30-abf6-4a9e-a9f9-0a3adac6a801"
+  ],
+  "committedIn": [],
+  "status": {
+    "state": "open",
+    "comment": "",
+    "date": 1795165859755
+  },
+  "intrinsicValue": 0,
+  "selfWeight": 1,
+  "duration": 1,
+  "costVariance": 0,
+  "valueVariance": 0
+}

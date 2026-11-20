@@ -1,0 +1,25 @@
+{
+  "id": "ea2ed7e2-773b-48e7-9a6e-a231cb891b2f",
+  "text": "Runs standalone on Steam Frame (OpenXR) and as a tiny 64×48-per-eye version on the laptop iGPU",
+  "description": "Inference as plain shaders (GLSL compute/fragment), so it runs on the Frame's mobile GPU and on the AMD Vega iGPU. Possible engine: Godot 4 (OpenXR, Linux + Android/ARM). Streaming from a PC is the fallback.",
+  "archived": false,
+  "color": "#31356d",
+  "tags": [
+    "platform"
+  ],
+  "supportingConnections": [],
+  "supportedIdeas": [
+    "54ea744e-c784-44a9-9701-f34a35ae1eb1"
+  ],
+  "committedIn": [],
+  "status": {
+    "state": "open",
+    "comment": "",
+    "date": 1795166008048
+  },
+  "intrinsicValue": 0,
+  "selfWeight": 1,
+  "duration": 1,
+  "costVariance": 0,
+  "valueVariance": 0
+}

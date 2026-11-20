@@ -1,0 +1,50 @@
+{
+  "id": "a2b28fc2-3630-4257-8bb2-4aad45e07b5c",
+  "text": "Gameplay: time-stop hunting and temporary alliances",
+  "archived": false,
+  "color": "#3f662d",
+  "tags": [
+    "group",
+    "gameplay"
+  ],
+  "supportingConnections": [
+    {
+      "ideaId": "610b8fb7-15ed-4d18-8b50-de5db4a02c6d",
+      "relativePosition": [
+        2.47,
+        2.82
+      ],
+      "weight": 1
+    },
+    {
+      "ideaId": "d045f64c-116d-41b9-979a-62e7d5de3e86",
+      "relativePosition": [
+        1.9,
+        3.23
+      ],
+      "weight": 1
+    },
+    {
+      "ideaId": "fe29c6ff-3161-4a49-9e7d-a8d13e16a561",
+      "relativePosition": [
+        1.63,
+        3.38
+      ],
+      "weight": 1
+    }
+  ],
+  "supportedIdeas": [
+    "cef4ba30-abf6-4a9e-a9f9-0a3adac6a801"
+  ],
+  "committedIn": [],
+  "status": {
+    "state": "open",
+    "comment": "",
+    "date": 1795165859563
+  },
+  "intrinsicValue": 0,
+  "selfWeight": 1,
+  "duration": 1,
+  "costVariance": 0,
+  "valueVariance": 0
+}

@@ -1,0 +1,26 @@
+{
+  "id": "756f69ff-83c2-427d-99c6-57869e2d0350",
+  "text": "Online multiplayer: authoritative server with per-player time bubbles",
+  "description": "Projectiles carry a local time scale and the server resolves overlapping bubbles. WebRTC voice for alliances. Shared world seeds keep neural rendering consistent across players.",
+  "archived": false,
+  "color": "#493073",
+  "tags": [
+    "platform",
+    "multiplayer"
+  ],
+  "supportingConnections": [],
+  "supportedIdeas": [
+    "54ea744e-c784-44a9-9701-f34a35ae1eb1"
+  ],
+  "committedIn": [],
+  "status": {
+    "state": "open",
+    "comment": "",
+    "date": 1795166008421
+  },
+  "intrinsicValue": 0,
+  "selfWeight": 1,
+  "duration": 1,
+  "costVariance": 0,
+  "valueVariance": 0
+}
