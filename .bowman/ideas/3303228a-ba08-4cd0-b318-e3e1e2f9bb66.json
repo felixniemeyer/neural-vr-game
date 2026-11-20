@@ -1,0 +1,22 @@
+{
+  "id": "3303228a-ba08-4cd0-b318-e3e1e2f9bb66",
+  "text": "add gliders to sphere museum prototype",
+  "archived": false,
+  "color": "#2d662d",
+  "tags": [],
+  "supportingConnections": [],
+  "supportedIdeas": [
+    "603dd1bb-2714-4d74-a5bd-a3f2de4048e2"
+  ],
+  "committedIn": [],
+  "status": {
+    "state": "open",
+    "comment": "",
+    "date": 1795210894363
+  },
+  "intrinsicValue": 0,
+  "selfWeight": 1,
+  "duration": 1,
+  "costVariance": 0,
+  "valueVariance": 0
+}

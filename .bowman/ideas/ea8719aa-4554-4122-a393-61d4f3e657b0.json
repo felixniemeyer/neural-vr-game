@@ -1,6 +1,7 @@
 {
   "id": "ea8719aa-4554-4122-a393-61d4f3e657b0",
   "text": "Neural rendering core: generate the next frame from the previous frame + head motion",
+  "description": "inspiration: https://gamengen.github.io/\n\nBut more artistic. \nAnd cheaper such that realtime at high resolution 2160**2 * 2. ~ 3072 ** 2",
   "archived": false,
   "color": "#2d6660",
   "tags": [
@@ -135,16 +136,26 @@
         -3.08
       ],
       "weight": 1
+    },
+    {
+      "ideaId": "eb5bdfa5-df6c-447b-9b94-e93b9e0bc7ec",
+      "relativePosition": [
+        -2.48,
+        4.07
+      ],
+      "weight": 1.0851063829787235
     }
   ],
   "supportedIdeas": [
     "cef4ba30-abf6-4a9e-a9f9-0a3adac6a801"
   ],
-  "committedIn": [],
+  "committedIn": [
+    "b59cbbcf-befb-4d91-b09c-cd48a1be1c87"
+  ],
   "status": {
     "state": "open",
     "comment": "",
-    "date": 1795165859186
+    "date": 1795191546840
   },
   "intrinsicValue": 0,
   "selfWeight": 1,

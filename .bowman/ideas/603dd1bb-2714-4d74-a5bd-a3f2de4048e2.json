@@ -1,0 +1,35 @@
+{
+  "id": "603dd1bb-2714-4d74-a5bd-a3f2de4048e2",
+  "text": "A big museum displaying all of Felix’s art",
+  "description": "",
+  "archived": false,
+  "color": "#666666",
+  "tags": [
+    "goal",
+    "top-level"
+  ],
+  "supportingConnections": [
+    {
+      "ideaId": "3303228a-ba08-4cd0-b318-e3e1e2f9bb66",
+      "relativePosition": [
+        3.02,
+        2.23
+      ],
+      "weight": 10
+    }
+  ],
+  "supportedIdeas": [
+    "cef4ba30-abf6-4a9e-a9f9-0a3adac6a801"
+  ],
+  "committedIn": [],
+  "status": {
+    "state": "open",
+    "comment": "",
+    "date": 1795210564001
+  },
+  "intrinsicValue": 1,
+  "selfWeight": 90,
+  "duration": 1,
+  "costVariance": 0,
+  "valueVariance": 0
+}

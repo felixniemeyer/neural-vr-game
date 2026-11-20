@@ -1,0 +1,23 @@
+{
+  "id": "eb5bdfa5-df6c-447b-9b94-e93b9e0bc7ec",
+  "text": "Figure out training infrastructure (David! xD)",
+  "description": "",
+  "archived": false,
+  "color": "#662d43",
+  "tags": [],
+  "supportingConnections": [],
+  "supportedIdeas": [
+    "ea8719aa-4554-4122-a393-61d4f3e657b0"
+  ],
+  "committedIn": [],
+  "status": {
+    "state": "open",
+    "comment": "",
+    "date": 1795191348821
+  },
+  "intrinsicValue": 0,
+  "selfWeight": 1,
+  "duration": 1,
+  "costVariance": 0,
+  "valueVariance": 0
+}
