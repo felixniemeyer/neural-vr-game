@@ -159,9 +159,14 @@ fn camera(view: &xr::View, head: Vec3) -> EyeCamera {
 }
 
 fn run(shaders: &Path) -> Result<()> {
+    // OPENXR_LOADER overrides; on the Steam Frame SteamVR ships its own loader.
+    let frame_loader = Path::new("/opt/steamvr/bin/linuxarm64/libopenxr_loader.so");
+    let loader = env::var_os("OPENXR_LOADER")
+        .map(PathBuf::from)
+        .or_else(|| frame_loader.is_file().then(|| frame_loader.to_path_buf()));
     let entry = unsafe {
-        match env::var_os("OPENXR_LOADER") {
-            Some(path) => xr::Entry::load_from(Path::new(&path)),
+        match loader {
+            Some(path) => xr::Entry::load_from(&path),
             None => xr::Entry::load(),
         }
     }
