@@ -3,10 +3,15 @@
 layout(set = 0, binding = 0) uniform Frame {
     mat4 viewProj[2];
     mat4 prevInvViewProj[2];
+    mat4 invViewProj[2];
     vec4 eye[2];
     vec4 prevEye[2];
     vec4 info; // width, height, time, frame index
     vec4 step; // dt seconds, 0, 0, 0
+    vec4 rule[70];   // 7 rows x 40 inputs (5 groups x (7 hidden + extra))
+    vec4 ruleB[70];  // second rule; mixed per pixel by a world-space region field
+    vec4 readout[8]; // 4 rows (r, g, b, radial speed) x (7 hidden + bias)
+    vec4 nca;        // update rate, noise, fire probability, seed probability
 } u;
 
 // Pixel convention: integer pixel centres, origin top-left, y down.

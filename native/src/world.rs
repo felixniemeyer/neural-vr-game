@@ -3,10 +3,14 @@
 //! State per eye and parity (ping-pong), both RGBA16F:
 //!   A = (r, g, b, inverse depth)
 //!   B = (world velocity xyz, certainty)
-//! Splat accumulation per eye, RGBA16F with additive blending:
-//!   acc0 = (rgb*w, w), acc1 = (invDepth, velocity xyz)*w, acc2 = (certainty*w, -, -, -)
+//!   C = (h0, h1, h2, h3), D = (h4, h5, h6, spare): hidden state
+//! Splat accumulation per eye, RGBA16F with additive blending (4 targets, the
+//! portable Vulkan minimum):
+//!   acc0 = (rgb*w, w), acc1 = (invDepth, velocity)*w,
+//!   acc2 = (certainty, h0, h1, h2)*w, acc3 = (h3, h4, h5, h6)*w
 
 use crate::gpu::{image_range, Resource, Resources, Shader};
+use crate::rule::{RuleFrame, READOUT_VEC4S, RULE_VEC4S};
 use anyhow::Result;
 use ash::{vk, Device};
 use glam::{Mat4, Vec3};
@@ -14,20 +18,28 @@ use std::{mem::size_of, path::Path};
 
 pub const EYES: usize = 2;
 const STATE: vk::Format = vk::Format::R16G16B16A16_SFLOAT;
-const SAMPLED_BINDINGS: u32 = 14;
-const ACCUMULATORS: usize = 3;
+/// State images per eye (A, B, C, D) and splat accumulators per eye.
+const STATES: usize = 4;
+const ACCUMULATORS: usize = 4;
+/// prev state (2 eyes x 4), accumulators (2 x 4), new state (2 x 4)
+const SAMPLED_BINDINGS: u32 = (EYES * (2 * STATES + ACCUMULATORS)) as u32;
 
 #[repr(C, align(16))]
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy)]
 struct Uniforms {
     view_proj: [[f32; 16]; EYES],
     prev_inv_view_proj: [[f32; 16]; EYES],
+    inv_view_proj: [[f32; 16]; EYES],
     eye: [[f32; 4]; EYES],
     prev_eye: [[f32; 4]; EYES],
     info: [f32; 4],
     step: [f32; 4],
+    rule: [[f32; 4]; RULE_VEC4S],
+    rule_b: [[f32; 4]; RULE_VEC4S],
+    readout: [[f32; 4]; READOUT_VEC4S],
+    nca: [f32; 4],
 }
-const _: () = assert!(size_of::<Uniforms>() == 352);
+const _: () = assert!(size_of::<Uniforms>() == 480 + (2 * RULE_VEC4S + READOUT_VEC4S + 1) * 16);
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -271,7 +283,7 @@ impl World {
 
         let read_layout = vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
         let splat_pass = render_pass(r, &[STATE; ACCUMULATORS], vk::AttachmentLoadOp::CLEAR, read_layout, true)?;
-        let ca_pass = render_pass(r, &[STATE; 2], vk::AttachmentLoadOp::DONT_CARE, read_layout, true)?;
+        let ca_pass = render_pass(r, &[STATE; STATES], vk::AttachmentLoadOp::DONT_CARE, read_layout, true)?;
         let display_pass = render_pass(
             r,
             &[output_format],
@@ -283,7 +295,7 @@ impl World {
         let splat = pipeline(d, shaders, ("splat.vert.spv", "splat.frag.spv"), splat_pass, layout, ACCUMULATORS, true)?;
         let splat = r.keep(splat, Resource::Pipeline);
         let d = &r.gpu.device;
-        let ca = pipeline(d, shaders, ("fullscreen.vert.spv", "ca.frag.spv"), ca_pass, layout, 2, false)?;
+        let ca = pipeline(d, shaders, ("fullscreen.vert.spv", "ca.frag.spv"), ca_pass, layout, STATES, false)?;
         let ca = r.keep(ca, Resource::Pipeline);
         let d = &r.gpu.device;
         let display = pipeline(
@@ -297,10 +309,10 @@ impl World {
         )?;
         let display = r.keep(display, Resource::Pipeline);
 
-        // state[eye][parity] = (A, B)
+        // state[eye][parity] = (A, B, C, D)
         let state_usage = Usage::COLOR_ATTACHMENT | Usage::SAMPLED | Usage::TRANSFER_DST;
         let mut state_images = Vec::new();
-        let mut state = [[[vk::ImageView::null(); 2]; 2]; EYES];
+        let mut state = [[[vk::ImageView::null(); STATES]; 2]; EYES];
         for eye in &mut state {
             for parity in eye.iter_mut() {
                 for view in parity.iter_mut() {
@@ -334,8 +346,9 @@ impl World {
             }
         }
 
-        let (uniforms, mapped) =
-            r.buffer(&[Uniforms::default()], vk::BufferUsageFlags::UNIFORM_BUFFER)?;
+        // Zeroed initial contents; every field is plain f32 data.
+        let initial: Uniforms = unsafe { std::mem::zeroed() };
+        let (uniforms, mapped) = r.buffer(&[initial], vk::BufferUsageFlags::UNIFORM_BUFFER)?;
         let d = &r.gpu.device;
         let layouts = [set_layout; 2];
         let allocated = unsafe {
@@ -350,28 +363,21 @@ impl World {
             let uniform = [vk::DescriptorBufferInfo::default()
                 .buffer(uniforms)
                 .range(size_of::<Uniforms>() as u64)];
-            let views = [
-                state[0][parity][0],
-                state[0][parity][1],
-                state[1][parity][0],
-                state[1][parity][1],
-                acc[0][0],
-                acc[0][1],
-                acc[0][2],
-                acc[1][0],
-                acc[1][1],
-                acc[1][2],
-                state[0][next][0],
-                state[0][next][1],
-                state[1][next][0],
-                state[1][next][1],
-            ]
-            .map(|view| {
-                [vk::DescriptorImageInfo::default()
-                    .image_view(view)
-                    .sampler(nearest)
-                    .image_layout(read_layout)]
-            });
+            // Bindings 1.. : prev state of both eyes, accumulators of both eyes, new state of both eyes.
+            let views: Vec<_> = (0..EYES)
+                .flat_map(|e| state[e][parity])
+                .chain((0..EYES).flat_map(|e| acc[e]))
+                .chain((0..EYES).flat_map(|e| state[e][next]))
+                .collect();
+            let views: Vec<_> = views
+                .into_iter()
+                .map(|view| {
+                    [vk::DescriptorImageInfo::default()
+                        .image_view(view)
+                        .sampler(nearest)
+                        .image_layout(read_layout)]
+                })
+                .collect();
             let mut writes = vec![vk::WriteDescriptorSet::default()
                 .dst_set(set)
                 .dst_binding(0)
@@ -413,6 +419,20 @@ impl World {
         self.size
     }
 
+    /// Recreate the three pipelines from the (re)compiled SPIR-V in `shaders`.
+    /// The caller must make sure the GPU is idle. On error the old pipelines stay.
+    /// Old pipelines are only destroyed at exit (they stay in `Resources`).
+    pub fn reload(&mut self, r: &mut Resources<'_>, shaders: &Path) -> Result<()> {
+        let d = &r.gpu.device;
+        let splat = pipeline(d, shaders, ("splat.vert.spv", "splat.frag.spv"), self.splat_pass, self.layout, ACCUMULATORS, true)?;
+        let ca = pipeline(d, shaders, ("fullscreen.vert.spv", "ca.frag.spv"), self.ca_pass, self.layout, STATES, false);
+        let display = pipeline(d, shaders, ("fullscreen.vert.spv", "display.frag.spv"), self.display_pass, self.layout, 1, false);
+        self.splat = r.keep(splat, Resource::Pipeline);
+        self.ca = r.keep(ca?, Resource::Pipeline);
+        self.display = r.keep(display?, Resource::Pipeline);
+        Ok(())
+    }
+
     /// Record one frame for both eyes: splat, resolve + CA, display.
     pub fn draw(
         &mut self,
@@ -421,6 +441,7 @@ impl World {
         cameras: [EyeCamera; EYES],
         images: [usize; EYES],
         time: f32,
+        rule: &RuleFrame,
     ) {
         if self.previous.is_none() {
             clear_to_read(d, cmd, &self.state_images);
@@ -430,6 +451,7 @@ impl World {
         let uniforms = Uniforms {
             view_proj: cameras.map(|c| c.view_proj.to_cols_array()),
             prev_inv_view_proj: previous.map(|c| c.view_proj.inverse().to_cols_array()),
+            inv_view_proj: cameras.map(|c| c.view_proj.inverse().to_cols_array()),
             eye: cameras.map(|c| c.position.extend(1.).to_array()),
             prev_eye: previous.map(|c| c.position.extend(1.).to_array()),
             info: [
@@ -439,6 +461,10 @@ impl World {
                 (self.frame % 65536) as f32,
             ],
             step: [dt, 0., 0., 0.],
+            rule: rule.rule,
+            rule_b: rule.rule_b,
+            readout: rule.readout,
+            nca: rule.params,
         };
         let area = vk::Rect2D::default().extent(self.size);
         let viewport = vk::Viewport::default()
@@ -447,7 +473,7 @@ impl World {
             .max_depth(1.);
         let zero = [vk::ClearValue {
             color: vk::ClearColorValue { float32: [0.; 4] },
-        }; ACCUMULATORS];
+        }; STATES];
         let stages = vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT;
         let pixels = self.size.width * self.size.height;
         unsafe {

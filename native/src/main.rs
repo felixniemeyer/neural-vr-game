@@ -1,4 +1,5 @@
 mod gpu;
+mod rule;
 mod world;
 
 use anyhow::{ensure, Context, Result};
@@ -8,6 +9,10 @@ use gpu::{Gpu, Resource, Resources};
 use openxr as xr;
 use std::{
     env,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     ffi::CStr,
     path::{Path, PathBuf},
     thread,
@@ -93,6 +98,16 @@ fn init_gpu(instance: &xr::Instance, system: xr::SystemId) -> Result<Gpu> {
     }
 }
 
+/// Newest modification time of the compiled shaders (for live reload).
+fn shaders_stamp(dir: &Path) -> Option<std::time::SystemTime> {
+    std::fs::read_dir(dir)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().is_some_and(|x| x == "spv"))
+        .filter_map(|e| e.metadata().ok()?.modified().ok())
+        .max()
+}
+
 fn vector(v: xr::Vector3f) -> Vec3 {
     Vec3::new(v.x, v.y, v.z)
 }
@@ -100,8 +115,22 @@ fn quaternion(q: xr::Quaternionf) -> Quat {
     Quat::from_xyzw(q.x, q.y, q.z, q.w)
 }
 
-/// Rotation-only camera: head translation is dropped, each eye keeps its offset
-/// from the head centre (stereo parallax). OpenGL-style clip space, y up.
+/// Widen a field of view by `factor` in tangent space (overscan). The compositor's
+/// late timewarp then has a margin instead of showing black edges, and the margin
+/// is already filled by the CA before it becomes visible.
+fn widen(fov: xr::Fovf, factor: f32) -> xr::Fovf {
+    let w = |angle: f32| (angle.tan() * factor).atan();
+    xr::Fovf {
+        angle_left: w(fov.angle_left),
+        angle_right: w(fov.angle_right),
+        angle_up: w(fov.angle_up),
+        angle_down: w(fov.angle_down),
+    }
+}
+
+/// Camera for one eye. `head` is subtracted from the tracked position: pass the head
+/// centre for rotation-only viewing (only the stereo eye offset remains), or zero to
+/// keep head translation. OpenGL-style clip space, y up.
 fn camera(view: &xr::View, head: Vec3) -> EyeCamera {
     let (l, r, d, u) = (
         view.fov.angle_left.tan(),
@@ -180,11 +209,11 @@ fn run(shaders: &Path) -> Result<()> {
     .context("No RGB OpenXR swapchain format")?;
     let views = instance.enumerate_view_configuration_views(system, STEREO)?;
     ensure!(views.len() == EYES, "Expected two stereo views");
-    // Square per-eye resolution; EYE_SIZE (default 128) is clamped to the runtime maximum.
+    // Square per-eye resolution; EYE_SIZE (default 256) is clamped to the runtime maximum.
     let edge = env::var("EYE_SIZE")
         .ok()
         .and_then(|v| v.parse::<u32>().ok())
-        .unwrap_or(128)
+        .unwrap_or(256)
         .min(views[0].max_image_rect_width)
         .min(views[0].max_image_rect_height);
     let size = vk::Extent2D {
@@ -217,7 +246,9 @@ fn run(shaders: &Path) -> Result<()> {
     world.mode = match env::var("VIEW").as_deref() {
         Ok("certainty") => 1,
         Ok("depth") => 2,
-        Ok("hidden") => 3,
+        Ok("velocity") => 3,
+        Ok("hidden") => 4,
+        Ok("hidden2") => 5,
         _ => 0,
     };
     let pool_info = vk::CommandPoolCreateInfo::default()
@@ -256,14 +287,38 @@ fn run(shaders: &Path) -> Result<()> {
             .timestamp_period
     } as f64;
 
+    // Ctrl+C / SIGTERM: end the OpenXR session cleanly instead of dying mid-frame,
+    // which leaves Monado waiting on a dead client.
+    let quit = Arc::new(AtomicBool::new(false));
+    {
+        let quit = quit.clone();
+        ctrlc::set_handler(move || quit.store(true, Ordering::SeqCst))?;
+    }
+    let mut exit_requested = false;
+    let mut stamp = shaders_stamp(shaders);
     let mut events = xr::EventDataBuffer::new();
     let mut running = false;
     let mut frames = 0u64;
     let mut gpu_ms = 0.;
     let mut start = None;
+    let rule = rule::Rule::random();
+    // MOVE=1 keeps head translation (WASD in Monado's qwerty); default is rotation only.
+    let translate = env::var("MOVE").is_ok_and(|v| v == "1");
+    let overscan = env::var("OVERSCAN")
+        .ok()
+        .and_then(|v| v.parse::<f32>().ok())
+        .unwrap_or(1.15);
     println!("Twisted Crystals session created ({edge}x{edge} per eye)");
 
     loop {
+        if quit.load(Ordering::SeqCst) && !exit_requested {
+            exit_requested = true;
+            if running {
+                session.request_exit()?;
+            } else {
+                return Ok(());
+            }
+        }
         while let Some(event) = instance.poll_event(&mut events)? {
             match event {
                 xr::Event::SessionStateChanged(state) => match state.state() {
@@ -286,6 +341,19 @@ fn run(shaders: &Path) -> Result<()> {
             thread::sleep(Duration::from_millis(15));
             continue;
         }
+        // Live reload: recompiled shaders are picked up without restarting.
+        if frames % 45 == 0 {
+            let now = shaders_stamp(shaders);
+            if now != stamp {
+                stamp = now;
+                thread::sleep(Duration::from_millis(200)); // let the compiler finish writing
+                unsafe { d.device_wait_idle()? };
+                match world.reload(&mut resources, shaders) {
+                    Ok(()) => println!("Shaders reloaded"),
+                    Err(error) => println!("Shader reload failed, keeping the old ones: {error:#}"),
+                }
+            }
+        }
         let state = waiter.wait()?;
         stream.begin()?;
         let time = state.predicted_display_time;
@@ -293,13 +361,20 @@ fn run(shaders: &Path) -> Result<()> {
             stream.end(time, BLEND, &[])?;
             continue;
         }
-        let (flags, views) = session.locate_views(STEREO, time, &space)?;
+        let (flags, mut views) = session.locate_views(STEREO, time, &space)?;
+        for view in &mut views {
+            view.fov = widen(view.fov, overscan);
+        }
         if views.len() != EYES || !flags.contains(xr::ViewStateFlags::ORIENTATION_VALID) {
             stream.end(time, BLEND, &[])?;
             continue;
         }
         let seconds = (time - *start.get_or_insert(time)).as_nanos() as f32 / 1e9;
-        let head = (vector(views[0].pose.position) + vector(views[1].pose.position)) * 0.5;
+        let head = if translate {
+            Vec3::ZERO
+        } else {
+            (vector(views[0].pose.position) + vector(views[1].pose.position)) * 0.5
+        };
         let cameras = [camera(&views[0], head), camera(&views[1], head)];
         let mut indices = [0; EYES];
         for (swapchain, index) in swapchains.iter_mut().zip(&mut indices) {
@@ -311,7 +386,7 @@ fn run(shaders: &Path) -> Result<()> {
             d.begin_command_buffer(cmd, &vk::CommandBufferBeginInfo::default())?;
             d.cmd_reset_query_pool(cmd, queries, 0, 2);
             d.cmd_write_timestamp(cmd, vk::PipelineStageFlags::TOP_OF_PIPE, queries, 0);
-            world.draw(d, cmd, cameras, indices, seconds);
+            world.draw(d, cmd, cameras, indices, seconds, &rule.at(seconds));
             d.cmd_write_timestamp(cmd, vk::PipelineStageFlags::BOTTOM_OF_PIPE, queries, 1);
             d.end_command_buffer(cmd)?;
             d.reset_fences(&[fence])?;
@@ -360,7 +435,14 @@ fn run(shaders: &Path) -> Result<()> {
         )?;
         frames += 1;
         if frames % 120 == 0 {
-            println!("{frames} frames, GPU {:.3} ms/frame (both eyes)", gpu_ms / 120.);
+            let forward = quaternion(views[0].pose.orientation) * Vec3::NEG_Z;
+            println!(
+                "{frames} frames, GPU {:.3} ms/frame (both eyes), looking ({:.2}, {:.2}, {:.2})",
+                gpu_ms / 120.,
+                forward.x,
+                forward.y,
+                forward.z
+            );
             gpu_ms = 0.;
         }
     }
