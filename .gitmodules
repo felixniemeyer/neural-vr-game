@@ -1,0 +1,3 @@
+[submodule "experiments/steam-frame-vr"]
+	path = experiments/steam-frame-vr
+	url = git@github.com:schumannd/steam-frame-vr.git

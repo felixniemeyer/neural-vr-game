@@ -14,7 +14,7 @@
         -3.12,
         2.09
       ],
-      "weight": 13.872
+      "weight": 12.4848
     },
     {
       "ideaId": "069be3ea-befd-4613-b5d1-d2af9c76e2f4",
@@ -22,7 +22,7 @@
         2.04,
         3.15
       ],
-      "weight": 11.559999999999999
+      "weight": 10.404
     },
     {
       "ideaId": "f15f1791-6c85-40b1-be2f-c1ba62ec9bdc",
@@ -30,7 +30,7 @@
         -3.42,
         1.53
       ],
-      "weight": 14.45
+      "weight": 13.004999999999999
     },
     {
       "ideaId": "a2b28fc2-3630-4257-8bb2-4aad45e07b5c",
@@ -38,7 +38,7 @@
         -2.33,
         -2.94
       ],
-      "weight": 12.75
+      "weight": 11.475
     },
     {
       "ideaId": "54ea744e-c784-44a9-9701-f34a35ae1eb1",
@@ -46,7 +46,15 @@
         3.45,
         1.46
       ],
-      "weight": 15
+      "weight": 13.5
+    },
+    {
+      "ideaId": "56bda4f2-0144-429b-a00d-92a443283036",
+      "relativePosition": [
+        1.33,
+        3.5
+      ],
+      "weight": 10
     }
   ],
   "supportedIdeas": [],
@@ -57,7 +65,7 @@
     "date": 1795165840695
   },
   "intrinsicValue": 1000,
-  "selfWeight": 32.368,
+  "selfWeight": 29.131200000000003,
   "duration": 1,
   "costVariance": 0,
   "valueVariance": 0

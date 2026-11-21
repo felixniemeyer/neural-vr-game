@@ -1,0 +1,33 @@
+{
+  "id": "102a3e3a-f030-495b-9336-6c4d19bbb7d6",
+  "text": "Train from any video: depth + flow estimation, pseudo-stereo, warp-back hole filling",
+  "description": "Take unlabeled video and estimate per-frame depth (e.g. Video Depth Anything), optical flow (e.g. RAFT) and camera pose. Lift these to world-space scene flow, which gives the RGB/depth/velocity state. Synthesise the other eye by warping to an offset virtual camera. Then warp the virtual view back to the original: the original's holes come with ground truth, giving a supervised hole-filling signal (the cyclic-warp trick used by InfiniteNature-Zero and single-view view-synthesis work). Temporal pairs give a reprojection-with-motion signal. Complements the data-free SDF teacher.",
+  "archived": false,
+  "color": "#296135",
+  "tags": [],
+  "supportingConnections": [
+    {
+      "ideaId": "9407c421-d9fa-48cb-9bb6-fa500622ce6d",
+      "relativePosition": [
+        2.36,
+        2.92
+      ],
+      "weight": 1
+    }
+  ],
+  "supportedIdeas": [
+    "069be3ea-befd-4613-b5d1-d2af9c76e2f4"
+  ],
+  "committedIn": [],
+  "status": {
+    "state": "open",
+    "comment": "",
+    "date": 1795224829363
+  },
+  "intrinsicValue": 0,
+  "cost": 8,
+  "selfWeight": 1,
+  "duration": 1,
+  "costVariance": 0,
+  "valueVariance": 0
+}

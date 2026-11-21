@@ -14,7 +14,7 @@
         -1.41,
         -3.47
       ],
-      "weight": 1
+      "weight": 9.444444444444445
     },
     {
       "ideaId": "dfc306d4-2901-41b8-966b-3798534f3779",
@@ -22,7 +22,7 @@
         -2.67,
         2.64
       ],
-      "weight": 1
+      "weight": 9.444444444444445
     },
     {
       "ideaId": "90d2813f-497c-42fe-8ebc-0c374a2ea7cf",
@@ -30,7 +30,7 @@
         -1.08,
         -3.59
       ],
-      "weight": 1
+      "weight": 9.444444444444445
     },
     {
       "ideaId": "c5bf4b6f-75ac-467e-a4a1-acbbbe41e5a8",
@@ -38,7 +38,7 @@
         -0.86,
         -3.65
       ],
-      "weight": 1
+      "weight": 9.444444444444445
     },
     {
       "ideaId": "d96d0297-bf62-46f1-8b2d-e78edf46cd3f",
@@ -46,7 +46,7 @@
         -3.72,
         0.46
       ],
-      "weight": 1
+      "weight": 9.444444444444445
     },
     {
       "ideaId": "97438475-a34f-4620-af40-eee895b60dfa",
@@ -54,7 +54,7 @@
         2.13,
         -3.08
       ],
-      "weight": 1
+      "weight": 9.444444444444445
     },
     {
       "ideaId": "9407c421-d9fa-48cb-9bb6-fa500622ce6d",
@@ -62,7 +62,7 @@
         3.44,
         -1.49
       ],
-      "weight": 1
+      "weight": 9.444444444444445
     },
     {
       "ideaId": "8427528c-d9d4-488e-9efb-0de0d1bb91b8",
@@ -70,7 +70,15 @@
         -2.48,
         -2.81
       ],
-      "weight": 1
+      "weight": 9.444444444444445
+    },
+    {
+      "ideaId": "102a3e3a-f030-495b-9336-6c4d19bbb7d6",
+      "relativePosition": [
+        -2.52,
+        -2.78
+      ],
+      "weight": 15
     }
   ],
   "supportedIdeas": [
@@ -83,7 +91,7 @@
     "date": 1795165859296
   },
   "intrinsicValue": 0,
-  "selfWeight": 1,
+  "selfWeight": 9.444444444444445,
   "duration": 1,
   "costVariance": 0,
   "valueVariance": 0

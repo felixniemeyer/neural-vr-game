@@ -7,7 +7,16 @@
   "tags": [
     "rendering"
   ],
-  "supportingConnections": [],
+  "supportingConnections": [
+    {
+      "ideaId": "faf810ef-178e-4f57-ab38-df1301fa5be8",
+      "relativePosition": [
+        -3.75,
+        0.19
+      ],
+      "weight": 60
+    }
+  ],
   "supportedIdeas": [
     "ea8719aa-4554-4122-a393-61d4f3e657b0"
   ],
@@ -18,7 +27,7 @@
     "date": 1795165916856
   },
   "intrinsicValue": 0,
-  "selfWeight": 1,
+  "selfWeight": 40,
   "duration": 1,
   "costVariance": 0,
   "valueVariance": 0

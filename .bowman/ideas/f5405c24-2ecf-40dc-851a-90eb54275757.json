@@ -7,7 +7,24 @@
   "tags": [
     "rendering"
   ],
-  "supportingConnections": [],
+  "supportingConnections": [
+    {
+      "ideaId": "ac841219-70f1-4d2c-ab31-4ae125992e13",
+      "relativePosition": [
+        2.81,
+        2.49
+      ],
+      "weight": 35
+    },
+    {
+      "ideaId": "56bda4f2-0144-429b-a00d-92a443283036",
+      "relativePosition": [
+        -1.92,
+        -3.22
+      ],
+      "weight": 30
+    }
+  ],
   "supportedIdeas": [
     "ea8719aa-4554-4122-a393-61d4f3e657b0"
   ],
@@ -18,7 +35,7 @@
     "date": 1795165917527
   },
   "intrinsicValue": 0,
-  "selfWeight": 1,
+  "selfWeight": 35,
   "duration": 1,
   "costVariance": 0,
   "valueVariance": 0

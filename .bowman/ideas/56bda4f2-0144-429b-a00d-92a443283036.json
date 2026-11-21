@@ -1,0 +1,25 @@
+{
+  "id": "56bda4f2-0144-429b-a00d-92a443283036",
+  "text": "Looking uncovers detail: wherever you look, the world reveals finer structure",
+  "description": "A core experience goal: looking around should feel like discovering. The periphery stays abstract and coarse; where the gaze rests, the generator adds detail that then stays (it is reprojected with high certainty), so the world gets richer the more you look at it. This turns the foveation and compute limits into the feeling of the game. Uses eye tracking, the detail levels and the per-pixel certainty.",
+  "archived": false,
+  "color": "#662d62",
+  "tags": [],
+  "supportingConnections": [],
+  "supportedIdeas": [
+    "cef4ba30-abf6-4a9e-a9f9-0a3adac6a801",
+    "f5405c24-2ecf-40dc-851a-90eb54275757"
+  ],
+  "committedIn": [],
+  "status": {
+    "state": "open",
+    "comment": "",
+    "date": 1795225101898
+  },
+  "intrinsicValue": 0,
+  "cost": 5,
+  "selfWeight": 1,
+  "duration": 1,
+  "costVariance": 0,
+  "valueVariance": 0
+}

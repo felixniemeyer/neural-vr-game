@@ -1,0 +1,24 @@
+{
+  "id": "ac841219-70f1-4d2c-ab31-4ae125992e13",
+  "text": "Eye-tracked detail levels: a high-res gaze layer plus a low-res layer wider than the eye's range",
+  "description": "Render the state at several detail levels driven by the Steam Frame's eye tracking: a fine layer around the gaze and coarse layers further out. The coarse layer covers more than the eye's movement range, so even when the eyes are at one extreme, the opposite side is still rendered (at lower resolution) and never goes stale or empty. Reprojection and certainty work per layer; the fine layer splats into the coarse one and vice versa.",
+  "archived": false,
+  "color": "#265e63",
+  "tags": [],
+  "supportingConnections": [],
+  "supportedIdeas": [
+    "f5405c24-2ecf-40dc-851a-90eb54275757"
+  ],
+  "committedIn": [],
+  "status": {
+    "state": "open",
+    "comment": "",
+    "date": 1795225101725
+  },
+  "intrinsicValue": 0,
+  "cost": 5,
+  "selfWeight": 1,
+  "duration": 1,
+  "costVariance": 0,
+  "valueVariance": 0
+}

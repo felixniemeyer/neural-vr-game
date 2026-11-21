@@ -1,0 +1,25 @@
+{
+  "id": "faf810ef-178e-4f57-ab38-df1301fa5be8",
+  "text": "Per-pixel state = RGB + depth | world-space XYZ velocity + certainty",
+  "description": "Replace the hidden channels with explicit physical state: two RGBA16F images per eye, A = (r, g, b, inverse depth) and B = (vx, vy, vz world space, certainty). The splat moves each point by velocity·dt in world space before projecting with the current camera. Camera motion comes on top. This makes moving objects reproject correctly and keeps the state interpretable, which also helps training from video (depth plus scene flow).",
+  "archived": false,
+  "color": "#2b6452",
+  "tags": [],
+  "supportingConnections": [],
+  "supportedIdeas": [
+    "ea8719aa-4554-4122-a393-61d4f3e657b0",
+    "04bc4a0d-de71-4ee4-912d-9578734ae056"
+  ],
+  "committedIn": [],
+  "status": {
+    "state": "open",
+    "comment": "",
+    "date": 1795224829109
+  },
+  "intrinsicValue": 0,
+  "cost": 2,
+  "selfWeight": 1,
+  "duration": 1,
+  "costVariance": 0,
+  "valueVariance": 0
+}
