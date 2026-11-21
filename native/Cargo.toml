@@ -1,11 +1,12 @@
 [package]
-name = "twisted-crystals"
+name = "sunk-city"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
 anyhow = "1.0.104"
 ash = "0.38"
+av-controls = { git = "https://github.com/avonx2/av-controls", version = "0.1.0" }
 ctrlc = { version = "3", features = ["termination"] }
 glam = "0.30"
 openxr = "0.19"

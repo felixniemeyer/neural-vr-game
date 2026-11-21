@@ -1,6 +1,7 @@
 // Descriptor bindings for the per-eye state (A, B, C, D) and splat accumulators,
 // with accessors. Bindings: 1-8 previous state, 9-16 accumulators, 17-24 new state
-// (eye-major, 4 images each).
+// (eye-major, 4 images each), 25-26 scene G-buffer per eye. With 1 hidden image,
+// D and acc3 are bound to C and acc2 (never read).
 
 layout(set = 0, binding = 1) uniform sampler2D prev00;
 layout(set = 0, binding = 2) uniform sampler2D prev01;
@@ -26,6 +27,14 @@ layout(set = 0, binding = 21) uniform sampler2D next10;
 layout(set = 0, binding = 22) uniform sampler2D next11;
 layout(set = 0, binding = 23) uniform sampler2D next12;
 layout(set = 0, binding = 24) uniform sampler2D next13;
+layout(set = 0, binding = 25) uniform sampler2D scene0;
+layout(set = 0, binding = 26) uniform sampler2D scene1;
+
+// Scene G-buffer: (sun shade, inverse distance, vertical velocity, building id);
+// id 0 = no building.
+vec4 sceneFetch(int eye, ivec2 p) {
+    return eye == 0 ? texelFetch(scene0, p, 0) : texelFetch(scene1, p, 0);
+}
 
 vec4 prevFetch(int eye, int image, ivec2 p) {
     switch (eye * 4 + image) {

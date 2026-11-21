@@ -1,13 +1,18 @@
 //! Per-eye neural-world state: reprojection splat, resolve + CA, display.
 //!
-//! State per eye and parity (ping-pong), both RGBA16F:
+//! Frame order per eye: scene (skyscraper G-buffer) -> splat -> resolve + CA
+//! (composites the scene before the CA step) -> display.
+//!
+//! State per eye and parity (ping-pong), all RGBA16F:
 //!   A = (r, g, b, inverse depth)
 //!   B = (world velocity xyz, certainty)
-//!   C = (h0, h1, h2, h3), D = (h4, h5, h6, spare): hidden state
-//! Splat accumulation per eye, RGBA16F with additive blending (4 targets, the
-//! portable Vulkan minimum):
+//!   C = (h0, h1, h2, h3), D = (h4, h5, h6, spare): hidden state; with one hidden
+//!   image (3 channels) only C = (h0, h1, h2, 0) exists
+//! Splat accumulation per eye, RGBA16F with additive blending (at most 4 targets,
+//! the portable Vulkan minimum):
 //!   acc0 = (rgb*w, w), acc1 = (invDepth, velocity)*w,
-//!   acc2 = (certainty, h0, h1, h2)*w, acc3 = (h3, h4, h5, h6)*w
+//!   acc2 = (certainty, h0, h1, h2)*w, acc3 = (h3, h4, h5, h6)*w (2 hidden images)
+//! Scene G-buffer per eye: (sun shade, inverse distance, vertical velocity, id).
 
 use crate::gpu::{image_range, Resource, Resources, Shader};
 use crate::rule::{RuleFrame, READOUT_VEC4S, RULE_VEC4S};
@@ -18,11 +23,34 @@ use std::{mem::size_of, path::Path};
 
 pub const EYES: usize = 2;
 const STATE: vk::Format = vk::Format::R16G16B16A16_SFLOAT;
-/// State images per eye (A, B, C, D) and splat accumulators per eye.
+const DEPTH: vk::Format = vk::Format::D32_SFLOAT;
+/// Maximum state images per eye (A, B, C, D); accumulators match the state images.
 const STATES: usize = 4;
-const ACCUMULATORS: usize = 4;
-/// prev state (2 eyes x 4), accumulators (2 x 4), new state (2 x 4)
-const SAMPLED_BINDINGS: u32 = (EYES * (2 * STATES + ACCUMULATORS)) as u32;
+/// prev state (2 eyes x 4), accumulators (2 x 4), new state (2 x 4), scene (2)
+const SAMPLED_BINDINGS: u32 = (EYES * (3 * STATES + 1)) as u32;
+
+/// Live settings (av-controls faders).
+#[derive(Clone, Copy)]
+pub struct Settings {
+    /// Active perception rings (1..4) and the fraction of taps per ring.
+    pub rings: usize,
+    pub taps: f32,
+    /// Scene alpha for colour, for the building identity (hidden), for depth + velocity.
+    pub color: f32,
+    pub identity: f32,
+    pub depth: f32,
+    /// Multipliers for the hidden-state noise and the seed frequency.
+    pub noise: f32,
+    pub seeds: f32,
+    /// Blocks per side, cell size (m), maximum height (m), gaussian radius (m).
+    pub blocks: u32,
+    pub cell: f32,
+    pub height: f32,
+    /// Depth range (m) of the CA's own geometry; it is pushed out of `near`.
+    pub near: f32,
+    pub far: f32,
+    pub radius: f32,
+}
 
 #[repr(C, align(16))]
 #[derive(Clone, Copy)]
@@ -38,8 +66,13 @@ struct Uniforms {
     rule_b: [[f32; 4]; RULE_VEC4S],
     readout: [[f32; 4]; READOUT_VEC4S],
     nca: [f32; 4],
+    lookup: [f32; 4],
+    city: [f32; 4],
+    mixing: [f32; 4],
+    player: [f32; 4],
+    tone: [[f32; 4]; 3],
 }
-const _: () = assert!(size_of::<Uniforms>() == 480 + (2 * RULE_VEC4S + READOUT_VEC4S + 1) * 16);
+const _: () = assert!(size_of::<Uniforms>() == 480 + (2 * RULE_VEC4S + READOUT_VEC4S + 8) * 16);
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -68,35 +101,48 @@ pub struct EyeCamera {
 
 pub struct World {
     size: vk::Extent2D,
+    /// Hidden images (1 or 2); state images per eye = 2 + hidden_images.
+    hidden_images: usize,
+    scene_pass: vk::RenderPass,
     splat_pass: vk::RenderPass,
     ca_pass: vk::RenderPass,
     display_pass: vk::RenderPass,
+    scene: vk::Pipeline,
     splat: vk::Pipeline,
     ca: vk::Pipeline,
     display: vk::Pipeline,
     layout: vk::PipelineLayout,
     sets: [vk::DescriptorSet; 2],
     state_images: Vec<vk::Image>,
+    scene_targets: [vk::Framebuffer; EYES],
     acc_targets: [vk::Framebuffer; EYES],
     /// ca_targets[eye][parity] writes state[eye][1 - parity].
     ca_targets: [[vk::Framebuffer; 2]; EYES],
     outputs: [Vec<vk::Framebuffer>; EYES],
     mapped: *mut Uniforms,
+    /// Host-visible copy of the left eye's state A (RGBA16F), filled on request.
+    readback: (vk::Buffer, *mut [u16; 4]),
+    /// Record a copy of the new state A into `readback` in the next `draw`.
+    pub capture: bool,
+    /// Display exposure per channel (r, g, b): black point, white point, gamma.
+    tone: [[f32; 3]; 3],
     previous: Option<([EyeCamera; EYES], f32)>,
     parity: usize,
     frame: u32,
     pub mode: i32,
 }
 
+/// Colour attachments plus an optional cleared, discarded depth attachment.
 fn render_pass(
     r: &mut Resources<'_>,
     formats: &[vk::Format],
+    depth: bool,
     load: vk::AttachmentLoadOp,
     final_layout: vk::ImageLayout,
     external: bool,
 ) -> Result<vk::RenderPass> {
     use vk::{AccessFlags as A, ImageLayout as L, PipelineStageFlags as S};
-    let attachments: Vec<_> = formats
+    let mut attachments: Vec<_> = formats
         .iter()
         .map(|&format| {
             vk::AttachmentDescription::default()
@@ -107,24 +153,45 @@ fn render_pass(
                 .final_layout(final_layout)
         })
         .collect();
+    if depth {
+        attachments.push(
+            vk::AttachmentDescription::default()
+                .format(DEPTH)
+                .samples(vk::SampleCountFlags::TYPE_1)
+                .load_op(vk::AttachmentLoadOp::CLEAR)
+                .store_op(vk::AttachmentStoreOp::DONT_CARE)
+                .final_layout(L::DEPTH_STENCIL_ATTACHMENT_OPTIMAL),
+        );
+    }
     let colors: Vec<_> = (0..formats.len() as u32)
         .map(|attachment| vk::AttachmentReference {
             attachment,
             layout: L::COLOR_ATTACHMENT_OPTIMAL,
         })
         .collect();
-    let subpasses = [vk::SubpassDescription::default()
+    let depth_reference = vk::AttachmentReference {
+        attachment: formats.len() as u32,
+        layout: L::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+    };
+    let mut subpass = vk::SubpassDescription::default()
         .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
-        .color_attachments(&colors)];
+        .color_attachments(&colors);
+    if depth {
+        subpass = subpass.depth_stencil_attachment(&depth_reference);
+    }
+    let subpasses = [subpass];
     let shaders = S::VERTEX_SHADER | S::FRAGMENT_SHADER;
+    let tests = S::EARLY_FRAGMENT_TESTS | S::LATE_FRAGMENT_TESTS;
     let dependencies = [
         vk::SubpassDependency::default()
             .src_subpass(vk::SUBPASS_EXTERNAL)
             .dst_subpass(0)
-            .src_stage_mask(shaders | S::COLOR_ATTACHMENT_OUTPUT)
-            .dst_stage_mask(S::COLOR_ATTACHMENT_OUTPUT)
-            .src_access_mask(A::SHADER_READ | A::COLOR_ATTACHMENT_WRITE)
-            .dst_access_mask(A::COLOR_ATTACHMENT_WRITE | A::COLOR_ATTACHMENT_READ),
+            .src_stage_mask(shaders | S::COLOR_ATTACHMENT_OUTPUT | tests)
+            .dst_stage_mask(S::COLOR_ATTACHMENT_OUTPUT | tests)
+            .src_access_mask(A::SHADER_READ | A::COLOR_ATTACHMENT_WRITE | A::DEPTH_STENCIL_ATTACHMENT_WRITE)
+            .dst_access_mask(
+                A::COLOR_ATTACHMENT_WRITE | A::COLOR_ATTACHMENT_READ | A::DEPTH_STENCIL_ATTACHMENT_WRITE,
+            ),
         vk::SubpassDependency::default()
             .src_subpass(0)
             .dst_subpass(vk::SUBPASS_EXTERNAL)
@@ -151,6 +218,7 @@ fn pipeline(
     layout: vk::PipelineLayout,
     targets: usize,
     additive: bool,
+    depth_test: bool,
 ) -> Result<vk::Pipeline> {
     let vertex = Shader::load(d, dir, vert)?;
     let fragment = Shader::load(d, dir, frag)?;
@@ -169,7 +237,10 @@ fn pipeline(
         .cull_mode(vk::CullModeFlags::NONE);
     let sampling = vk::PipelineMultisampleStateCreateInfo::default()
         .rasterization_samples(vk::SampleCountFlags::TYPE_1);
-    let depth = vk::PipelineDepthStencilStateCreateInfo::default();
+    let depth = vk::PipelineDepthStencilStateCreateInfo::default()
+        .depth_test_enable(depth_test)
+        .depth_write_enable(depth_test)
+        .depth_compare_op(vk::CompareOp::LESS);
     let blend = vk::PipelineColorBlendAttachmentState::default()
         .color_write_mask(vk::ColorComponentFlags::RGBA)
         .blend_enable(additive)
@@ -207,7 +278,9 @@ impl World {
         size: vk::Extent2D,
         output_format: vk::Format,
         swapchains: [&[vk::Image]; EYES],
+        hidden_images: usize,
     ) -> Result<Self> {
+        let images = 2 + hidden_images;
         use vk::ImageUsageFlags as Usage;
         let d = &r.gpu.device;
         let stages = vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT;
@@ -282,60 +355,62 @@ impl World {
         );
 
         let read_layout = vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
-        let splat_pass = render_pass(r, &[STATE; ACCUMULATORS], vk::AttachmentLoadOp::CLEAR, read_layout, true)?;
-        let ca_pass = render_pass(r, &[STATE; STATES], vk::AttachmentLoadOp::DONT_CARE, read_layout, true)?;
+        let clear = vk::AttachmentLoadOp::CLEAR;
+        let scene_pass = render_pass(r, &[STATE], true, clear, read_layout, true)?;
+        let splat_pass = render_pass(r, &vec![STATE; images], false, clear, read_layout, true)?;
+        let ca_pass = render_pass(r, &vec![STATE; images], false, vk::AttachmentLoadOp::DONT_CARE, read_layout, true)?;
         let display_pass = render_pass(
             r,
             &[output_format],
+            false,
             vk::AttachmentLoadOp::DONT_CARE,
             vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
             false,
         )?;
-        let d = &r.gpu.device;
-        let splat = pipeline(d, shaders, ("splat.vert.spv", "splat.frag.spv"), splat_pass, layout, ACCUMULATORS, true)?;
-        let splat = r.keep(splat, Resource::Pipeline);
-        let d = &r.gpu.device;
-        let ca = pipeline(d, shaders, ("fullscreen.vert.spv", "ca.frag.spv"), ca_pass, layout, STATES, false)?;
-        let ca = r.keep(ca, Resource::Pipeline);
-        let d = &r.gpu.device;
-        let display = pipeline(
-            d,
-            shaders,
-            ("fullscreen.vert.spv", "display.frag.spv"),
-            display_pass,
-            layout,
-            1,
-            false,
-        )?;
-        let display = r.keep(display, Resource::Pipeline);
+        let mut pipelines = Self::pipelines(&r.gpu.device, shaders, [scene_pass, splat_pass, ca_pass, display_pass], layout, images)?
+            .into_iter()
+            .map(|p| r.keep(p, Resource::Pipeline));
+        let [scene, splat, ca, display] = std::array::from_fn(|_| pipelines.next().unwrap());
 
-        // state[eye][parity] = (A, B, C, D)
-        let state_usage = Usage::COLOR_ATTACHMENT | Usage::SAMPLED | Usage::TRANSFER_DST;
+        // state[eye][parity] = (A, B, C, D); absent images (1 hidden image) are
+        // bound as their predecessor in the descriptor set and never read.
+        let state_usage = Usage::COLOR_ATTACHMENT | Usage::SAMPLED | Usage::TRANSFER_DST | Usage::TRANSFER_SRC;
         let mut state_images = Vec::new();
         let mut state = [[[vk::ImageView::null(); STATES]; 2]; EYES];
         for eye in &mut state {
             for parity in eye.iter_mut() {
-                for view in parity.iter_mut() {
-                    let (image, v) = r.image(size, STATE, state_usage)?;
-                    state_images.push(image);
-                    *view = v;
+                for i in 0..STATES {
+                    parity[i] = if i < images {
+                        let (image, view) = r.image(size, STATE, state_usage)?;
+                        state_images.push(image);
+                        view
+                    } else {
+                        parity[i - 1]
+                    };
                 }
             }
         }
-        let mut acc = [[vk::ImageView::null(); ACCUMULATORS]; EYES];
+        let mut acc = [[vk::ImageView::null(); STATES]; EYES];
         for eye in &mut acc {
-            for view in eye.iter_mut() {
-                *view = r.image(size, STATE, Usage::COLOR_ATTACHMENT | Usage::SAMPLED)?.1;
+            for i in 0..STATES {
+                eye[i] = if i < images {
+                    r.image(size, STATE, Usage::COLOR_ATTACHMENT | Usage::SAMPLED)?.1
+                } else {
+                    eye[i - 1]
+                };
             }
         }
-        let acc_targets = [
-            r.framebuffer(splat_pass, size, &acc[0])?,
-            r.framebuffer(splat_pass, size, &acc[1])?,
-        ];
+        let mut gbuffer = [vk::ImageView::null(); EYES];
+        let mut scene_targets = [vk::Framebuffer::null(); EYES];
+        let mut acc_targets = [vk::Framebuffer::null(); EYES];
         let mut ca_targets = [[vk::Framebuffer::null(); 2]; EYES];
         for eye in 0..EYES {
+            gbuffer[eye] = r.image(size, STATE, Usage::COLOR_ATTACHMENT | Usage::SAMPLED)?.1;
+            let depth = r.image(size, DEPTH, Usage::DEPTH_STENCIL_ATTACHMENT)?.1;
+            scene_targets[eye] = r.framebuffer(scene_pass, size, &[gbuffer[eye], depth])?;
+            acc_targets[eye] = r.framebuffer(splat_pass, size, &acc[eye][..images])?;
             for parity in 0..2 {
-                ca_targets[eye][parity] = r.framebuffer(ca_pass, size, &state[eye][1 - parity])?;
+                ca_targets[eye][parity] = r.framebuffer(ca_pass, size, &state[eye][1 - parity][..images])?;
             }
         }
         let mut outputs: [Vec<vk::Framebuffer>; EYES] = Default::default();
@@ -349,6 +424,8 @@ impl World {
         // Zeroed initial contents; every field is plain f32 data.
         let initial: Uniforms = unsafe { std::mem::zeroed() };
         let (uniforms, mapped) = r.buffer(&[initial], vk::BufferUsageFlags::UNIFORM_BUFFER)?;
+        let pixels = vec![[0u16; 4]; (size.width * size.height) as usize];
+        let readback = r.buffer(&pixels, vk::BufferUsageFlags::TRANSFER_DST)?;
         let d = &r.gpu.device;
         let layouts = [set_layout; 2];
         let allocated = unsafe {
@@ -363,11 +440,13 @@ impl World {
             let uniform = [vk::DescriptorBufferInfo::default()
                 .buffer(uniforms)
                 .range(size_of::<Uniforms>() as u64)];
-            // Bindings 1.. : prev state of both eyes, accumulators of both eyes, new state of both eyes.
+            // Bindings 1.. : prev state of both eyes, accumulators of both eyes, new state
+            // of both eyes, scene G-buffer of both eyes.
             let views: Vec<_> = (0..EYES)
                 .flat_map(|e| state[e][parity])
                 .chain((0..EYES).flat_map(|e| acc[e]))
                 .chain((0..EYES).flat_map(|e| state[e][next]))
+                .chain(gbuffer)
                 .collect();
             let views: Vec<_> = views
                 .into_iter()
@@ -395,6 +474,10 @@ impl World {
 
         Ok(Self {
             size,
+            hidden_images,
+            scene_pass,
+            scene,
+            scene_targets,
             splat_pass,
             ca_pass,
             display_pass,
@@ -408,6 +491,9 @@ impl World {
             ca_targets,
             outputs,
             mapped,
+            readback,
+            capture: false,
+            tone: [[0., 1., 1.]; 3],
             previous: None,
             parity: 0,
             frame: 0,
@@ -419,17 +505,31 @@ impl World {
         self.size
     }
 
-    /// Recreate the three pipelines from the (re)compiled SPIR-V in `shaders`.
-    /// The caller must make sure the GPU is idle. On error the old pipelines stay.
+    /// The four pipelines (scene, splat, CA, display) from the SPIR-V in `shaders`.
+    fn pipelines(
+        d: &Device,
+        shaders: &Path,
+        [scene, splat, ca, display]: [vk::RenderPass; 4],
+        layout: vk::PipelineLayout,
+        images: usize,
+    ) -> Result<Vec<vk::Pipeline>> {
+        Ok(vec![
+            pipeline(d, shaders, ("scene.vert.spv", "scene.frag.spv"), scene, layout, 1, false, true)?,
+            pipeline(d, shaders, ("splat.vert.spv", "splat.frag.spv"), splat, layout, images, true, false)?,
+            pipeline(d, shaders, ("fullscreen.vert.spv", "ca.frag.spv"), ca, layout, images, false, false)?,
+            pipeline(d, shaders, ("fullscreen.vert.spv", "display.frag.spv"), display, layout, 1, false, false)?,
+        ])
+    }
+
+    /// Recreate the pipelines from the (re)compiled SPIR-V in `shaders`.
+    /// The caller must make sure the GPU is idle. On error the old pipelines stay
+    /// (a partial success leaks the new ones until exit, like replaced ones).
     /// Old pipelines are only destroyed at exit (they stay in `Resources`).
     pub fn reload(&mut self, r: &mut Resources<'_>, shaders: &Path) -> Result<()> {
-        let d = &r.gpu.device;
-        let splat = pipeline(d, shaders, ("splat.vert.spv", "splat.frag.spv"), self.splat_pass, self.layout, ACCUMULATORS, true)?;
-        let ca = pipeline(d, shaders, ("fullscreen.vert.spv", "ca.frag.spv"), self.ca_pass, self.layout, STATES, false);
-        let display = pipeline(d, shaders, ("fullscreen.vert.spv", "display.frag.spv"), self.display_pass, self.layout, 1, false);
-        self.splat = r.keep(splat, Resource::Pipeline);
-        self.ca = r.keep(ca?, Resource::Pipeline);
-        self.display = r.keep(display?, Resource::Pipeline);
+        let passes = [self.scene_pass, self.splat_pass, self.ca_pass, self.display_pass];
+        let new = Self::pipelines(&r.gpu.device, shaders, passes, self.layout, 2 + self.hidden_images)?;
+        let mut new = new.into_iter().map(|p| r.keep(p, Resource::Pipeline));
+        [self.scene, self.splat, self.ca, self.display] = std::array::from_fn(|_| new.next().unwrap());
         Ok(())
     }
 
@@ -442,6 +542,7 @@ impl World {
         images: [usize; EYES],
         time: f32,
         rule: &RuleFrame,
+        settings: Settings,
     ) {
         if self.previous.is_none() {
             clear_to_read(d, cmd, &self.state_images);
@@ -460,11 +561,20 @@ impl World {
                 time,
                 (self.frame % 65536) as f32,
             ],
-            step: [dt, 0., 0., 0.],
+            step: [dt, settings.near, settings.far, 0.],
             rule: rule.rule,
             rule_b: rule.rule_b,
             readout: rule.readout,
             nca: rule.params,
+            lookup: [settings.rings as f32, settings.taps, self.hidden_images as f32, settings.seeds],
+            city: [settings.cell, settings.height, settings.radius, settings.blocks as f32],
+            mixing: [settings.color, settings.identity, settings.depth, settings.noise],
+            player: {
+                let ground = |c: [EyeCamera; EYES]| (c[0].position + c[1].position) * 0.5;
+                let (now, before) = (ground(cameras), ground(previous));
+                [now.x, now.z, before.x, before.z]
+            },
+            tone: self.tone_uniform(),
         };
         let area = vk::Rect2D::default().extent(self.size);
         let viewport = vk::Viewport::default()
@@ -474,6 +584,12 @@ impl World {
         let zero = [vk::ClearValue {
             color: vk::ClearColorValue { float32: [0.; 4] },
         }; STATES];
+        let scene_clear = [
+            zero[0],
+            vk::ClearValue {
+                depth_stencil: vk::ClearDepthStencilValue { depth: 1., stencil: 0 },
+            },
+        ];
         let stages = vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT;
         let pixels = self.size.width * self.size.height;
         unsafe {
@@ -487,11 +603,12 @@ impl World {
                 &[],
             );
             let begin = |pass, framebuffer| {
+                let clears: &[vk::ClearValue] = if pass == self.scene_pass { &scene_clear } else { &zero };
                 let info = vk::RenderPassBeginInfo::default()
                     .render_pass(pass)
                     .framebuffer(framebuffer)
                     .render_area(area)
-                    .clear_values(&zero);
+                    .clear_values(clears);
                 d.cmd_begin_render_pass(cmd, &info, vk::SubpassContents::INLINE);
                 d.cmd_set_viewport(cmd, 0, &[viewport]);
                 d.cmd_set_scissor(cmd, 0, &[area]);
@@ -504,6 +621,14 @@ impl World {
                 };
                 d.cmd_push_constants(cmd, self.layout, stages, 0, &p.bytes());
             };
+            // Scene first: rendered before the reprojection, composited by the CA.
+            for eye in 0..EYES {
+                begin(self.scene_pass, self.scene_targets[eye]);
+                d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.scene);
+                push(eye, eye, 0);
+                d.cmd_draw(cmd, 30, settings.blocks * settings.blocks, 0, 0);
+                d.cmd_end_render_pass(cmd);
+            }
             for eye in 0..EYES {
                 begin(self.splat_pass, self.acc_targets[eye]);
                 d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.splat);
@@ -529,8 +654,140 @@ impl World {
                 d.cmd_end_render_pass(cmd);
             }
         }
+        if self.capture {
+            // The new state A of the left eye: state[0][1 - parity], first image.
+            let image = self.state_images[(1 - self.parity) * (2 + self.hidden_images)];
+            copy_to_buffer(d, cmd, image, self.size, self.readback.0);
+        }
         self.parity = 1 - self.parity;
         self.frame += 1;
+    }
+
+    fn captured(&self) -> &[[u16; 4]] {
+        let (w, h) = (self.size.width as usize, self.size.height as usize);
+        unsafe { std::slice::from_raw_parts(self.readback.1, w * h) }
+    }
+
+    /// Display mapping per channel `pow(max(c * scale + offset, 0), gamma)`.
+    fn tone_uniform(&self) -> [[f32; 4]; 3] {
+        let mut out = [[0f32; 4]; 3];
+        for (c, &[black, white, gamma]) in self.tone.iter().enumerate() {
+            let scale = 1. / (white - black).max(1e-3);
+            out[0][c] = scale;
+            out[1][c] = -black * scale;
+            out[2][c] = gamma;
+        }
+        out
+    }
+
+    /// Exposure per channel as (black point, white point, gamma), for logging.
+    pub fn tone(&self) -> [[f32; 3]; 3] {
+        self.tone
+    }
+
+    /// Automatic exposure from the last captured frame (call after its commands
+    /// finished), smoothed over successive calls. Each channel is mapped on its own,
+    /// so no channel dominates (fewer pure primaries):
+    ///   its darkest `black` fraction becomes 0, its brightest `clip` fraction clips,
+    ///   and a gamma puts its 80th percentile at `mid` (dark, with highlights).
+    /// `tint` then pulls the three mappings toward their mean (0 = independent,
+    /// 1 = shared), so a scene's colour cast partly survives.
+    pub fn calibrate(&mut self, mid: f32, clip: f32, black: f32, tint: f32) {
+        let pixels: Vec<[f32; 3]> = self
+            .captured()
+            .iter()
+            .step_by(7)
+            .map(|p| [0, 1, 2].map(|c| half_to_f32(p[c])))
+            .filter(|p| p.iter().all(|v| v.is_finite()))
+            .collect();
+        if pixels.len() < 16 {
+            return;
+        }
+        let target: [[f32; 3]; 3] = [0, 1, 2].map(|c| {
+            let mut value: Vec<f32> = pixels.iter().map(|p| p[c]).collect();
+            let mut percentile = |q: f32| {
+                let k = ((value.len() - 1) as f32 * q.clamp(0., 1.)) as usize;
+                *value.select_nth_unstable_by(k, f32::total_cmp).1
+            };
+            let low = percentile(black);
+            let p80 = percentile(0.8);
+            let high = percentile(1. - clip).max(low + 1e-2);
+            let at80 = ((p80 - low) / (high - low)).clamp(1e-3, 0.999);
+            [low, high, (mid.clamp(0.01, 0.99).ln() / at80.ln()).clamp(0.25, 10.)]
+        });
+        for (c, tone) in self.tone.iter_mut().enumerate() {
+            for i in 0..3 {
+                let mean = (target[0][i] + target[1][i] + target[2][i]) / 3.;
+                let goal = target[c][i] + (mean - target[c][i]) * tint;
+                tone[i] += (goal - tone[i]) * 0.15;
+            }
+        }
+    }
+
+    /// The left eye's colour from the last captured frame, exposed like the display,
+    /// as a binary PPM.
+    pub fn snapshot_ppm(&self) -> Vec<u8> {
+        let (w, h) = (self.size.width, self.size.height);
+        let mut out = format!("P6\n{w} {h}\n255\n").into_bytes();
+        let [scale, offset, gamma] = self.tone_uniform();
+        for pixel in self.captured() {
+            for c in 0..3 {
+                let value = (half_to_f32(pixel[c]) * scale[c] + offset[c]).max(0.).powf(gamma[c]);
+                out.push((value.clamp(0., 1.) * 255. + 0.5) as u8);
+            }
+        }
+        out
+    }
+}
+
+fn half_to_f32(h: u16) -> f32 {
+    let sign = if h & 0x8000 != 0 { -1. } else { 1. };
+    let exponent = ((h >> 10) & 0x1f) as i32;
+    let mantissa = (h & 0x3ff) as f32;
+    sign * match exponent {
+        0 => mantissa * 2f32.powi(-24),
+        31 => f32::NAN,
+        _ => (1. + mantissa / 1024.) * 2f32.powi(exponent - 15),
+    }
+}
+
+/// Copy a shader-readable colour image into a buffer, leaving it shader-readable.
+fn copy_to_buffer(d: &Device, cmd: vk::CommandBuffer, image: vk::Image, size: vk::Extent2D, buffer: vk::Buffer) {
+    use vk::{AccessFlags as A, ImageLayout as L, PipelineStageFlags as S};
+    let barrier = |old, new, src, dst| {
+        vk::ImageMemoryBarrier::default()
+            .image(image)
+            .subresource_range(image_range(vk::ImageAspectFlags::COLOR))
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .old_layout(old)
+            .new_layout(new)
+            .src_access_mask(src)
+            .dst_access_mask(dst)
+    };
+    let region = vk::BufferImageCopy::default()
+        .image_subresource(vk::ImageSubresourceLayers {
+            aspect_mask: vk::ImageAspectFlags::COLOR,
+            mip_level: 0,
+            base_array_layer: 0,
+            layer_count: 1,
+        })
+        .image_extent(vk::Extent3D { width: size.width, height: size.height, depth: 1 });
+    let none = vk::DependencyFlags::empty();
+    unsafe {
+        let to_copy = [barrier(L::SHADER_READ_ONLY_OPTIMAL, L::TRANSFER_SRC_OPTIMAL, A::COLOR_ATTACHMENT_WRITE | A::SHADER_READ, A::TRANSFER_READ)];
+        d.cmd_pipeline_barrier(cmd, S::COLOR_ATTACHMENT_OUTPUT | S::FRAGMENT_SHADER, S::TRANSFER, none, &[], &[], &to_copy);
+        d.cmd_copy_image_to_buffer(cmd, image, L::TRANSFER_SRC_OPTIMAL, buffer, &[region]);
+        let back = [barrier(L::TRANSFER_SRC_OPTIMAL, L::SHADER_READ_ONLY_OPTIMAL, A::TRANSFER_READ, A::SHADER_READ)];
+        d.cmd_pipeline_barrier(cmd, S::TRANSFER, S::VERTEX_SHADER | S::FRAGMENT_SHADER, none, &[], &[], &back);
+        let host = [vk::BufferMemoryBarrier::default()
+            .buffer(buffer)
+            .size(vk::WHOLE_SIZE)
+            .src_access_mask(A::TRANSFER_WRITE)
+            .dst_access_mask(A::HOST_READ)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)];
+        d.cmd_pipeline_barrier(cmd, S::TRANSFER, S::HOST, none, &[], &host, &[]);
     }
 }
 
