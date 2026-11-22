@@ -7,18 +7,28 @@
   "tags": [
     "platform"
   ],
-  "supportingConnections": [],
+  "supportingConnections": [
+    {
+      "ideaId": "1a7292bc-631b-48d6-9b51-2e030c27fb29",
+      "relativePosition": [
+        0.19,
+        -3.75
+      ],
+      "weight": 30,
+      "hypothesis": "Where available, matrix-unit MLP evaluation cuts the net pass by another 2x or more, freeing budget for higher resolution or a wider net on the Frame."
+    }
+  ],
   "supportedIdeas": [
     "54ea744e-c784-44a9-9701-f34a35ae1eb1"
   ],
   "committedIn": [],
   "status": {
-    "state": "open",
-    "comment": "",
-    "date": 1795166008048
+    "state": "partially",
+    "comment": "Runs on the laptop Vega iGPU at 512 px/eye via Monado (dev.sh). Branch experiments, c30bda7 + ada699e: net in fp16 packed math (needs shaderFloat16, Adreno has it), weights as packed halves in a uniform buffer, all passes compiled per eye (spec constants) -> net run 15.2 -> 6.3 ms, splat 5.8 -> 5.3, frame ~21 -> 14.5 ms (GPU pinned at 700 MHz manual DPM). fp16 error on real inputs: mean 9e-5 of tanh outputs. Log now prints driver shader stats (works on Turnip). Frame build still untested on device.",
+    "date": 1795379716639
   },
   "intrinsicValue": 0,
-  "selfWeight": 1,
+  "selfWeight": 70,
   "duration": 1,
   "costVariance": 0,
   "valueVariance": 0

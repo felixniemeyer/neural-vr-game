@@ -1,0 +1,27 @@
+{
+  "id": "001056b2-faff-4c67-af08-3707ec047f79",
+  "text": "Net inference at ~24 Hz is enough: motion stays fluid through reprojection at display rate",
+  "description": "The net only needs to update the image's content (netfps, e.g. 24). Head motion is carried at 90 Hz by our own splat reprojection of the state (rotation and translation, every frame), and the compositor additionally reprojects the latest submitted frame (rotation-level timewarp). We do not interpolate between net updates in time; each net update covers the elapsed (scaled) time as tau ticks. Open: measure the lowest netfps that still looks alive on the Frame, and spend the saved GPU budget on resolution or a bigger net.",
+  "archived": false,
+  "color": "#367466",
+  "tags": [
+    "rendering",
+    "performance"
+  ],
+  "supportingConnections": [],
+  "supportedIdeas": [
+    "d6c3bd32-978b-47e8-bfc0-e689dbd3fb09"
+  ],
+  "committedIn": [],
+  "status": {
+    "state": "partially",
+    "comment": "netfps fader + NetClock (6cc463c). New per-frame split in the log (experiments c30bda7): net-run frames 6.3 ms vs fill-only frames 1.4 ms for both eyes at 512 px, so lowering netfps saves ~5 ms per skipped tick. Not yet tried on the Frame.",
+    "date": 1795371882387
+  },
+  "intrinsicValue": 0,
+  "cost": 1,
+  "selfWeight": 1,
+  "duration": 1,
+  "costVariance": 0,
+  "valueVariance": 0
+}

@@ -14,9 +14,9 @@
   ],
   "committedIn": [],
   "status": {
-    "state": "open",
-    "comment": "",
-    "date": 1795166008256
+    "state": "implemented",
+    "comment": "dev.sh: Monado with qwerty-steered simulated HMD + debug GUI, av-controls faders, live shader reload, Rust rebuild/restart; used all session for timing (build/dev/app.log). Caveat: Monado refuses a second concurrent session.",
+    "date": 1795379717019
   },
   "intrinsicValue": 0,
   "selfWeight": 1,

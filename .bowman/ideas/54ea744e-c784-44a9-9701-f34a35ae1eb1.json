@@ -14,7 +14,8 @@
         0.97,
         1.95
       ],
-      "weight": 1
+      "weight": 1,
+      "reflection": "Holding so far: the shader-only design runs on the iGPU; fp16 + per-eye specialisation cut the net 2.4x, which is the main lever for the Frame's mobile GPU budget."
     },
     {
       "ideaId": "4b74e2c5-a33a-4e1c-8c9c-ff9640878aa6",
