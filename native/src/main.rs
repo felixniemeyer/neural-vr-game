@@ -1,6 +1,7 @@
 mod city;
 mod gpu;
 mod swing;
+mod timestop;
 mod rule;
 mod world;
 
@@ -229,6 +230,8 @@ struct Hands {
     set: xr::ActionSet,
     paths: [xr::Path; 2],
     zip: xr::Action<bool>,
+    /// Grip: personal time-stop (timestop.rs).
+    stop: xr::Action<bool>,
     buzz: xr::Action<xr::Haptic>,
     aims: [xr::Space; 2],
     /// XR_EXT_eye_gaze_interaction: the gaze pose (action kept alive with its space).
@@ -238,6 +241,8 @@ struct Hands {
 /// One hand this frame: trigger held, and its aim ray in tracking space.
 struct Held {
     pressed: bool,
+    /// Grip held: time-stop.
+    stop: bool,
     ray: Option<(Vec3, Vec3)>,
 }
 
@@ -248,11 +253,12 @@ impl Hands {
         let zip = set.create_action::<bool>("zip", "Zip toward a block", &paths)?;
         let aim = set.create_action::<xr::Posef>("aim", "Aim", &paths)?;
         let buzz = set.create_action::<xr::Haptic>("buzz", "Hit", &paths)?;
+        let stop = set.create_action::<bool>("stop", "Stop time", &paths)?;
         // The runtime picks a matching profile (or remaps one, as SteamVR does).
-        for (profile, trigger) in [
-            ("khr/simple_controller", "select/click"),
-            ("valve/index_controller", "trigger/click"),
-            ("oculus/touch_controller", "trigger/value"),
+        for (profile, trigger, grip) in [
+            ("khr/simple_controller", "select/click", "menu/click"),
+            ("valve/index_controller", "trigger/click", "squeeze/value"),
+            ("oculus/touch_controller", "trigger/value", "squeeze/value"),
         ] {
             let mut bindings = Vec::new();
             for hand in ["left", "right"] {
@@ -260,6 +266,7 @@ impl Hands {
                 bindings.push(xr::Binding::new(&zip, path(&format!("input/{trigger}"))?));
                 bindings.push(xr::Binding::new(&aim, path("input/aim/pose")?));
                 bindings.push(xr::Binding::new(&buzz, path("output/haptic")?));
+                bindings.push(xr::Binding::new(&stop, path(&format!("input/{grip}"))?));
             }
             let profile = instance.string_to_path(&format!("/interaction_profiles/{profile}"))?;
             if let Err(error) = instance.suggest_interaction_profile_bindings(profile, &bindings) {
@@ -292,14 +299,15 @@ impl Hands {
             aim.create_space(session.clone(), paths[0], xr::Posef::IDENTITY)?,
             aim.create_space(session.clone(), paths[1], xr::Posef::IDENTITY)?,
         ];
-        Ok(Self { set, paths, zip, buzz, aims, gaze })
+        Ok(Self { set, paths, zip, stop, buzz, aims, gaze })
     }
 
     fn sync(&self, session: &xr::Session<xr::Vulkan>, space: &xr::Space, time: xr::Time) -> Result<[Held; 2]> {
         session.sync_actions(&[xr::ActiveActionSet::new(&self.set)])?;
-        let mut held = [0, 1].map(|_| Held { pressed: false, ray: None });
+        let mut held = [0, 1].map(|_| Held { pressed: false, stop: false, ray: None });
         for (i, out) in held.iter_mut().enumerate() {
             out.pressed = self.zip.state(session, self.paths[i])?.current_state;
+            out.stop = self.stop.state(session, self.paths[i])?.current_state;
             let location = self.aims[i].locate(space, time)?;
             let valid = xr::SpaceLocationFlags::POSITION_VALID | xr::SpaceLocationFlags::ORIENTATION_VALID;
             if location.location_flags.contains(valid) {
@@ -698,6 +706,8 @@ fn run(shaders: &Path) -> Result<()> {
     let mut start = None;
     // ZIP_ANYWHERE=0: zip only toward blocks the ray hits (default 1: also into the air).
     let mut clock = NetClock::default();
+    // Grip: personal time-stop, and the previous frame's time for its dt.
+    let (mut time_stop, mut last_seconds) = (timestop::TimeStop::default(), None::<f32>);
     // The image's geometry around the player, from the last frame (for the brake).
     let mut walls: Vec<Vec3> = Vec::new();
     let mut zip = Zip { position: Vec3::new(0., START_HEIGHT, 0.), anywhere: env::var("ZIP_ANYWHERE").map_or(true, |v| v != "0"), ..Zip::default() };
@@ -844,6 +854,8 @@ fn run(shaders: &Path) -> Result<()> {
             },
         };
         let held = hands.sync(&session, &space, time)?;
+        let frame_dt = (seconds - last_seconds.replace(seconds).unwrap_or(seconds)).clamp(0., 0.1);
+        let stopped = time_stop.update(held.iter().any(|h| h.stop), frame_dt);
         let motion = [controls.get("pull"), controls.get("drag"), controls.get("body"), controls.get("brake")];
         zip.update(&held, &hands, &session, seconds, head, eye, &city, motion, &walls, controls.on("auto").then(|| controls.get("speed")),
             controls.on("swing").then(|| controls.get("reel")));
@@ -852,7 +864,7 @@ fn run(shaders: &Path) -> Result<()> {
         let dumping = dump.is_some() && frames == dump_frame;
         let settings = Settings {
             wild: controls.get("wild"),
-            tau: clock.tick(seconds, controls.get("timescale"), controls.get("netfps"), &rule, dumping),
+            tau: clock.tick(seconds, controls.get("timescale") * stopped, controls.get("netfps"), &rule, dumping),
             color: per_second(controls.get("color")),
             depth: per_second(controls.get("depth")),
             sky: controls.get("sky"),

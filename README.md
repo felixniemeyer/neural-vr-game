@@ -79,7 +79,7 @@ Environment variables (on the Frame, set them in `native/frame/start.sh`):
 | `VALIDATE` | unset   | 1 = Vulkan validation layer |
 
 Controllers: point at a block and hold the trigger to zip toward it (it buzzes when it
-hits); release to glide to a stop. Both hands work at once. Bindings are suggested for the
+hits); release to glide to a stop. Both hands work at once. Hold the grip (simple controller: menu) to stop time: the net's world slows to a halt (the image still follows your head) for up to 6 s of stamina, which refills in 12 s; when it runs out time resumes, and a new press needs a fifth of the stamina. Bindings are suggested for the
 simple, Index and Touch profiles (Monado's qwerty device emulates simple controllers).
 
 Live controls (av-controls panel `sunk-city`, in tabs: net, scene, city, motion, display). Without a broker these defaults apply:

@@ -13,14 +13,14 @@
   ],
   "committedIn": [],
   "status": {
-    "state": "open",
-    "comment": "",
-    "date": 1795165917050
+    "state": "partially",
+    "comment": "Done: cross-eye splat (each eye gets half of the other eye's previous state, checkerboard), stereo training with a second eye and a disagreement loss (train.stereo). Not done: an explicit epipolar other-eye lookup in the net's inputs.",
+    "date": 1795380917433
   },
   "intrinsicValue": 0,
+  "cost": 4,
   "selfWeight": 1,
   "duration": 1,
   "costVariance": 0,
-  "valueVariance": 0,
-  "cost": 4
+  "valueVariance": 0
 }

@@ -15,14 +15,14 @@
   ],
   "committedIn": [],
   "status": {
-    "state": "open",
-    "comment": "",
-    "date": 1795166749093
+    "state": "implemented",
+    "comment": "The 4 hidden channels (state C) are per-pixel latents splatted with depth like colour (splat.vert vC, acc2), resolved and read by the net's taps; learned through the video rollouts. Per-pixel, not patch latents, as the idea prefers.",
+    "date": 1795380917335
   },
   "intrinsicValue": 0,
+  "cost": 4,
   "selfWeight": 1,
   "duration": 1,
   "costVariance": 0,
-  "valueVariance": 0,
-  "cost": 4
+  "valueVariance": 0
 }

@@ -14,14 +14,14 @@
   ],
   "committedIn": [],
   "status": {
-    "state": "partially",
-    "comment": "Realised as triangle taps (3 per level, rotated 60 deg per level) on mip levels with radius 1,2,4,8,16 px + exact self tap: 16 taps, 132 inputs, ~2.3k weights. Runs at 1.6 ms for 2x256^2 on the laptop iGPU. Training in progress.",
-    "date": 1795321975212
+    "state": "implemented",
+    "comment": "Triangle taps (3 per level) on 5 mip levels (1..16 px) + self: 132 inputs, layers 32-16-8 (4920 weights, stereo24/nice-net). Runs in fp16 at 6.3 ms for 2x512^2 on the Vega iGPU at 700 MHz (experiments c30bda7); one net step per netfps tick, holes pre-filled by push-pull so no multi-iteration spreading is needed.",
+    "date": 1795380917510
   },
   "intrinsicValue": 0,
+  "cost": 2,
   "selfWeight": 1,
   "duration": 1,
   "costVariance": 0,
-  "valueVariance": 0,
-  "cost": 2
+  "valueVariance": 0
 }
