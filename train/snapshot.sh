@@ -3,12 +3,12 @@
 # Starts a simulated, auto-rotating Monado (restarts one that is running), runs the app
 # 20 s per setting with WEIGHTS=runs/<name>/net, saves runs/<name>/app/<label>.png
 # (the left eye, exposed like the display). Default settings: as trained, slower
-# update (rate 0.11 ~ 10 fps training / 90 Hz), and a bit wild.
+# net updates (netfps 10), and a bit wild.
 set -euo pipefail
 cd "$(dirname "$0")"
 run=$(cd "$1" && pwd); shift
 settings=("$@")
-[[ ${#settings[@]} -gt 0 ]] || settings=("trained=" "slow=rate=0.11" "wild=wild=0.3")
+[[ ${#settings[@]} -gt 0 ]] || settings=("trained=" "net10=netfps=10" "wild=wild=0.3")
 root=$(cd .. && pwd)
 out=$run/app && mkdir -p "$out"
 
