@@ -38,5 +38,6 @@
   "selfWeight": 35,
   "duration": 1,
   "costVariance": 0,
-  "valueVariance": 0
+  "valueVariance": 0,
+  "cost": 5
 }
