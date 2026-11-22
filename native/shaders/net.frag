@@ -105,6 +105,15 @@ void main() {
         C = mix(C, t.c, take);
         need *= 1.0 - t.covered;
     }
+    // Former holes take the scene's depth and velocity (colour stays push-pull's).
+    if (valid == 0.0) {
+        float fade;
+        vec4 g = sceneAt(pc.target, p, fade);
+        if (fade > 0.0) {
+            A.w = g.w;
+            B.xyz = sceneFetch(pc.target, 1, p).xyz;
+        }
+    }
     float inv = A.w;
     float tau = u.step.y;
     if (tau == 0.0) {

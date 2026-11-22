@@ -11,10 +11,9 @@
 // Scene blend where the scene has geometry and the state has data (the runtime
 // analogue of training's "observe" blend): colour with u.mixing.x, depth, velocity and
 // certainty with u.mixing.z, both fading to 0 at GROUND_REACH field radii. In holes
-// the scene gives the depth (and velocity) outright, the colour only by the same gentle
-// blend, and a low certainty: the net fills in the look. Where the scene has no
-// geometry it is sky: depth at the `sky` distance, no colour, so the image's own
-// guesses there don't come close.
+// nothing happens here: net.frag fills them by push-pull (colour too), then gives them
+// the scene's depth and velocity. Where the scene has no geometry it is sky: depth at
+// the `sky` distance, no colour, so the image's own guesses there don't come close.
 //
 // Output B.w is the coverage (inverse depth > 0), so that the mip chain of A, B, C
 // is the hole-aware pyramid the net reads; certainty goes to its own image.
@@ -38,20 +37,17 @@ void main() {
     float certainty = hole ? 0.0 : clamp(a1.w, 0.0, 1.0);
     vec4 h = hole ? vec4(0.0) : a2 / w;
 
-    vec4 g = sceneFetch(pc.target, 0, p);
+    // Holes stay holes here (push-pull fills them in net.frag, which then takes the
+    // scene's depth): seeding them here would mark black pixels as covered.
+    float fade;
+    vec4 g = sceneAt(pc.target, p, fade);
     vec3 motion = sceneFetch(pc.target, 1, p).xyz;
-    float there = g.w > 0.0 ? 1.0 : 0.0;
-    float fade = there * clamp(1.0 - 1.0 / max(g.w, 1e-6) / (GROUND_REACH * fieldRadius()), 0.0, 1.0);
-    float alpha = fade * u.mixing.x;
-    // No geometry: the sky, a depth (and resting velocity) at u.mixing.y, no colour.
-    float sky = 1.0 - there;
-    g.w = mix(g.w, u.mixing.y, sky);
-    fade = max(fade, sky);
-    float depthAlpha = fade * u.mixing.z;
-    float geometry = hole && fade > 0.0 ? 1.0 : depthAlpha;
+    float sky = sceneFetch(pc.target, 0, p).w > 0.0 ? 0.0 : 1.0;
+    float alpha = hole ? 0.0 : fade * u.mixing.x * (1.0 - sky);
+    float depthAlpha = hole ? 0.0 : fade * u.mixing.z;
     a.rgb = mix(a.rgb, g.rgb, alpha);
-    a.w = mix(a.w, g.w, geometry);
-    velocity = mix(velocity, motion, geometry);
+    a.w = mix(a.w, g.w, depthAlpha);
+    velocity = mix(velocity, motion, depthAlpha);
     certainty = mix(certainty, 1.0, depthAlpha);
 
     float covered = a.w > 0.0 ? 1.0 : 0.0;

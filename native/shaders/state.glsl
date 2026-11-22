@@ -130,3 +130,16 @@ vec4 nextFetch(int eye, int image, ivec2 p) {
     }
     return vec4(0.0);
 }
+
+// The scene at p as (colour, inverse distance) with the sky filled in (no geometry:
+// no colour, inverse distance u.mixing.y), and its weight: 1 near, fading to 0 at
+// GROUND_REACH field radii; the sky counts fully.
+vec4 sceneAt(int eye, ivec2 p, out float fade) {
+    vec4 g = sceneFetch(eye, 0, p);
+    if (g.w <= 0.0) {
+        fade = 1.0;
+        return vec4(0.0, 0.0, 0.0, u.mixing.y);
+    }
+    fade = clamp(1.0 - 1.0 / g.w / (GROUND_REACH * fieldRadius()), 0.0, 1.0);
+    return g;
+}
