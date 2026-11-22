@@ -30,7 +30,7 @@ const int quad[6] = int[](0, 1, 2, 0, 2, 3);
 // 0 at and beyond the field radius, 1 at the player.
 float rise(vec2 center, vec2 player) {
     vec2 d = center - player;
-    float radius = u.city.z, field = fieldRadius();
+    float field = fieldRadius(), radius = SPREAD * field;
     float edge = exp(-field * field / (2.0 * radius * radius));
     float g = exp(-dot(d, d) / (2.0 * radius * radius));
     return max(g - edge, 0.0) / (1.0 - edge);

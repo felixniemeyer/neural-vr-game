@@ -15,11 +15,13 @@ fn hash(p: Vec3) -> f32 {
     h - h.floor()
 }
 
+/// The rise's gaussian width, as a fraction of the field radius (common.glsl SPREAD).
+const SPREAD: f32 = 0.45;
+
 pub struct City {
-    /// Cell size (m), maximum height (m), gaussian radius (m), blocks per side.
+    /// Cell size (m), maximum height (m), blocks per side.
     pub cell: f32,
     pub height: f32,
-    pub radius: f32,
     pub blocks: u32,
     /// The player's ground position (x, z): blocks rise around it.
     pub player: Vec2,
@@ -32,7 +34,7 @@ impl City {
         let d = (c + 0.5) * self.cell - self.player;
         // common.glsl fieldRadius(), scene.vert rise(): 0 at the field radius.
         let field = (self.blocks as f32 * 0.5 - 1.).max(1.) * self.cell;
-        let spread = 2. * self.radius * self.radius;
+        let spread = 2. * (SPREAD * field).powi(2);
         let edge = (-field * field / spread).exp();
         let rise = (((-d.dot(d) / spread).exp() - edge) / (1. - edge)).max(0.);
         let height = self.height * (0.25 + 0.75 * hash(c.extend(3.7))) * rise;
@@ -71,10 +73,11 @@ impl City {
     /// the push directions (for removing velocity into the walls).
     pub fn collide(&self, mut p: Vec3, radius: f32) -> (Vec3, Vec<Vec3>) {
         let mut normals = Vec::new();
-        // The 3x3 cells around p (blocks are smaller than a cell).
+        // The cells within reach of the sphere (blocks are smaller than a cell).
         let here = (Vec2::new(p.x, p.z) / self.cell).floor().as_ivec2();
-        for dy in -1..=1 {
-            for dx in -1..=1 {
+        let reach = 1 + (radius / self.cell).ceil() as i32;
+        for dy in -reach..=reach {
+            for dx in -reach..=reach {
                 let Some((lo, hi)) = self.block(here + IVec2::new(dx, dy)) else { continue };
                 let closest = p.clamp(lo, hi);
                 let out = p - closest;
@@ -106,7 +109,7 @@ mod tests {
 
     #[test]
     fn rays_hit_blocks_and_miss_the_sky() {
-        let city = City { cell: 4., height: 7., radius: 20., blocks: 24, player: Vec2::ZERO };
+        let city = City { cell: 4., height: 7., blocks: 24, player: Vec2::ZERO };
         let up = Vec3::new(0., 1., 0.);
         assert!(city.hit(Vec3::new(0., 30., 0.), up, 150.).is_none());
         // Looking down from above: the hit is a roof (or the street level is missed).

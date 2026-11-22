@@ -52,11 +52,10 @@ pub struct Settings {
     pub depth: f32,
     /// Distance (m) of the sky, where the scene has no geometry.
     pub sky: f32,
-    /// Blocks per side, cell size (m), maximum height (m), gaussian radius (m).
+    /// Blocks per side, cell size (m), maximum height (m).
     pub blocks: u32,
     pub cell: f32,
     pub height: f32,
-    pub radius: f32,
 }
 
 #[repr(C, align(16))]
@@ -672,7 +671,7 @@ impl World {
             net_run: rule.run,
             net_layers: rule.layers,
             net_taps: rule.taps,
-            city: [settings.cell, settings.height, settings.radius, settings.blocks as f32],
+            city: [settings.cell, settings.height, 0., settings.blocks as f32],
             // Per-second rates as this frame's blend weights (frame-rate independent).
             mixing: [1. - (-settings.color * dt).exp(), 1. / settings.sky.max(1.), 1. - (-settings.depth * dt).exp(), 0.],
             player: {

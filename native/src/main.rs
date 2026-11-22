@@ -24,8 +24,6 @@ use world::{EyeCamera, Settings, World, EYES};
 const STEREO: xr::ViewConfigurationType = xr::ViewConfigurationType::PRIMARY_STEREO;
 /// Where the player starts (m above the ground); only the zip moves them.
 const START_HEIGHT: f32 = 7.5;
-/// The player's collision radius around the head (m).
-const RADIUS: f32 = 0.3;
 /// ZIP_ANYWHERE: how far along the ray the anchor goes when it misses the blocks (m).
 const MISS_DISTANCE: f32 = 40.;
 const BLEND: xr::EnvironmentBlendMode = xr::EnvironmentBlendMode::OPAQUE;
@@ -319,7 +317,7 @@ impl Zip {
         self.yaw += (look - self.yaw) * follow;
     }
 
-    /// `settings`: pull (m/s²), drag (1/s); `eye` the tracked eye centre after the head
+    /// pull (m/s²), drag (1/s), body: the collision sphere's radius (m); `eye` the tracked eye centre after the head
     /// scaling (tracking space).
     #[allow(clippy::too_many_arguments)]
     fn update(
@@ -331,7 +329,7 @@ impl Zip {
         head: Vec3,
         eye: Vec3,
         city: &city::City,
-        [pull, drag]: [f32; 2],
+        [pull, drag, body]: [f32; 3],
         auto: Option<f32>,
     ) {
         let dt = (seconds - self.last.replace(seconds).unwrap_or(seconds)).clamp(0., 0.1);
@@ -368,7 +366,7 @@ impl Zip {
         }
         self.position += self.velocity * dt;
         // Keep the head out of the blocks: push it out, and drop the velocity into the walls.
-        let (free, normals) = city.collide(self.position + eye, RADIUS);
+        let (free, normals) = city.collide(self.position + eye, body);
         self.position = free - eye;
         for normal in normals {
             self.velocity -= normal * self.velocity.dot(normal).min(0.);
@@ -579,12 +577,13 @@ fn run(shaders: &Path) -> Result<()> {
         .fader_with("blocks", 4., 64., initial("blocks", 24.), 0)
         .fader_with("cell", 1., 10., initial("cell", 4.), 1)
         .fader_with("height", 1., 25., initial("height", 7.), 1)
-        .fader_with("radius", 3., 100., initial("radius", 20.), 1)
         .section("motion")
         .switch("auto", initial("auto", 0.) > 0.5)
         .fader_with("speed", 0., 15., initial("speed", 3.), 1)
         .fader_with("pull", 0., 60., initial("pull", 25.), 1)
         .fader_with("drag", 0., 6., initial("drag", 2.5), 2)
+        // The player's collision sphere around the head (radius, m).
+        .fader_with("body", 0.05, 5., initial("body", 0.3), 2)
         // exposure off: the state's colour shown 1:1 (a trained net stays in the video's
         // range); on: automatic per-channel exposure (mid, clip, black, tint).
         .section("display")
@@ -676,7 +675,6 @@ fn run(shaders: &Path) -> Result<()> {
         let city = city::City {
             cell: controls.get("cell"),
             height: controls.get("height"),
-            radius: controls.get("radius"),
             blocks: controls.get("blocks").round().max(1.) as u32,
             player: {
                 let p = zip.position + zip.turn() * eye;
@@ -684,7 +682,7 @@ fn run(shaders: &Path) -> Result<()> {
             },
         };
         let held = hands.sync(&session, &space, time)?;
-        let motion = [controls.get("pull"), controls.get("drag")];
+        let motion = [controls.get("pull"), controls.get("drag"), controls.get("body")];
         zip.update(&held, &hands, &session, seconds, head, eye, &city, motion, controls.on("auto").then(|| controls.get("speed")));
         let (origin, turn) = (zip.position, zip.turn());
         let cameras = [camera(&views[0], head, origin, turn), camera(&views[1], head, origin, turn)];
@@ -698,7 +696,6 @@ fn run(shaders: &Path) -> Result<()> {
             blocks: controls.get("blocks").round().max(1.) as u32,
             cell: controls.get("cell"),
             height: controls.get("height"),
-            radius: controls.get("radius"),
         };
         let mut indices = [0; EYES];
         for (swapchain, index) in swapchains.iter_mut().zip(&mut indices) {

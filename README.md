@@ -78,10 +78,10 @@ Live controls (av-controls panel `sunk-city`, in tabs: net, scene, city, motion,
 | `wild` | 0 | Trained → randomly morphing weights (the distortion knob) |
 | `timescale`, `netfps` | 1, 24 | How fast the net's world runs (1 = real time, as in the footage); net updates per second. Between updates frames only reproject and fill holes; each update covers the (scaled) time since the last one |
 | `blocks`   | 24      | Blocks per side around the player |
-| `cell`, `height` | 4, 7 | Grid cell size and maximum block height (m) |
-| `radius`   | 20      | Gaussian falloff (m): blocks grow out of the ground (from 0 at the field's edge) as you approach, turning from the ground colour to their own, and sink as you leave |
+| `cell`, `height` | 4, 7 | Grid cell size and maximum block height (m). Blocks grow out of the ground (from 0 at the field's edge, `blocks`/2 cells away) as you approach, turning from the ground colour to their own, and sink as you leave |
 | `auto` | off | Autopilot: wander through the city at about 0.9 of the block height (± 0.9 m), looking around (also `FADERS=auto=1`); `speed` its speed (m/s, default 3) |
 | `pull`, `drag` | 25, 2.5 | Zip: acceleration toward the anchored block (m/s²) and velocity damping (1/s); top speed ≈ pull / drag |
+| `body` | 0.3 | The player's collision sphere around the head (radius, m) |
 | `exposure` | off | Off: the state's colour is shown 1:1. On: automatic per-channel exposure with the faders below |
 | `mid`, `clip`, `black`, `tint` | 0.5, 0.03, 0.05, 0.3 | Display auto-exposure, per channel: 80th percentile → `mid`, brightest `clip` fraction clips, darkest `black` fraction is 0; `tint` pulls the channels' mappings together (keeps some colour cast) |
 
