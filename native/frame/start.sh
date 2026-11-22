@@ -6,6 +6,8 @@ set -eu
 cd "$(dirname "$0")"
 export EYE_SIZE="${EYE_SIZE:-384}"
 export MOVE="${MOVE:-1}"
+# A trained net packed by NET=<export> build-frame.sh; without one the weights are random.
+[ -z "${WEIGHTS:-}" ] && [ -f net/net.json ] && export WEIGHTS=net
 # Live faders: point this at the av-controls broker on your PC, e.g.
 # export CONTROLS="${CONTROLS:-wss://192.168.1.20:8080}"
 exec ./sunk-city > "$HOME/sunk-city.log" 2>&1

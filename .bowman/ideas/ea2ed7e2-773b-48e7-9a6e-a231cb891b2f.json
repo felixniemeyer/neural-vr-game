@@ -23,9 +23,9 @@
   ],
   "committedIn": [],
   "status": {
-    "state": "partially",
-    "comment": "Runs on the laptop Vega iGPU at 512 px/eye via Monado (dev.sh). Branch experiments, c30bda7 + ada699e: net in fp16 packed math (needs shaderFloat16, Adreno has it), weights as packed halves in a uniform buffer, all passes compiled per eye (spec constants) -> net run 15.2 -> 6.3 ms, splat 5.8 -> 5.3, frame ~21 -> 14.5 ms (GPU pinned at 700 MHz manual DPM). fp16 error on real inputs: mean 9e-5 of tanh outputs. Log now prints driver shader stats (works on Turnip). Frame build still untested on device.",
-    "date": 1795379716639
+    "state": "human-dependent",
+    "comment": "iGPU: runs at 512 px/eye, net run 6.3 ms after fp16 + per-eye pipelines (c30bda7, ada699e). Frame: package ready — `NET=nice-net native/build-frame.sh` builds build/frame/sunk-city.tar.gz (aarch64, glibc 2.31) with the trained net packed (start.sh sets WEIGHTS=net; before, the Frame package would have run random weights). Human step: upload build/frame/sunk-city/ with the SteamOS Devkit Client (start command ./start.sh, Steam Linux Runtime 4.0 ARM64), run, and send ~/sunk-city.log (GPU ms per pass, `stats` lines, whether shaderFloat16 is present).",
+    "date": 1795380448284
   },
   "intrinsicValue": 0,
   "selfWeight": 70,

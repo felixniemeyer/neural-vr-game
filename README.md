@@ -37,7 +37,7 @@ rustup target add aarch64-unknown-linux-gnu
 cargo install cargo-zigbuild --version 0.21.8 --locked   # newer versions need rustc >= 1.88
 uv tool install ziglang                                   # or any `zig` on PATH
 
-native/build-frame.sh    # → build/frame/sunk-city/ (+ .tar.gz)
+NET=nice-net native/build-frame.sh    # → build/frame/sunk-city/ (+ .tar.gz); NET packs a trained net
 ```
 
 To run it on the headset, upload `build/frame/sunk-city/` with the SteamOS Devkit Client:
