@@ -13,14 +13,14 @@
   ],
   "committedIn": [],
   "status": {
-    "state": "open",
-    "comment": "",
-    "date": 1795165953146
+    "state": "human-dependent",
+    "comment": "Why now: on the laptop (15 GB RAM, swap 84% used) only ONE training fits at a time (earlyoom killed parallel runs twice on 2026-11-22); deep24 runs at ~5.5 s/it on CPU (4000 its ~ 6 h). Needed from Felix: SSH host/user for the 4060 Ti machine (key auth), with uv installed and CUDA drivers. Then I: (1) rsync train/ code + data/prepared/256to128-15min-native (2.6 GB) + nice-net, (2) add a train.device option (cuda) to train.py and verify on that GPU, (3) run deep24 / dropout / corridor A/Bs there in parallel, (4) rsync nets back. Exact ask: `ssh <user>@<host>` that works from this laptop.",
+    "date": 1795380812453
   },
   "intrinsicValue": 0,
+  "cost": 2,
   "selfWeight": 1,
   "duration": 1,
   "costVariance": 0,
-  "valueVariance": 0,
-  "cost": 2
+  "valueVariance": 0
 }
