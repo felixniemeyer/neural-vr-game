@@ -20,9 +20,9 @@
   ],
   "committedIn": [],
   "status": {
-    "state": "open",
-    "comment": "",
-    "date": 1795224829363
+    "state": "partially",
+    "comment": "train/ pipeline (commit eb0b9d7): frames.sh, prepare.py (Depth Anything V2 Small at 252, RAFT small at 256, robust reprojection camera fit with translation prior, object velocity as residual flow), train.py real-loop rollouts t->t+1 with observe blend. Warp-back and pseudo-stereo not done yet.",
+    "date": 1795321974564
   },
   "intrinsicValue": 0,
   "cost": 8,

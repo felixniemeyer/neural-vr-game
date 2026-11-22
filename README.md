@@ -1,8 +1,8 @@
 # Sunk City
 
 An artsy VR experiment for the Steam Frame. Every frame, the previous frame is reprojected
-into the new head pose, and a tiny per-pixel neural net fills the holes and keeps the
-patterns moving. The only geometry is a field of simple skyscraper blocks. They are
+into the new head pose, and a tiny per-pixel neural net, trained on video, fills the holes
+and keeps the image alive. The only geometry is a field of simple skyscraper blocks. They are
 blended into the image before the net runs, so the raw render is never shown; everything
 else is the image's own memory.
 
@@ -58,7 +58,9 @@ Environment variables (on the Frame, set them in `native/frame/start.sh`):
 | `MOVE`     | 0 (Frame: 1, `dev.sh`: 4) | Head translation scale: 0 rotation only, 1 real, more = giant steps |
 | `VIEW`     | rgb     | Debug view: `rgb`, `certainty`, `depth`, `velocity`, `hidden`, `scene` |
 | `CONTROLS` | wss://localhost:8080 (`dev.sh`: ws://localhost:8090) | av-controls broker; on the Frame, use your PC's IP |
+| `WEIGHTS`  | unset   | A trained net, e.g. `train/runs/tiny/net`; unset = random weights |
 | `SNAPSHOT` | unset   | Write the left eye's colour to this `.ppm` every 300 frames |
+| `DUMP`, `DUMP_FRAME` | unset, 60 | Write eye 0's net input and output once (for `train/parity.py`) |
 | `OVERSCAN` | 1.15    | Field-of-view margin for the compositor's reprojection |
 | `VALIDATE` | unset   | 1 = Vulkan validation layer |
 
@@ -66,14 +68,12 @@ Live faders (av-controls panel `sunk-city`). Without a broker these defaults app
 
 | Fader      | Default | Meaning |
 |------------|---------|---------|
-| `color`, `depth`, `identity` | 0, 0.1, 0.1 | How strongly the rendered blocks set colour, depth (+ velocity) and the hidden state (from the block id) per frame |
-| `noise`, `seeds` | 1, 1 | Strength of the (smooth) hidden-state noise, frequency of seed kicks |
-| `reach`, `alive` | 16, 0.3 | Net: outermost of its 12 spiral taps (px); update rate kept on settled pixels (the world never settles) |
+| `color`, `depth`, `identity` | 0.2, 0.1, 0.1 | How strongly the rendered blocks set colour, depth (+ velocity) and the hidden state (from the block id) per frame |
+| `wild`, `rate` | 0, 1 | Trained → randomly morphing weights (the distortion knob); scale of the net's update per frame (1 = as trained, at 10 fps) |
 | `blocks`   | 24      | Blocks per side around the player |
 | `cell`, `height` | 4, 7 | Grid cell size and maximum block height (m) |
 | `radius`   | 20      | Gaussian falloff (m): blocks rise as you approach and sink as you leave |
 | `altitude` | 7.5     | Player height (m) |
-| `near`, `far` | 10, 80 | Depth range (m) of the net's own geometry; closer than `near` is pushed away, so you can't fly into it |
 | `mid`, `clip`, `black`, `tint` | 0.5, 0.03, 0.05, 0.3 | Display auto-exposure, per channel: 80th percentile → `mid`, brightest `clip` fraction clips, darkest `black` fraction is 0; `tint` pulls the channels' mappings together (keeps some colour cast) |
 
 ## Layout
@@ -83,10 +83,34 @@ Live faders (av-controls panel `sunk-city`). Without a broker these defaults app
 - `native/shaders/`:
   - `scene.*` renders the blocks
   - `splat.*` reprojects (2×2 tent splat)
-  - `resolve.frag` normalises the splat and blends in the blocks
-  - `net.frag` is the tiny net (12 spiral taps, 16 hidden, all `mat4`)
+  - `resolve.frag` normalises the splat and blends in the blocks; its mips are the
+    hole-aware pyramid
+  - `net.frag` is the trained net: holes filled from the pyramid, then triangle taps on
+    5 mip levels, layers as in `net.json`
+- `train/`: training on video (below)
 - `native/build.sh`, `native/build-frame.sh`: desktop and Steam Frame builds
 - `experiments/`: older experiments (submodule), not needed
+
+## Training
+
+The net is trained on video with a torch copy of the splat, resolve and net
+(`train/sunk/model.py`); `train/parity.py` checks the GPU against it. Needs
+[uv](https://docs.astral.sh/uv/) and ffmpeg; runs on the CPU.
+
+```sh
+cd train
+ln -s /path/to/your/videos/*.mp4 videos/      # any footage
+SIZE=256 ./frames.sh                           # crop + scale to data/frames/256/
+uv run new.py tiny                             # runs/tiny/config.toml: all settings
+uv run prepare.py runs/tiny                    # depth, flow, camera motion -> data/prepared/
+uv run view.py data/prepared/<name>/chunk_000.npz   # colour | depth | flow | object motion
+uv run train.py runs/tiny                      # previews in runs/tiny/preview/, net in runs/tiny/net/
+WEIGHTS=train/runs/tiny/net ./dev.sh           # (from the repo root)
+```
+
+Each project folder holds its `config.toml` (data, net and training settings, e.g.
+`uv run new.py big --net.hidden 32,16 --train.turn 0.5`); projects with the same
+`[data]` settings share their preprocessing.
 
 To work on the av-controls Rust receiver locally, point cargo at your checkout in
 `native/.cargo/config.toml` (git-ignored):

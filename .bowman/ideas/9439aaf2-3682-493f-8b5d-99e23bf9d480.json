@@ -14,9 +14,9 @@
   ],
   "committedIn": [],
   "status": {
-    "state": "open",
-    "comment": "",
-    "date": 1795165917234
+    "state": "partially",
+    "comment": "Hole-aware mip pyramid (GPU blits of premultiplied resolved state) with push-pull fill of holes, then the trained per-pixel net reads triangle taps on 5 mip levels. Implemented in torch + net.frag, parity-checked (commit e6df8e5). No per-level learned conv yet.",
+    "date": 1795321974944
   },
   "intrinsicValue": 0,
   "selfWeight": 1,

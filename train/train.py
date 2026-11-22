@@ -192,7 +192,7 @@ def main():
     print(f"net: {net.inputs} inputs, layers {[l.out_channels for l in net.layers]}, "
           f"{sum(p.numel() for p in net.parameters())} weights, {len(net.taps) + 1} taps")
     rng = np.random.default_rng(start)
-    fixed = data.batch(4, np.random.default_rng(1234))
+    fixed = data.batch(8, np.random.default_rng(1234))
     (project / "preview").mkdir(exist_ok=True)
     log = open(project / "log.txt", "a")
     began, total = time.time(), 0.0
@@ -212,7 +212,13 @@ def main():
             began, total = time.time(), 0.0
         if it % config.train.preview == 0 or it == config.train.iters:
             with torch.no_grad():
-                _, frames = rollout(net, data, fixed, 0.0, record=True)
+                val, frames = rollout(net, data, fixed, 0.0, record=True)
+                change, net.max_change = net.max_change, 0.0
+                base, _ = rollout(net, data, fixed, 0.0)  # push-pull fill only
+                net.max_change = change
+            line = f"{it} free-running val {val.item():.4f} (push-pull only {base.item():.4f})"
+            print(line, flush=True)
+            log.write(line + "\n")
             preview(project / "preview" / f"{it:06d}.png", frames, config.net.near)
             net.export(project / "net", config)
             torch.save({"net": net.state_dict(), "opt": opt.state_dict(), "sched": sched.state_dict(), "iter": it},

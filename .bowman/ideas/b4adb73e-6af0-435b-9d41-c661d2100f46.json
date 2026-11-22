@@ -14,9 +14,9 @@
   ],
   "committedIn": [],
   "status": {
-    "state": "open",
-    "comment": "",
-    "date": 1795165917141
+    "state": "partially",
+    "comment": "Realised as triangle taps (3 per level, rotated 60 deg per level) on mip levels with radius 1,2,4,8,16 px + exact self tap: 16 taps, 132 inputs, ~2.3k weights. Runs at 1.6 ms for 2x256^2 on the laptop iGPU. Training in progress.",
+    "date": 1795321975212
   },
   "intrinsicValue": 0,
   "selfWeight": 1,

@@ -7,7 +7,16 @@
   "tags": [
     "training"
   ],
-  "supportingConnections": [],
+  "supportingConnections": [
+    {
+      "ideaId": "ddb3c27f-74c3-4cd6-bb60-c8435de31bf1",
+      "relativePosition": [
+        -3.75,
+        0.01
+      ],
+      "weight": 1
+    }
+  ],
   "supportedIdeas": [
     "069be3ea-befd-4613-b5d1-d2af9c76e2f4"
   ],
