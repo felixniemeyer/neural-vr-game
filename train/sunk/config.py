@@ -43,6 +43,7 @@ class Net:
 class Train:
     crop: int = 32              # training crop (px at data.size); the net is per pixel
     steps: int = 8              # rollout length (frames, BPTT)
+    horizon: int = 8            # frames a sample follows its clip, continuing from its own state
     batch: int = 16
     lr: float = 2e-3
     iters: int = 20000

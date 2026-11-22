@@ -29,6 +29,7 @@ class Footage:
         self.config = config
         self.paths, self.chunks = [], []
         self.starts = []  # (chunk, t0) with train.steps usable pairs ahead
+        self.ahead = []   # per chunk: usable pairs from each frame on (until a cut)
         size = config.data.size
         self.focal = size / 2 / np.tan(np.radians(config.data.fov) / 2)
         self.rays = make_rays(size, size, config.data.fov)
@@ -42,15 +43,31 @@ class Footage:
                 continue
             z = np.load(path)
             chunk = {k: z[k] for k in ("rgb", "disp", "vel", "R", "t", "ok")}
-            run = np.convolve(chunk["ok"].astype(int), np.ones(steps, int), "valid")
-            self.starts += [(len(self.chunks), t) for t in np.nonzero(run == steps)[0]]
+            ahead = np.zeros(len(chunk["ok"]) + 1, int)
+            for t in range(len(chunk["ok"]) - 1, -1, -1):
+                ahead[t] = (ahead[t + 1] + 1) * bool(chunk["ok"][t])
+            self.starts += [(len(self.chunks), t) for t in np.nonzero(ahead >= steps)[0]]
+            self.ahead.append(ahead)
             self.paths.append(path)
             self.chunks.append(chunk)
             print(f"{len(self.chunks)} chunks, {len(self.starts)} rollout starts", flush=True)
 
-    def batch(self, n, rng):
+    def pick(self, rng, steps):
+        """A random (chunk, t0, crop x, crop y) with `steps` usable pairs ahead."""
+        crop, size = self.config.train.crop, self.config.data.size
+        while True:
+            c, t0 = self.starts[rng.integers(len(self.starts))]
+            if self.ahead[c][t0] >= steps:
+                return (c, t0, *rng.integers(size - crop + 1, size=2))
+
+    def usable(self, c, t0, steps):
+        return self.ahead[c][t0] >= steps
+
+    def batch(self, n, rng, steps=None, picks=None):
         """Frames [B, K+1, ...] as seen by the (virtual) cameras, their motion [B, K],
         crop rays [B, crop, crop, 3], origins, and where the truth is known [B, K+1].
+        K = steps (default train.steps); picks: (chunk, t0, crop x, crop y) per sample,
+        default random.
 
         Head-turn augmentation (train.turn): the virtual camera k is the real one turned
         by D_k = rotation(theta * sin(pi k / K)) about a random axis in the image plane,
@@ -60,13 +77,12 @@ class Footage:
         unchanged), unknown outside the real frame (mask).
         """
         cfg = self.config
-        k, crop, size, near = cfg.train.steps, cfg.train.crop, cfg.data.size, cfg.net.near
+        k, crop, size, near = steps or cfg.train.steps, cfg.train.crop, cfg.data.size, cfg.net.near
+        picks = picks or [self.pick(rng, k) for _ in range(n)]
         out = {key: [] for key in ("rgb", "inv", "vel", "R", "t", "rays", "origin", "mask")}
         radial = self.rays.norm(dim=-1)
-        for i in rng.integers(len(self.starts), size=n):
-            c, t0 = self.starts[i]
+        for c, t0, ox, oy in picks:
             chunk = self.chunks[c]
-            ox, oy = rng.integers(size - crop + 1, size=2)
             rgb = torch.tensor(chunk["rgb"][t0:t0 + k + 1]).float() / 255
             # disp is planar (1 / z in near units); the state holds radial 1 / distance.
             inv = torch.tensor(chunk["disp"][t0:t0 + k + 1].astype(np.float32)) / near / radial
@@ -125,12 +141,17 @@ def gradients(x):
     return x[..., 1:, :] - x[..., :-1, :], x[..., :, 1:] - x[..., :, :-1]
 
 
-def rollout(net, data, batch, observe, record=False):
+def rollout(net, data, batch, observe, record=False, start=None):
+    """Loss over the batch's steps; start: initial states [B, C, H, W], None where the
+    rollout starts from the real frame. Returns (loss, recorded frames, final state)."""
     cfg = data.config
     near = cfg.net.near
+    steps = batch["R"].shape[1]
     state = truth_state(batch, 0, net.channels)
+    if start is not None:
+        state = torch.stack([s if s is not None else f for s, f in zip(start, state)])
     loss, frames = 0.0, []
-    for k in range(cfg.train.steps):
+    for k in range(steps):
         resolved, hole = splat(state, batch["R"][:, k], batch["t"][:, k], batch["rays"], batch["origin"],
                                data.focal, cfg.data.size)
         pred = net(resolved)
@@ -152,7 +173,7 @@ def rollout(net, data, batch, observe, record=False):
                 return F.avg_pool2d(g, 8, stride=4)
             window = F.avg_pool2d(known[..., :-1, :-1], 8, stride=4) > 0.99
             step_loss = step_loss + cfg.train.texture * ((energy(image) - energy(target)).abs() * window).mean()
-        loss = loss + step_loss / cfg.train.steps
+        loss = loss + step_loss / steps
         if record:
             frames.append((resolved, hole, pred, truth))
         alpha = observe * torch.rand(len(pred), 1, 1, 1) * known
@@ -160,7 +181,35 @@ def rollout(net, data, batch, observe, record=False):
         for channels in (RGB, slice(INV, INV + 1), VEL):
             state[:, channels] = pred[:, channels] * (1 - alpha) + truth[:, channels] * alpha
         state[:, CERT:CERT + 1] = pred[:, CERT:CERT + 1] * (1 - alpha) + alpha
-    return loss, frames
+    return loss, frames, state
+
+
+class Streams:
+    """Long rollouts with short backprop (truncated BPTT): each batch sample follows its
+    clip for up to train.horizon frames. Every iteration continues where the previous
+    one ended, from the net's own (detached) state, same crop, so the net learns to
+    keep its own old states good, not only states fresh from a real frame. A stream
+    restarts from a real frame at a cut, the end of its clip, or after horizon frames."""
+
+    def __init__(self, data, n):
+        self.data, self.n = data, n
+        self.picks, self.states, self.ages = [None] * n, [None] * n, [0] * n
+
+    def batch(self, rng):
+        steps, horizon = self.data.config.train.steps, self.data.config.train.horizon
+        for i in range(self.n):
+            p = self.picks[i]
+            if p is None or self.ages[i] + steps > horizon or not self.data.usable(p[0], p[1], steps):
+                self.picks[i], self.states[i], self.ages[i] = self.data.pick(rng, steps), None, 0
+        return self.data.batch(self.n, rng, picks=self.picks), self.states
+
+    def advance(self, final):
+        steps = self.data.config.train.steps
+        for i in range(self.n):
+            c, t0, ox, oy = self.picks[i]
+            self.picks[i] = (c, t0 + steps, ox, oy)
+            self.states[i] = final[i].detach()
+            self.ages[i] += steps
 
 
 def preview(path, frames, near, scale=4):
@@ -208,11 +257,16 @@ def main():
           f"{sum(p.numel() for p in net.parameters())} weights, {len(net.taps) + 1} taps")
     rng = np.random.default_rng(start)
     fixed = data.batch(8, np.random.default_rng(1234))
+    long = config.train.horizon
+    fixed_long = data.batch(8, np.random.default_rng(1234), steps=long) if long > config.train.steps else None
+    streams = Streams(data, config.train.batch)
     (project / "preview").mkdir(exist_ok=True)
     log = open(project / "log.txt", "a")
     began, total = time.time(), 0.0
     for it in range(start + 1, config.train.iters + 1):
-        loss, _ = rollout(net, data, data.batch(config.train.batch, rng), config.train.observe)
+        batch, start = streams.batch(rng)
+        loss, _, final = rollout(net, data, batch, config.train.observe, start=start)
+        streams.advance(final)
         opt.zero_grad()
         loss.backward()
         torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
@@ -228,11 +282,15 @@ def main():
         if it % config.train.preview == 0 or it == config.train.iters:
             data.refresh()
             with torch.no_grad():
-                val, frames = rollout(net, data, fixed, 0.0, record=True)
+                val, frames, _ = rollout(net, data, fixed, 0.0, record=True)
                 change, net.max_change = net.max_change, 0.0
-                base, _ = rollout(net, data, fixed, 0.0)  # push-pull fill only
+                base, _, _ = rollout(net, data, fixed, 0.0)  # push-pull fill only
+                long_base = rollout(net, data, fixed_long, 0.0)[0].item() if fixed_long else 0
                 net.max_change = change
+                long_val = rollout(net, data, fixed_long, 0.0)[0].item() if fixed_long else 0
             line = f"{it} free-running val {val.item():.4f} (push-pull only {base.item():.4f})"
+            if fixed_long:
+                line += f", over {long} frames {long_val:.4f} (push-pull only {long_base:.4f})"
             print(line, flush=True)
             log.write(line + "\n")
             preview(project / "preview" / f"{it:06d}.png", frames, config.net.near)
