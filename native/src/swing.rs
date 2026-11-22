@@ -9,6 +9,16 @@ use glam::Vec3;
 pub const GRAVITY: f32 = 9.81;
 /// Shortest rope (m): reeling in stops here.
 pub const SHORTEST: f32 = 1.5;
+/// Arm pulls: rope shortened per metre the hand moves away from the anchor.
+pub const ARM: f32 = 2.;
+/// The most speed one frame's arm pull adds (m/s).
+pub const MAX_PULL: f32 = 6.;
+
+/// How far the hand moved away from the anchor (m, 0 when it moved toward it): from
+/// `last` to `now` (both relative to the head), the anchor in direction `to_anchor`.
+pub fn pulled(last: Vec3, now: Vec3, to_anchor: Vec3) -> f32 {
+    (last - now).dot(to_anchor.normalize_or_zero()).max(0.)
+}
 
 /// Hold `player` (moving at `velocity`) within `length` of `anchor`: the corrected
 /// position and velocity.
@@ -47,6 +57,14 @@ mod tests {
         // at about sqrt(2 g 10 m) = 14 m/s, and never leaves the rope's sphere.
         assert!(lowest < 10.6, "lowest {lowest}");
         assert!(max_speed > 11. && max_speed < 14.5, "speed {max_speed}");
+    }
+
+    #[test]
+    fn pulling_the_arm_back_counts_reaching_out_does_not() {
+        let up = Vec3::Y * 10.;
+        assert!((pulled(Vec3::new(0., 0.5, 0.), Vec3::new(0., 0.2, 0.), up) - 0.3).abs() < 1e-6);
+        assert_eq!(pulled(Vec3::new(0., 0.2, 0.), Vec3::new(0., 0.5, 0.), up), 0.);
+        assert_eq!(pulled(Vec3::ZERO, Vec3::X, up), 0.);
     }
 
     #[test]

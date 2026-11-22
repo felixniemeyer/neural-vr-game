@@ -83,7 +83,7 @@ Live controls (av-controls panel `sunk-city`, in tabs: net, scene, city, motion,
 | `cell`, `height` | 4, 7 | Grid cell size and maximum block height (m). Blocks grow out of the ground (from 0 at the field's edge, `blocks`/2 cells away) as you approach, turning from the ground colour to their own, and sink as you leave |
 | `auto` | off | Autopilot: wander through the city at about 0.9 of the block height (± 0.9 m), looking around (also `FADERS=auto=1`); `speed` its speed (m/s, default 3) |
 | `pull`, `drag` | 25, 2.5 | Zip: acceleration toward the anchored block (m/s²) and velocity damping (1/s); top speed ≈ pull / drag |
-| `swing`, `reel` | off, 2 | Swing instead of zip: the trigger holds a rope as long as the distance to the anchor, reeling in at `reel` m/s (down to 1.5 m); gravity on, so you swing like a pendulum and fly on when you let go (lower `drag` for longer flights) |
+| `swing`, `reel` | off, 2 | Swing instead of zip: the trigger holds a rope as long as the distance to the anchor, reeling in at `reel` m/s (down to 1.5 m); pulling the controller back (away from the anchor) pulls you in at twice that; gravity on, so you swing like a pendulum and fly on when you let go (lower `drag` for longer flights) |
 | `body` | 0.3 | The player's collision sphere around the head (radius, m) |
 | `brake` | 1.5 | Braking distance (m) to the net's own geometry: each frame a 32 px wide mip of both eyes' depth is read back as points, and motion toward a point within `body` + `brake` fades out (0 = off) |
 | `exposure` | off | Off: the state's colour is shown 1:1. On: automatic per-channel exposure with the faders below |

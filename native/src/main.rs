@@ -342,8 +342,10 @@ struct Zip {
     velocity: Vec3,
     yaw: f32,
     anchors: [Option<Vec3>; 2],
-    /// Swing mode: each anchor's rope length (m).
+    /// Swing mode: each anchor's rope length (m), and each hand's last position relative
+    /// to the head (world orientation) for arm pulls.
     ropes: [f32; 2],
+    hands: [Option<Vec3>; 2],
     was_pressed: [bool; 2],
     last: Option<f32>,
     anywhere: bool,
@@ -413,6 +415,8 @@ impl Zip {
             if !hand.pressed {
                 self.anchors[i] = None;
             }
+            let at = hand.ray.map(|(from, _)| self.turn() * (from - head));
+            self.hands[i] = if self.anchors[i].is_some() { self.hands[i].or(at) } else { None };
             self.was_pressed[i] = hand.pressed;
         }
         let player = self.position + eye;
@@ -420,10 +424,22 @@ impl Zip {
             // Swing: gravity, and the ropes reel in at `reel` m/s (applied after the move).
             Some(reel) if auto.is_none() => {
                 self.velocity.y -= swing::GRAVITY * dt;
-                for (rope, anchor) in self.ropes.iter_mut().zip(&self.anchors) {
-                    if anchor.is_some() {
-                        *rope = (*rope - reel * dt).max(swing::SHORTEST);
+                for i in 0..2 {
+                    let Some(anchor) = self.anchors[i] else { continue };
+                    // Arm pulls: the hand moving away from the anchor (relative to the
+                    // head) shortens the rope by ARM times that, and a taut rope pulls
+                    // the player in at that speed.
+                    let hand = held[i].ray.map(|(from, _)| self.turn() * (from - head));
+                    let pulled = match (hand, self.hands[i]) {
+                        (Some(now), Some(last)) => swing::pulled(last, now, anchor - player),
+                        _ => 0.,
+                    };
+                    let shorter = reel * dt + swing::ARM * pulled;
+                    if player.distance(anchor) >= self.ropes[i] - 0.05 && dt > 0. {
+                        self.velocity += (anchor - player).normalize_or_zero() * (swing::ARM * pulled / dt).min(swing::MAX_PULL);
                     }
+                    self.ropes[i] = (self.ropes[i] - shorter).max(swing::SHORTEST);
+                    self.hands[i] = hand;
                 }
             }
             _ => {
