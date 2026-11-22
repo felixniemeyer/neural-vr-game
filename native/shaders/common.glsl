@@ -14,7 +14,7 @@ layout(set = 0, binding = 0) uniform Frame {
     vec4 netLayers[4]; // per layer: inputs, outputs, offset into weights (vec4s), 0
     vec4 netTaps[32];  // per tap: mip level, dx, dy (px, y down), 0
     vec4 city;       // cell size m, max height m, gaussian radius m, blocks per side
-    vec4 mixing;     // scene alpha for colour, for identity (hidden), for depth + velocity; 0
+    vec4 mixing;     // this frame's blend toward the scene: colour, 0, depth + velocity + certainty, 0
     vec4 player;     // ground position x, z now (xy) and in the previous frame (zw)
     vec4 tone[3];    // display exposure per channel: pow(max(rgb * tone[0] + tone[1], 0), tone[2])
 } u;
@@ -36,6 +36,13 @@ float hash(vec3 p) {
     p = fract(p * vec3(0.1031, 0.1030, 0.0973));
     p += dot(p, p.yxz + 33.33);
     return fract((p.x + p.y) * p.z);
+}
+
+// The block field: blocks stand on cells within this distance of the player (m); the
+// ground plate and the scene's influence reach to GROUND_REACH times it.
+const float GROUND_REACH = 8.0;
+float fieldRadius() {
+    return max(u.city.w * 0.5 - 1.0, 1.0) * u.city.x;
 }
 
 vec3 hash3(vec3 p) {

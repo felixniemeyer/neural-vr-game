@@ -30,8 +30,10 @@ const DEPTH: vk::Format = vk::Format::D32_SFLOAT;
 const STATES: usize = 3;
 /// Splat accumulators per eye (the three state images + the weight).
 const ACCS: usize = 4;
+/// Scene images per eye: (colour, inverse distance), (world velocity, 0).
+const SCENES: usize = 2;
 /// prev state, accumulators, resolved state, certainty, new state, scene (per eye)
-const SAMPLED_BINDINGS: u32 = (EYES * (STATES + ACCS + STATES + 1 + STATES + 1)) as u32;
+const SAMPLED_BINDINGS: u32 = (EYES * (STATES + ACCS + STATES + 1 + STATES + SCENES)) as u32;
 const WEIGHTS_BINDING: u32 = SAMPLED_BINDINGS + 1;
 /// GPU timestamps per frame: start, after scene, splat, resolve, net, display.
 pub const STAMPS: u32 = 6;
@@ -42,9 +44,9 @@ pub struct Settings {
     /// Trained -> random weights (0..1); net ticks this frame (0 = fill holes only).
     pub wild: f32,
     pub tau: f32,
-    /// Scene alpha for colour, for the building identity (hidden), for depth + velocity.
+    /// How fast the state blends toward the scene (per second): colour, and depth with
+    /// velocity and certainty.
     pub color: f32,
-    pub identity: f32,
     pub depth: f32,
     /// Blocks per side, cell size (m), maximum height (m), gaussian radius (m).
     pub blocks: u32,
@@ -399,7 +401,7 @@ impl World {
 
         let read_layout = vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
         let clear = vk::AttachmentLoadOp::CLEAR;
-        let scene_pass = render_pass(r, &[STATE], true, clear, read_layout, true)?;
+        let scene_pass = render_pass(r, &[STATE; SCENES], true, clear, read_layout, true)?;
         let four = [STATE, STATE, STATE, SINGLE];
         let splat_pass = render_pass(r, &four, false, clear, read_layout, true)?;
         let dont_care = vk::AttachmentLoadOp::DONT_CARE;
@@ -457,15 +459,17 @@ impl World {
         for eye in 0..EYES {
             (cert_images[eye], cert[eye]) = r.image(size, SINGLE, target_usage | Usage::TRANSFER_SRC)?;
         }
-        let mut gbuffer = [vk::ImageView::null(); EYES];
+        let mut gbuffer = [[vk::ImageView::null(); SCENES]; EYES];
         let mut scene_targets = [vk::Framebuffer::null(); EYES];
         let mut acc_targets = [vk::Framebuffer::null(); EYES];
         let mut resolve_targets = [vk::Framebuffer::null(); EYES];
         let mut net_targets = [[vk::Framebuffer::null(); 2]; EYES];
         for eye in 0..EYES {
-            gbuffer[eye] = r.image(size, STATE, target_usage)?.1;
+            for view in &mut gbuffer[eye] {
+                *view = r.image(size, STATE, target_usage)?.1;
+            }
             let depth = r.image(size, DEPTH, Usage::DEPTH_STENCIL_ATTACHMENT)?.1;
-            scene_targets[eye] = r.framebuffer(scene_pass, size, &[gbuffer[eye], depth])?;
+            scene_targets[eye] = r.framebuffer(scene_pass, size, &[gbuffer[eye][0], gbuffer[eye][1], depth])?;
             acc_targets[eye] = r.framebuffer(splat_pass, size, &acc[eye])?;
             let [a, b, c] = mid_target[eye];
             resolve_targets[eye] = r.framebuffer(resolve_pass, size, &[a, b, c, cert[eye]])?;
@@ -510,7 +514,7 @@ impl World {
                 .chain(acc.into_iter().flatten())
                 .map(|v| (v, nearest))
                 .chain(mid.into_iter().flatten().map(|v| (v, linear)))
-                .chain(cert.into_iter().chain((0..EYES).flat_map(|e| state[e][next])).chain(gbuffer).map(|v| (v, nearest)))
+                .chain(cert.into_iter().chain((0..EYES).flat_map(|e| state[e][next])).chain(gbuffer.into_iter().flatten()).map(|v| (v, nearest)))
                 .collect();
             assert_eq!(views.len(), SAMPLED_BINDINGS as usize);
             let views: Vec<_> = views
@@ -597,7 +601,7 @@ impl World {
         spec: &[i32],
     ) -> Result<Vec<vk::Pipeline>> {
         Ok(vec![
-            pipeline(d, shaders, ("scene.vert.spv", "scene.frag.spv"), scene, layout, 1, false, true, false, &[])?,
+            pipeline(d, shaders, ("scene.vert.spv", "scene.frag.spv"), scene, layout, SCENES, false, true, false, &[])?,
             pipeline(d, shaders, ("splat.vert.spv", "splat.frag.spv"), splat, layout, ACCS, true, false, true, &[])?,
             pipeline(d, shaders, ("fullscreen.vert.spv", "resolve.frag.spv"), resolve, layout, ACCS, false, false, false, &[])?,
             pipeline(d, shaders, ("fullscreen.vert.spv", "net.frag.spv"), net, layout, STATES, false, false, false, spec)?,
@@ -655,7 +659,8 @@ impl World {
             net_layers: rule.layers,
             net_taps: rule.taps,
             city: [settings.cell, settings.height, settings.radius, settings.blocks as f32],
-            mixing: [settings.color, settings.identity, settings.depth, 0.],
+            // Per-second rates as this frame's blend weights (frame-rate independent).
+            mixing: [1. - (-settings.color * dt).exp(), 0., 1. - (-settings.depth * dt).exp(), 0.],
             player: {
                 let ground = |c: [EyeCamera; EYES]| (c[0].position + c[1].position) * 0.5;
                 let (now, before) = (ground(cameras), ground(previous));
@@ -673,6 +678,7 @@ impl World {
         }; ACCS];
         let scene_clear = [
             zero[0],
+            zero[1],
             vk::ClearValue {
                 depth_stencil: vk::ClearDepthStencilValue { depth: 1., stencil: 0 },
             },
@@ -718,7 +724,8 @@ impl World {
                 begin(self.scene_pass, self.scene_targets[eye]);
                 d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.scene);
                 push(eye, eye, 0);
-                d.cmd_draw(cmd, 30, settings.blocks * settings.blocks, 0, 0);
+                // The blocks, and one more instance: the ground plate.
+                d.cmd_draw(cmd, 30, settings.blocks * settings.blocks + 1, 0, 0);
                 d.cmd_end_render_pass(cmd);
             }
             stamp(1);

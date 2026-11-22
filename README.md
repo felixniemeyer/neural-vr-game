@@ -73,13 +73,12 @@ Live faders (av-controls panel `sunk-city`). Without a broker these defaults app
 
 | Fader      | Default | Meaning |
 |------------|---------|---------|
-| `color`, `depth`, `identity` | 0.2, 0.1, 0.1 | How strongly the rendered blocks set colour, depth (+ velocity) and the hidden state (from the block id) per frame |
+| `color`, `depth` | 0.9, 4.6 | How fast the state blends toward the rendered scene, per second (≈ 0.01 and 0.05 per frame at 90 Hz): colour, and depth with velocity and certainty. Only where the state has data (holes are the net's), fading out with distance |
 | `wild` | 0 | Trained → randomly morphing weights (the distortion knob) |
 | `timescale`, `netfps` | 1, 24 | How fast the net's world runs (1 = real time, as in the footage); net updates per second. Between updates frames only reproject and fill holes; each update covers the (scaled) time since the last one |
 | `blocks`   | 24      | Blocks per side around the player |
 | `cell`, `height` | 4, 7 | Grid cell size and maximum block height (m) |
-| `radius`   | 20      | Gaussian falloff (m): blocks rise as you approach and sink as you leave |
-| `altitude` | 7.5     | Player height (m); changing it moves you up or down |
+| `radius`   | 20      | Gaussian falloff (m): blocks grow out of the ground (from 0 at the field's edge) as you approach, turning from the ground colour to their own, and sink as you leave |
 | `pull`, `drag` | 25, 2.5 | Zip: acceleration toward the anchored block (m/s²) and velocity damping (1/s); top speed ≈ pull / drag |
 | `mid`, `clip`, `black`, `tint` | 0.5, 0.03, 0.05, 0.3 | Display auto-exposure, per channel: 80th percentile → `mid`, brightest `clip` fraction clips, darkest `black` fraction is 0; `tint` pulls the channels' mappings together (keeps some colour cast) |
 

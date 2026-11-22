@@ -30,9 +30,13 @@ impl City {
     fn block(&self, cell: IVec2) -> Option<(Vec3, Vec3)> {
         let c = cell.as_vec2();
         let d = (c + 0.5) * self.cell - self.player;
-        let rise = (-d.dot(d) / (2. * self.radius * self.radius)).exp();
+        // common.glsl fieldRadius(), scene.vert rise(): 0 at the field radius.
+        let field = (self.blocks as f32 * 0.5 - 1.).max(1.) * self.cell;
+        let spread = 2. * self.radius * self.radius;
+        let edge = (-field * field / spread).exp();
+        let rise = (((-d.dot(d) / spread).exp() - edge) / (1. - edge)).max(0.);
         let height = self.height * (0.25 + 0.75 * hash(c.extend(3.7))) * rise;
-        if height < 0.5 {
+        if height < 1e-3 {
             return None;
         }
         let inset = self.cell * (0.12 + 0.12 * hash(c.extend(9.1)));

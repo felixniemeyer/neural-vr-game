@@ -22,6 +22,8 @@ use std::{
 use world::{EyeCamera, Settings, World, EYES};
 
 const STEREO: xr::ViewConfigurationType = xr::ViewConfigurationType::PRIMARY_STEREO;
+/// Where the player starts (m above the ground); only the zip moves them.
+const START_HEIGHT: f32 = 7.5;
 /// The player's collision radius around the head (m).
 const RADIUS: f32 = 0.3;
 /// ZIP_ANYWHERE: how far along the ray the anchor goes when it misses the blocks (m).
@@ -279,13 +281,12 @@ struct Zip {
     velocity: Vec3,
     anchors: [Option<Vec3>; 2],
     was_pressed: [bool; 2],
-    altitude: Option<f32>,
     last: Option<f32>,
     anywhere: bool,
 }
 
 impl Zip {
-    /// `settings`: altitude (m; its changes move the player up and down), pull (m/s²), drag (1/s).
+    /// `settings`: pull (m/s²), drag (1/s).
     #[allow(clippy::too_many_arguments)]
     fn update(
         &mut self,
@@ -296,9 +297,8 @@ impl Zip {
         head: Vec3,
         eye: Vec3,
         city: &city::City,
-        [altitude, pull, drag]: [f32; 3],
+        [pull, drag]: [f32; 2],
     ) {
-        self.position.y += altitude - self.altitude.replace(altitude).unwrap_or(0.);
         let dt = (seconds - self.last.replace(seconds).unwrap_or(seconds)).clamp(0., 0.1);
         for (i, hand) in held.iter().enumerate() {
             if hand.pressed && !self.was_pressed[i] {
@@ -509,7 +509,7 @@ fn run(shaders: &Path) -> Result<()> {
     let mut start = None;
     // ZIP_ANYWHERE=0: zip only toward blocks the ray hits (default 1: also into the air).
     let mut clock = NetClock::default();
-    let mut zip = Zip { anywhere: env::var("ZIP_ANYWHERE").map_or(true, |v| v != "0"), ..Zip::default() };
+    let mut zip = Zip { position: Vec3::new(0., START_HEIGHT, 0.), anywhere: env::var("ZIP_ANYWHERE").map_or(true, |v| v != "0"), ..Zip::default() };
     // Live settings from the av-controls broker (CONTROLS, default wss://localhost:8080);
     // without a broker the defaults below stay.
     // FADERS="wild=0.5,color=0.3": other initial fader values (e.g. without a broker).
@@ -523,9 +523,9 @@ fn run(shaders: &Path) -> Result<()> {
             .unwrap_or(default)
     };
     let controls = av_controls::Panel::new("sunk-city")
-        .fader("color", 0., 1., initial("color", 0.2))
-        .fader("depth", 0., 1., initial("depth", 0.1))
-        .fader("identity", 0., 1., initial("identity", 0.1))
+        // Blend toward the scene per second; 0.9 and 4.6 are 0.01 and 0.05 per frame at 90 Hz.
+        .fader("color", 0., 5., initial("color", 0.9))
+        .fader("depth", 0., 20., initial("depth", 4.6))
         .fader("wild", 0., 1., initial("wild", 0.))
         .fader("timescale", 0., 4., initial("timescale", 1.))
         .fader_with("netfps", 5., 90., initial("netfps", 24.), 0)
@@ -533,7 +533,6 @@ fn run(shaders: &Path) -> Result<()> {
         .fader_with("cell", 1., 10., initial("cell", 4.), 1)
         .fader_with("height", 1., 25., initial("height", 7.), 1)
         .fader_with("radius", 3., 100., initial("radius", 20.), 1)
-        .fader_with("altitude", 0., 25., initial("altitude", 7.5), 1)
         .fader_with("pull", 0., 60., initial("pull", 25.), 1)
         .fader_with("drag", 0., 6., initial("drag", 2.5), 2)
         .fader("mid", 0., 1., initial("mid", 0.5))
@@ -628,11 +627,7 @@ fn run(shaders: &Path) -> Result<()> {
             player: glam::Vec2::new(zip.position.x + eye.x, zip.position.z + eye.z),
         };
         let held = hands.sync(&session, &space, time)?;
-        zip.update(&held, &hands, &session, seconds, head, eye, &city, [
-            controls.get("altitude"),
-            controls.get("pull"),
-            controls.get("drag"),
-        ]);
+        zip.update(&held, &hands, &session, seconds, head, eye, &city, [controls.get("pull"), controls.get("drag")]);
         let origin = zip.position;
         let cameras = [camera(&views[0], head, origin), camera(&views[1], head, origin)];
         let dumping = dump.is_some() && frames == dump_frame;
@@ -640,7 +635,6 @@ fn run(shaders: &Path) -> Result<()> {
             wild: controls.get("wild"),
             tau: clock.tick(seconds, controls.get("timescale"), controls.get("netfps"), &rule, dumping),
             color: controls.get("color"),
-            identity: controls.get("identity"),
             depth: controls.get("depth"),
             blocks: controls.get("blocks").round().max(1.) as u32,
             cell: controls.get("cell"),

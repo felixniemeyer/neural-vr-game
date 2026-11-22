@@ -4,8 +4,8 @@
 //   15-20  resolved state (2 eyes x A, B, C), with the hole-aware mip pyramid
 //   21-22  resolved certainty (per eye)
 //   23-28  new state (2 eyes x A, B, C)
-//   29-30  scene G-buffer (per eye)
-//   31     net weights (storage buffer)
+//   29-32  scene (2 eyes x colour + inverse distance, world velocity)
+//   33     net weights (storage buffer)
 //
 // State (prev, next):  A = (rgb, inverse depth; 0 = no data), B = (velocity, certainty),
 //                      C = (h0, h1, h2, h3)
@@ -42,14 +42,22 @@ layout(set = 0, binding = 25) uniform sampler2D next02;
 layout(set = 0, binding = 26) uniform sampler2D next10;
 layout(set = 0, binding = 27) uniform sampler2D next11;
 layout(set = 0, binding = 28) uniform sampler2D next12;
-layout(set = 0, binding = 29) uniform sampler2D scene0;
-layout(set = 0, binding = 30) uniform sampler2D scene1;
-layout(std430, set = 0, binding = 31) readonly buffer Weights { vec4 weights[]; };
+layout(set = 0, binding = 29) uniform sampler2D scene00;
+layout(set = 0, binding = 30) uniform sampler2D scene01;
+layout(set = 0, binding = 31) uniform sampler2D scene10;
+layout(set = 0, binding = 32) uniform sampler2D scene11;
+layout(std430, set = 0, binding = 33) readonly buffer Weights { vec4 weights[]; };
 
-// Scene G-buffer: (sun shade, inverse distance, vertical velocity, building id);
-// id 0 = no building.
-vec4 sceneFetch(int eye, ivec2 p) {
-    return eye == 0 ? texelFetch(scene0, p, 0) : texelFetch(scene1, p, 0);
+// Scene: image 0 = (colour, inverse distance; 0 = nothing rendered), image 1 = (world
+// velocity, 0).
+vec4 sceneFetch(int eye, int image, ivec2 p) {
+    switch (eye * 2 + image) {
+    case 0: return texelFetch(scene00, p, 0);
+    case 1: return texelFetch(scene01, p, 0);
+    case 2: return texelFetch(scene10, p, 0);
+    case 3: return texelFetch(scene11, p, 0);
+    }
+    return vec4(0.0);
 }
 
 // previous state (ping-pong source)

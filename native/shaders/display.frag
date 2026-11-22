@@ -18,7 +18,7 @@ void main() {
     if (pc.mode == 2) c = vec3(clamp(a.w * u.net.z, 0.0, 1.0)); // near = white
     if (pc.mode == 3) c = b.xyz * 0.5 + 0.5;
     if (pc.mode == 4) c = h.xyz * 0.5 + 0.5;
-    if (pc.mode == 6) c = sceneFetch(pc.target, p).xww;
+    if (pc.mode == 6) c = sceneFetch(pc.target, 0, p).rgb;
     if (any(isnan(a)) || any(isnan(h)) || any(isinf(a)) || any(isinf(h))) c = vec3(1.0, 0.0, 1.0); // NaN: magenta
     color = vec4(c, 1.0);
 }

@@ -8,9 +8,10 @@
 // as train/sunk/model.py splat(): value = acc / w, holes (w < 0.01) all 0, certainty
 // = clamp(sum certainty * w) (partial coverage lowers it).
 //
-// Scene composite where there is a building (the runtime analogue of training's
-// "observe" blend): colour with alpha u.mixing.x, depth, velocity and certainty with
-// u.mixing.z, the building's identity into the hidden state with u.mixing.y.
+// Scene blend where the scene has geometry and the state has data (the runtime
+// analogue of training's "observe" blend): colour with u.mixing.x, depth, velocity and
+// certainty with u.mixing.z, both fading to 0 at GROUND_REACH field radii. Holes stay
+// holes: the net fills them (certainty 0 tells it so).
 //
 // Output B.w is the coverage (inverse depth > 0), so that the mip chain of A, B, C
 // is the hole-aware pyramid the net reads; certainty goes to its own image.
@@ -34,18 +35,16 @@ void main() {
     float certainty = hole ? 0.0 : clamp(a1.w, 0.0, 1.0);
     vec4 h = hole ? vec4(0.0) : a2 / w;
 
-    vec4 g = sceneFetch(pc.target, p);
-    float building = g.w > 0.0 ? 1.0 : 0.0;
-    float alpha = building * u.mixing.x;
-    float depthAlpha = building * u.mixing.z;
-    float identity = building * u.mixing.y;
-    vec3 palette = 0.6 + 0.4 * cos(6.28318 * (3.0 * g.w + vec3(0.0, 0.33, 0.67)));
-    a.rgb = mix(a.rgb, palette * g.x, alpha);
-    a.w = building > 0.0 && a.w <= 0.0 ? g.y : mix(a.w, g.y, depthAlpha);
-    velocity = mix(velocity, vec3(0.0, g.z, 0.0), depthAlpha);
+    vec4 g = sceneFetch(pc.target, 0, p);
+    vec3 motion = sceneFetch(pc.target, 1, p).xyz;
+    float there = g.w > 0.0 && !hole ? 1.0 : 0.0;
+    float fade = there * clamp(1.0 - 1.0 / max(g.w, 1e-6) / (GROUND_REACH * fieldRadius()), 0.0, 1.0);
+    float alpha = fade * u.mixing.x;
+    float depthAlpha = fade * u.mixing.z;
+    a.rgb = mix(a.rgb, g.rgb, alpha);
+    a.w = mix(a.w, g.w, depthAlpha);
+    velocity = mix(velocity, motion, depthAlpha);
     certainty = mix(certainty, 1.0, depthAlpha);
-    vec4 id = vec4(hash3(vec3(g.w * 997.0, 1.0, 2.0)), hash(vec3(g.w * 997.0, 3.0, 4.0))) * 2.0 - 1.0;
-    h = mix(h, id, identity);
 
     float covered = a.w > 0.0 ? 1.0 : 0.0;
     // Keep holes exactly 0 (the pyramid relies on it).
