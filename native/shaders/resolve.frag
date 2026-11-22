@@ -10,8 +10,9 @@
 //
 // Scene blend where the scene has geometry and the state has data (the runtime
 // analogue of training's "observe" blend): colour with u.mixing.x, depth, velocity and
-// certainty with u.mixing.z, both fading to 0 at GROUND_REACH field radii. Holes stay
-// holes: the net fills them (certainty 0 tells it so).
+// certainty with u.mixing.z, both fading to 0 at GROUND_REACH field radii. In holes
+// the scene gives the depth (and velocity) outright, the colour only by the same gentle
+// blend, and a low certainty: the net fills in the look.
 //
 // Output B.w is the coverage (inverse depth > 0), so that the mip chain of A, B, C
 // is the hole-aware pyramid the net reads; certainty goes to its own image.
@@ -37,13 +38,14 @@ void main() {
 
     vec4 g = sceneFetch(pc.target, 0, p);
     vec3 motion = sceneFetch(pc.target, 1, p).xyz;
-    float there = g.w > 0.0 && !hole ? 1.0 : 0.0;
+    float there = g.w > 0.0 ? 1.0 : 0.0;
     float fade = there * clamp(1.0 - 1.0 / max(g.w, 1e-6) / (GROUND_REACH * fieldRadius()), 0.0, 1.0);
     float alpha = fade * u.mixing.x;
     float depthAlpha = fade * u.mixing.z;
+    float geometry = hole && fade > 0.0 ? 1.0 : depthAlpha;
     a.rgb = mix(a.rgb, g.rgb, alpha);
-    a.w = mix(a.w, g.w, depthAlpha);
-    velocity = mix(velocity, motion, depthAlpha);
+    a.w = mix(a.w, g.w, geometry);
+    velocity = mix(velocity, motion, geometry);
     certainty = mix(certainty, 1.0, depthAlpha);
 
     float covered = a.w > 0.0 ? 1.0 : 0.0;
