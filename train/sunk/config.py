@@ -59,6 +59,7 @@ class Train:
     texture: float = 0.0        # loss on local edge energy (8x8 windows, position-free)
     preview: int = 250          # write preview + export every n iterations
     threads: int = 0            # torch threads, 0 = all
+    init: str = ""              # start from these weights (an export folder, e.g. ../stereo24/nets/001250); "" = random
 
 
 @dataclass

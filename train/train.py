@@ -37,7 +37,7 @@ from PIL import Image
 
 from prepare import rays as make_rays
 from sunk.config import load
-from sunk.model import CERT, HID, INV, RGB, VEL, Net, accumulate, resolve, splat
+from sunk.model import CERT, HID, INV, RGB, VEL, Net, accumulate, load_export, resolve, splat
 
 
 def rotation(axis, angle):
@@ -398,6 +398,11 @@ def main():
         sched.load_state_dict(saved["sched"])
         start = saved["iter"]
         print(f"resuming at {start}")
+    elif config.train.init:
+        # Fresh optimiser and schedule, the weights of an export (same layout).
+        source = (project / config.train.init).resolve()
+        net.load_state_dict(load_export(source).state_dict())
+        print(f"starting from {source}")
     print(f"net: {net.inputs} inputs, layers {[l.out_channels for l in net.layers]}, "
           f"{sum(p.numel() for p in net.parameters())} weights, {len(net.taps) + 1} taps")
     # The largest step it trains on (ticks), for the app's clamp.

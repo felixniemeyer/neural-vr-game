@@ -1,0 +1,43 @@
+[data]
+name = ""
+fps = 0
+infer = 256
+size = 128
+minutes = 15.0
+chunk = 20.0
+fov = 60.0
+ratio = 8.0
+depth_size = 252
+flow_iters = 12
+still = 1.0
+moving = 0.3
+cut = 0.12
+seed = 0
+
+[net]
+levels = 5
+points = 3
+hidden = [32, 16]
+hidden_state = 4
+near = 10.0
+max_change = 0.5
+rate = 24.0
+
+[train]
+crop = 32
+steps = 24
+strides = [0.25, 0.5, 1.0, 2.0]
+horizon = 96
+stereo = 1.0
+baseline = 1.0
+batch = 16
+lr = 0.001
+iters = 4000
+turn = 0.5
+observe = 0.3
+hole_weight = 4.0
+edge_weight = 1.0
+texture = 1.0
+preview = 250
+threads = 3
+init = "../../../nice-net"

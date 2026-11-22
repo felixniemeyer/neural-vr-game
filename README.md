@@ -126,6 +126,8 @@ Training settings worth knowing (`[train]`):
 - `strides`: video frames per net step, drawn per sample (e.g. `0.25,0.5,1,2`); the net sees
   its step size (tau ticks, `net.rate` per second), so the app can update it at any rate
 - `horizon`: video frames a sample follows its clip, continuing from the net's own state
+- `steps`: net steps per iteration that gradients flow through (longer = slower per iteration, fights slow drift)
+- `init`: start from an exported net (e.g. `../stereo24/nets/001250`) with a fresh optimiser
 - `stereo`, `baseline`: a second eye up to `baseline` m to the right, with the app's
   cross-eye splat and a loss on the eyes' disagreement
 
