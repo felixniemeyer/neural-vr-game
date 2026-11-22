@@ -7,8 +7,8 @@
 //   29-32  scene (2 eyes x colour + inverse distance, world velocity)
 //   33     net weights (uniform buffer)
 //
-// The fullscreen passes (resolve, net, display) are compiled per eye: TARGET is their eye
-// (world.rs pipelines), so the switches below fold to one image.
+// The passes reading these are compiled per eye: TARGET is the eye drawn, SOURCE the
+// splat's source eye (world.rs pipelines), so the switches below fold to one image.
 //
 // State (prev, next):  A = (rgb, inverse depth; 0 = no data), B = (velocity, certainty),
 //                      C = (h0, h1, h2, h3)
@@ -18,6 +18,7 @@
 //                      are the hole-aware pyramid: value = mip / coverage.
 
 layout(constant_id = 7) const int TARGET = 0;
+layout(constant_id = 8) const int SOURCE = 0; // splat: the eye whose state it reprojects
 
 layout(set = 0, binding = 1) uniform sampler2D prev00;
 layout(set = 0, binding = 2) uniform sampler2D prev01;

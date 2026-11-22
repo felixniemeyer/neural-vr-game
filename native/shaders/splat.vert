@@ -18,9 +18,9 @@ layout(location = 3) flat out vec2 vCenter;
 void main() {
     vec2 size = u.info.xy;
     ivec2 px = ivec2(gl_VertexIndex % int(size.x), gl_VertexIndex / int(size.x));
-    vA = prevFetch(pc.source, 0, px);
-    vB = prevFetch(pc.source, 1, px);
-    vC = prevFetch(pc.source, 2, px);
+    vA = prevFetch(SOURCE, 0, px);
+    vB = prevFetch(SOURCE, 1, px);
+    vC = prevFetch(SOURCE, 2, px);
     vCenter = vec2(0.0);
     gl_PointSize = 2.0;
     gl_Position = vec4(2.0, 2.0, 0.0, 1.0); // outside: dropped
@@ -28,17 +28,17 @@ void main() {
     // The other eye's state mostly lands where our own already is; splat only half of
     // it (checkerboard, alternating per frame): half the blending cost, and the own
     // eye dominates where both cover.
-    if (pc.source != pc.target && ((px.x + px.y + int(u.info.w)) & 1) == 1) return;
+    if (SOURCE != TARGET && ((px.x + px.y + int(u.info.w)) & 1) == 1) return;
 
-    vec4 p = u.prevInvViewProj[pc.source] * vec4(ndcFromPixel(vec2(px), size), 0.0, 1.0);
-    vec3 eye = u.prevEye[pc.source].xyz;
+    vec4 p = u.prevInvViewProj[SOURCE] * vec4(ndcFromPixel(vec2(px), size), 0.0, 1.0);
+    vec3 eye = u.prevEye[SOURCE].xyz;
     vec3 world = eye + normalize(p.xyz / p.w - eye) / vA.w;
     world += vB.xyz * u.step.x; // the point's own motion; camera motion comes on top
-    vec4 clip = u.viewProj[pc.target] * vec4(world, 1.0);
+    vec4 clip = u.viewProj[TARGET] * vec4(world, 1.0);
     if (clip.w <= 1e-4) return;
 
     vec2 center = pixelFromClip(clip, size);
     gl_Position = vec4((center + 0.5) / size * 2.0 - 1.0, 0.0, 1.0);
-    vA.w = 1.0 / max(length(world - u.eye[pc.target].xyz), 0.05); // depth as seen from the target eye
+    vA.w = 1.0 / max(length(world - u.eye[TARGET].xyz), 0.05); // depth as seen from the target eye
     vCenter = center;
 }

@@ -120,7 +120,8 @@ pub struct World {
     net_pass: vk::RenderPass,
     display_pass: vk::RenderPass,
     scene: vk::Pipeline,
-    splat: vk::Pipeline,
+    /// splat[target][source] (state.glsl TARGET, SOURCE).
+    splat: [[vk::Pipeline; EYES]; EYES],
     /// The fullscreen passes per eye (state.glsl TARGET).
     resolve: [vk::Pipeline; EYES],
     net: [vk::Pipeline; EYES],
@@ -257,14 +258,14 @@ fn pipeline(
 ) -> Result<vk::Pipeline> {
     let vertex = Shader::load(d, dir, vert)?;
     let fragment = Shader::load(d, dir, frag)?;
-    // Fragment specialization constants 0..: the i32 values of `spec`.
+    // Specialization constants 0.. (both stages): the i32 values of `spec`.
     let entries: Vec<_> = (0..spec.len() as u32)
         .map(|i| vk::SpecializationMapEntry { constant_id: i, offset: 4 * i, size: 4 })
         .collect();
     let data: Vec<u8> = spec.iter().flat_map(|v| v.to_ne_bytes()).collect();
     let specialization = vk::SpecializationInfo::default().map_entries(&entries).data(&data);
     let stages = [
-        vertex.stage(vk::ShaderStageFlags::VERTEX),
+        vertex.stage(vk::ShaderStageFlags::VERTEX).specialization_info(&specialization),
         fragment.stage(vk::ShaderStageFlags::FRAGMENT).specialization_info(&specialization),
     ];
     let input = vk::PipelineVertexInputStateCreateInfo::default();
@@ -445,7 +446,8 @@ impl World {
             .into_iter()
             .map(|p| r.keep(p, Resource::Pipeline));
         let mut next = || pipelines.next().unwrap();
-        let (scene, splat) = (next(), next());
+        let scene = next();
+        let splat = std::array::from_fn(|_| [next(), next()]);
         let [resolve, net, display] = std::array::from_fn(|_| [next(), next()]);
 
         // state[eye][parity] = (A, B, C)
@@ -631,9 +633,10 @@ impl World {
         self.size
     }
 
-    /// The pipelines (scene, splat, then resolve, net, display for each eye) from the
-    /// SPIR-V in `shaders`. The fullscreen passes get the net's layout as constants 0..6
-    /// and their eye as 7 (state.glsl TARGET), so the per-eye image picks compile away.
+    /// The pipelines (scene, splat per target and source eye, then resolve, net, display
+    /// per eye) from the SPIR-V in `shaders`. They get the net's layout as constants 0..6,
+    /// their eye as 7 and the splat's source as 8 (state.glsl TARGET, SOURCE), so the
+    /// per-eye image picks compile away.
     fn pipelines(
         d: &Device,
         shaders: &Path,
@@ -641,17 +644,19 @@ impl World {
         layout: vk::PipelineLayout,
         spec: &[i32],
     ) -> Result<Vec<vk::Pipeline>> {
-        [
-            pipeline(d, shaders, ("scene.vert.spv", "scene.frag.spv"), scene, layout, SCENES, false, true, false, &[]),
-            pipeline(d, shaders, ("splat.vert.spv", "splat.frag.spv"), splat, layout, ACCS, true, false, true, &[]),
-        ]
+        let with = |extra: &[i32]| -> Vec<i32> { spec.iter().chain(extra).copied().collect() };
+        [pipeline(d, shaders, ("scene.vert.spv", "scene.frag.spv"), scene, layout, SCENES, false, true, false, &[])]
         .into_iter()
+        .chain((0..EYES as i32 * EYES as i32).map(|i| {
+            let spec = with(&[i / EYES as i32, i % EYES as i32]);
+            pipeline(d, shaders, ("splat.vert.spv", "splat.frag.spv"), splat, layout, ACCS, true, false, true, &spec)
+        }))
         .chain(
             [("resolve.frag.spv", resolve, ACCS), ("net.frag.spv", net, STATES), ("display.frag.spv", display, 1)]
                 .into_iter()
                 .flat_map(|(fragment, pass, targets)| {
                     (0..EYES as i32).map(move |eye| {
-                        let spec: Vec<i32> = spec.iter().copied().chain([eye]).collect();
+                        let spec = with(&[eye]);
                         pipeline(d, shaders, ("fullscreen.vert.spv", fragment), pass, layout, targets, false, false, false, &spec)
                     })
                 }),
@@ -660,7 +665,7 @@ impl World {
     }
 
     pub fn named_pipelines(&self) -> [(&'static str, vk::Pipeline); 5] {
-        [("scene", self.scene), ("splat", self.splat), ("resolve", self.resolve[0]), ("net", self.net[0]), ("display", self.display[0])]
+        [("scene", self.scene), ("splat", self.splat[0][0]), ("resolve", self.resolve[0]), ("net", self.net[0]), ("display", self.display[0])]
     }
 
     /// Recreate the pipelines from the (re)compiled SPIR-V in `shaders`.
@@ -672,7 +677,8 @@ impl World {
         let new = Self::pipelines(&r.gpu.device, shaders, passes, self.layout, &self.spec)?;
         let mut new = new.into_iter().map(|p| r.keep(p, Resource::Pipeline));
         let mut next = || new.next().unwrap();
-        (self.scene, self.splat) = (next(), next());
+        self.scene = next();
+        self.splat = std::array::from_fn(|_| [next(), next()]);
         [self.resolve, self.net, self.display] = std::array::from_fn(|_| [next(), next()]);
         Ok(())
     }
@@ -793,9 +799,9 @@ impl World {
             stamp(1);
             for eye in 0..EYES {
                 begin(self.splat_pass, self.acc_targets[eye]);
-                d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.splat);
                 // Own previous state, then the other eye's (cross-eye splat).
                 for source in [eye, 1 - eye] {
+                    d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.splat[eye][source]);
                     push(eye, source, 0);
                     d.cmd_draw(cmd, pixels, 1, 0, 0);
                 }
