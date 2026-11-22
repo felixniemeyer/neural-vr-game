@@ -22,6 +22,8 @@ use std::{
 use world::{EyeCamera, Settings, World, EYES};
 
 const STEREO: xr::ViewConfigurationType = xr::ViewConfigurationType::PRIMARY_STEREO;
+/// The player's collision radius around the head (m).
+const RADIUS: f32 = 0.3;
 const BLEND: xr::EnvironmentBlendMode = xr::EnvironmentBlendMode::OPAQUE;
 
 fn init_gpu(instance: &xr::Instance, system: xr::SystemId) -> Result<Gpu> {
@@ -287,6 +289,12 @@ impl Zip {
         }
         self.velocity *= (-drag * dt).exp();
         self.position += self.velocity * dt;
+        // Keep the head out of the blocks: push it out, and drop the velocity into the walls.
+        let (free, normals) = city.collide(self.position + eye, RADIUS);
+        self.position = free - eye;
+        for normal in normals {
+            self.velocity -= normal * self.velocity.dot(normal).min(0.);
+        }
         let floor = 1. - eye.y;
         if self.position.y < floor {
             self.position.y = floor;

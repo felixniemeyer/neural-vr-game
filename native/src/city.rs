@@ -26,36 +26,73 @@ pub struct City {
 }
 
 impl City {
-    /// Nearest point where the ray (origin, unit direction) hits a block, within `range`.
-    pub fn hit(&self, origin: Vec3, dir: Vec3, range: f32) -> Option<Vec3> {
+    /// The block of a grid cell as (low, high) corners, or None where it has sunk.
+    fn block(&self, cell: IVec2) -> Option<(Vec3, Vec3)> {
+        let c = cell.as_vec2();
+        let d = (c + 0.5) * self.cell - self.player;
+        let rise = (-d.dot(d) / (2. * self.radius * self.radius)).exp();
+        let height = self.height * (0.25 + 0.75 * hash(c.extend(3.7))) * rise;
+        if height < 0.5 {
+            return None;
+        }
+        let inset = self.cell * (0.12 + 0.12 * hash(c.extend(9.1)));
+        let low = c * self.cell + inset;
+        let high = low + self.cell - 2. * inset;
+        Some((Vec3::new(low.x, 0., low.y), Vec3::new(high.x, height, high.y)))
+    }
+
+    /// The cells around the player, as scene.vert instances them.
+    fn cells(&self) -> impl Iterator<Item = IVec2> {
         let n = self.blocks as i32;
         let first = (self.player / self.cell).floor().as_ivec2() - n / 2;
-        let mut nearest = range;
-        for i in 0..n * n {
-            let cell = first + IVec2::new(i % n, i / n);
-            let c = cell.as_vec2();
-            let center = (c + 0.5) * self.cell;
-            let d = center - self.player;
-            let rise = (-d.dot(d) / (2. * self.radius * self.radius)).exp();
-            let height = self.height * (0.25 + 0.75 * hash(c.extend(3.7))) * rise;
-            if height < 0.5 {
-                continue;
-            }
-            let inset = self.cell * (0.12 + 0.12 * hash(c.extend(9.1)));
-            let low = c * self.cell + inset;
-            let high = low + self.cell - 2. * inset;
-            // Slab test.
-            let lo = Vec3::new(low.x, 0., low.y);
-            let hi = Vec3::new(high.x, height, high.y);
-            let inv = dir.recip();
-            let (a, b) = ((lo - origin) * inv, (hi - origin) * inv);
-            let enter = a.min(b).max_element().max(0.);
-            let exit = a.max(b).min_element();
-            if enter <= exit && enter < nearest {
-                nearest = enter;
+        (0..n * n).map(move |i| first + IVec2::new(i % n, i / n))
+    }
+
+    /// Nearest point where the ray (origin, unit direction) hits a block, within `range`.
+    pub fn hit(&self, origin: Vec3, dir: Vec3, range: f32) -> Option<Vec3> {
+        let inv = dir.recip();
+        let nearest = self
+            .cells()
+            .filter_map(|cell| self.block(cell))
+            .filter_map(|(lo, hi)| {
+                let (a, b) = ((lo - origin) * inv, (hi - origin) * inv);
+                let enter = a.min(b).max_element().max(0.);
+                (enter <= a.max(b).min_element()).then_some(enter)
+            })
+            .fold(range, f32::min);
+        (nearest < range).then(|| origin + dir * nearest)
+    }
+
+    /// Push a sphere (centre p) out of the blocks it overlaps: the corrected centre and
+    /// the push directions (for removing velocity into the walls).
+    pub fn collide(&self, mut p: Vec3, radius: f32) -> (Vec3, Vec<Vec3>) {
+        let mut normals = Vec::new();
+        // The 3x3 cells around p (blocks are smaller than a cell).
+        let here = (Vec2::new(p.x, p.z) / self.cell).floor().as_ivec2();
+        for dy in -1..=1 {
+            for dx in -1..=1 {
+                let Some((lo, hi)) = self.block(here + IVec2::new(dx, dy)) else { continue };
+                let closest = p.clamp(lo, hi);
+                let out = p - closest;
+                let distance = out.length();
+                let normal = if distance > 1e-5 {
+                    if distance >= radius {
+                        continue;
+                    }
+                    out / distance
+                } else {
+                    // Inside (e.g. a block rose around us): leave through the nearest face.
+                    let faces = [p.x - lo.x, hi.x - p.x, hi.y - p.y, p.z - lo.z, hi.z - p.z];
+                    let normals = [Vec3::NEG_X, Vec3::X, Vec3::Y, Vec3::NEG_Z, Vec3::Z];
+                    let (i, _) = faces.iter().enumerate().fold((0, f32::MAX), |m, (i, &f)| if f < m.1 { (i, f) } else { m });
+                    p += normals[i] * faces[i];
+                    normals[i]
+                };
+                p += normal * (radius - (p - p.clamp(lo, hi)).length());
+                normals.push(normal);
             }
         }
-        (nearest < range).then(|| origin + dir * nearest)
+        (p, normals)
     }
 }
 
@@ -80,5 +117,15 @@ mod tests {
         assert!(roofs > 5, "{roofs} roofs");
         // Horizontal through a row of blocks ends at a wall.
         assert!(city.hit(Vec3::new(0., 0.3, 2.), Vec3::X, 150.).is_some());
+        // Whatever we zip into, the collision puts us outside every block, at the radius.
+        for i in 0..200 {
+            let p = Vec3::new(i as f32 * 0.37 - 37., (i % 9) as f32, (i * 7 % 50) as f32 * 0.9 - 22.);
+            let (q, _) = city.collide(p, 0.3);
+            for cell in city.cells() {
+                if let Some((lo, hi)) = city.block(cell) {
+                    assert!((q - q.clamp(lo, hi)).length() > 0.299, "{p} -> {q} in {lo}..{hi}");
+                }
+            }
+        }
     }
 }
