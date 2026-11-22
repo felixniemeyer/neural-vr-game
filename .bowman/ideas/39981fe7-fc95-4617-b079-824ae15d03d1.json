@@ -13,14 +13,14 @@
   ],
   "committedIn": [],
   "status": {
-    "state": "open",
-    "comment": "",
-    "date": 1795166007279
+    "state": "human-dependent",
+    "comment": "First version (experiments): `day` fader (seconds per planet day, 0 = fixed sun); day phase in u.step.z; scene.frag circles the sun and blends to a night world (complementary dim colours, warm lit windows on walls, cool moon) by smoothstep of the sun's height; the net takes it on through the colour blend. Builds and runs (14.6 ms/frame). Not verified visually by me. Human step: set day ~60 and color ~0.03 (faster uptake), watch a full cycle: does night read as a different world? Next: the sun phase as a net input (train on day/night footage) so the net itself changes style.",
+    "date": 1795381065400
   },
   "intrinsicValue": 0,
+  "cost": 5,
   "selfWeight": 1,
   "duration": 1,
   "costVariance": 0,
-  "valueVariance": 0,
-  "cost": 5
+  "valueVariance": 0
 }

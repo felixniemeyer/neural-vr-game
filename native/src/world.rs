@@ -62,6 +62,8 @@ pub struct Settings {
     pub sky: f32,
     /// Extra scene blend toward the view centre ("looking uncovers detail"), 0 = off.
     pub focus: f32,
+    /// The planet's day phase 0..1 (0.25 noon, 0.75 midnight); None = fixed sun.
+    pub day: Option<f32>,
     /// Where the eyes look (world point), if tracked; else the focus is the view centre.
     pub gaze: Option<Vec3>,
     /// Blocks per side, cell size (m), maximum height (m).
@@ -726,7 +728,7 @@ impl World {
                 time,
                 (self.frame % 65536) as f32,
             ],
-            step: [dt, settings.tau, 0., 0.],
+            step: [dt, settings.tau, settings.day.unwrap_or(-1.), 0.],
             net: rule.net,
             net_run: rule.run,
             net_layers: rule.layers,

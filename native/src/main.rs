@@ -737,6 +737,8 @@ fn run(shaders: &Path) -> Result<()> {
         .fader_with("sky", 0., 1000., initial("sky", 150.), 0)
         // Looking uncovers detail: the scene blends in up to 1 + focus times faster at the view centre.
         .fader_with("focus", 0., 20., initial("focus", 0.), 1)
+        // The planet spins fast: seconds per day (0 = fixed sun); night is another world.
+        .fader_with("day", 0., 300., initial("day", 0.), 0)
         .section("city")
         .fader_with("blocks", 4., 64., initial("blocks", 24.), 0)
         .fader_with("cell", 1., 10., initial("cell", 4.), 1)
@@ -869,6 +871,7 @@ fn run(shaders: &Path) -> Result<()> {
             depth: per_second(controls.get("depth")),
             sky: controls.get("sky"),
             focus: controls.get("focus"),
+            day: (controls.get("day") > 0.).then(|| (seconds / controls.get("day") + 0.25).fract()),
             // A point 50 m along the gaze in the world (as the hands' rays, zip.update).
             gaze: hands.gaze(&space, time).map(|(from, dir)| origin + turn * (from - head) + turn * dir * 50.),
             blocks: controls.get("blocks").round().max(1.) as u32,
