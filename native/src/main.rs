@@ -583,7 +583,10 @@ fn run(shaders: &Path) -> Result<()> {
         .switch("auto", initial("auto", 0.) > 0.5)
         .fader_with("pull", 0., 60., initial("pull", 25.), 1)
         .fader_with("drag", 0., 6., initial("drag", 2.5), 2)
+        // exposure off: the state's colour shown 1:1 (a trained net stays in the video's
+        // range); on: automatic per-channel exposure (mid, clip, black, tint).
         .section("display")
+        .switch("exposure", initial("exposure", 0.) > 0.5)
         .fader("mid", 0., 1., initial("mid", 0.5))
         .fader_with("clip", 0., 0.2, initial("clip", 0.03), 3)
         .fader_with("black", 0., 0.3, initial("black", 0.05), 3)
@@ -742,12 +745,11 @@ fn run(shaders: &Path) -> Result<()> {
             println!("Dumped to {}", dir.display());
         }
         if world.capture {
-            world.calibrate(
-                controls.get("mid"),
-                controls.get("clip"),
-                controls.get("black"),
-                controls.get("tint"),
-            );
+            if controls.on("exposure") {
+                world.calibrate(controls.get("mid"), controls.get("clip"), controls.get("black"), controls.get("tint"));
+            } else {
+                world.expose_plainly();
+            }
             if let (true, Some(path)) = (frames % 296 == 0, &snapshot) {
                 std::fs::write(path, world.snapshot_ppm())?;
             }

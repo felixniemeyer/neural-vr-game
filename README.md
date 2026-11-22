@@ -81,6 +81,7 @@ Live controls (av-controls panel `sunk-city`, in rows: net, scene, city, motion,
 | `radius`   | 20      | Gaussian falloff (m): blocks grow out of the ground (from 0 at the field's edge) as you approach, turning from the ground colour to their own, and sink as you leave |
 | `auto` | off | Autopilot: wander through the city at about 0.9 of the block height (± 0.9 m), looking around (also `FADERS=auto=1`) |
 | `pull`, `drag` | 25, 2.5 | Zip: acceleration toward the anchored block (m/s²) and velocity damping (1/s); top speed ≈ pull / drag |
+| `exposure` | off | Off: the state's colour is shown 1:1. On: automatic per-channel exposure with the faders below |
 | `mid`, `clip`, `black`, `tint` | 0.5, 0.03, 0.05, 0.3 | Display auto-exposure, per channel: 80th percentile → `mid`, brightest `clip` fraction clips, darkest `black` fraction is 0; `tint` pulls the channels' mappings together (keeps some colour cast) |
 
 ## Layout

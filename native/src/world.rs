@@ -837,6 +837,11 @@ impl World {
     ///   and a gamma puts its 80th percentile at `mid` (dark, with highlights).
     /// `tint` then pulls the three mappings toward their mean (0 = independent,
     /// 1 = shared), so a scene's colour cast partly survives.
+    /// Show the state's colour 1:1 (black 0, white 1, gamma 1), gliding there.
+    pub fn expose_plainly(&mut self) {
+        self.tone_goal = [[0., 1., 1.]; 3];
+    }
+
     pub fn calibrate(&mut self, mid: f32, clip: f32, black: f32, tint: f32) {
         let pixels: Vec<[f32; 3]> = self
             .captured()
