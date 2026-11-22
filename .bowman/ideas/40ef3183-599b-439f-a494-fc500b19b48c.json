@@ -1,0 +1,25 @@
+{
+  "id": "40ef3183-599b-439f-a494-fc500b19b48c",
+  "text": "Distill from an open interactive world model: generate stylised fly-through footage with known camera actions as training data",
+  "description": "2026 open frame/world models (Matrix-Game 2.0: 25 fps from an image + actions; Waypoint-1; InSpatio-WorldFM, ~10 fps on a 4090; DreamForge-World for consumer GPUs) generate video along camera actions we choose. Run one offline (4060 Ti / rented GPU) from stylised seed images (solarpunk crystal city, comic look), log the action sequence, and feed the clips into prepare.py like footage. Wins: unlimited clips in the target style, camera paths matching VR motion (turns, swings, translation) instead of film cuts, and known motion to check the camera fit. Our tiny per-pixel net stays the real-time student. Sources: arxiv 2603.11911, huggingface.co/blog/waypoint-1, arxiv 2606.30292, arxiv 2508.13009.",
+  "archived": false,
+  "color": "#2d6540",
+  "tags": [],
+  "supportingConnections": [],
+  "supportedIdeas": [
+    "069be3ea-befd-4613-b5d1-d2af9c76e2f4",
+    "102a3e3a-f030-495b-9336-6c4d19bbb7d6"
+  ],
+  "committedIn": [],
+  "status": {
+    "state": "unclear",
+    "comment": "Needs Felix's decision: run an open world model (e.g. Matrix-Game 2.0, needs a big GPU: the 4060 Ti 16 GB may be too small; a rented 4090/H100 for a few hours) to generate stylised fly-through clips? Options: (a) 4060 Ti via SSH with a small/distilled model, (b) rent a GPU for ~2-4 h, (c) skip, keep Arcane footage. If (a)/(b): give SSH access or a budget and 2-3 seed images in the target style; I then script action sequences (turns, glides, swings), generate ~15 min of clips into train/videos/ and run prepare.py.",
+    "date": 1795380136950
+  },
+  "intrinsicValue": 0,
+  "cost": 5,
+  "selfWeight": 1,
+  "duration": 1,
+  "costVariance": 0,
+  "valueVariance": 0
+}
