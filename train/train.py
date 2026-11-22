@@ -43,30 +43,66 @@ class Footage:
         print(f"{len(self.chunks)} chunks, {len(self.starts)} rollout starts")
 
     def batch(self, n, rng):
-        """Frames [B, K+1, ...], camera [B, K], crop rays [B, crop, crop, 3], origins."""
+        """Frames [B, K+1, ...] as seen by the (virtual) cameras, their motion [B, K],
+        crop rays [B, crop, crop, 3], origins, and where the truth is known [B, K+1].
+
+        Head-turn augmentation (train.turn): the virtual camera k is the real one turned
+        by D_k = rotation(theta * sin(pi k / K)) about a random axis in the image plane,
+        theta up to a shift of turn * crop px. It turns away and back, so the crop loses
+        content at one border and has to regenerate it. The truth is the real frame
+        seen through the turned camera (rotation only: no depth needed, radial distance
+        unchanged), unknown outside the real frame (mask).
+        """
         cfg = self.config
         k, crop, size, near = cfg.train.steps, cfg.train.crop, cfg.data.size, cfg.net.near
-        out = {key: [] for key in ("rgb", "inv", "vel", "R", "t", "rays", "origin")}
+        out = {key: [] for key in ("rgb", "inv", "vel", "R", "t", "rays", "origin", "mask")}
+        radial = self.rays.norm(dim=-1)
         for i in rng.integers(len(self.starts), size=n):
             c, t0 = self.starts[i]
             chunk = self.chunks[c]
             ox, oy = rng.integers(size - crop + 1, size=2)
-            window = np.s_[t0:t0 + k + 1, oy:oy + crop, ox:ox + crop]
-            out["rgb"].append(torch.tensor(chunk["rgb"][window]).float() / 255)
+            rgb = torch.tensor(chunk["rgb"][t0:t0 + k + 1]).float() / 255
             # disp is planar (1 / z in near units); the state holds radial 1 / distance.
-            planar = torch.tensor(chunk["disp"][window].astype(np.float32)) / near
-            out["inv"].append(planar / self.rays[oy:oy + crop, ox:ox + crop].norm(dim=-1))
+            inv = torch.tensor(chunk["disp"][t0:t0 + k + 1].astype(np.float32)) / near / radial
             r = torch.tensor(chunk["R"][t0:t0 + k])
             # Object velocity of pair t -> t+1 is in camera t+1 coords (near units);
             # the state carries it in camera t coords (m): R^T v * near.
-            vel = torch.tensor(chunk["vel"][t0:t0 + k, oy:oy + crop, ox:ox + crop].astype(np.float32))
-            vel = torch.einsum("kji,khwj->khwi", r, vel) * near
-            out["vel"].append(torch.cat([vel, torch.zeros_like(vel[:1])]))
-            out["R"].append(r)
-            out["t"].append(torch.tensor(chunk["t"][t0:t0 + k]) * near)
-            out["rays"].append(self.rays[oy:oy + crop, ox:ox + crop])
+            vel = torch.einsum("kji,khwj->khwi", r, torch.tensor(chunk["vel"][t0:t0 + k].astype(np.float32))) * near
+            vel = torch.cat([vel, torch.zeros_like(vel[:1])])
+
+            angle = np.arctan(cfg.train.turn * crop * rng.random() / self.focal)
+            axis = rng.normal(size=2)
+            axis = torch.tensor([*axis / np.linalg.norm(axis), 0.0], dtype=torch.float32)
+            turns = torch.stack([rotation(axis, angle * np.sin(np.pi * j / k)) for j in range(k + 1)])
+
+            # Sample the real frames through the virtual cameras.
+            rays = self.rays[oy:oy + crop, ox:ox + crop]
+            real = torch.einsum("kji,hwj->khwi", turns, rays)  # D^T d
+            z = real[..., 2].clamp_min(1e-6)
+            px = self.focal * real[..., 0] / z + size / 2 - 0.5
+            py = -self.focal * real[..., 1] / z + size / 2 - 0.5
+            mask = ((real[..., 2] > 0) & (px >= 0) & (px <= size - 1) & (py >= 0) & (py <= size - 1)).float()
+            grid = torch.stack([(px + 0.5) / size * 2 - 1, (py + 0.5) / size * 2 - 1], -1)
+            frames = torch.cat([rgb, inv[..., None], vel], -1).permute(0, 3, 1, 2)
+            seen = F.grid_sample(frames, grid, mode="bilinear", padding_mode="border", align_corners=False)
+            seen = seen.permute(0, 2, 3, 1) * mask[..., None]
+            out["rgb"].append(seen[..., :3])
+            out["inv"].append(seen[..., 3])
+            out["vel"].append(torch.einsum("kij,khwj->khwi", turns, seen[..., 4:]))
+            # Virtual camera motion: p_virtual' = D' (R (D^T p) + t).
+            out["R"].append(turns[1:] @ r @ turns[:-1].transpose(1, 2))
+            out["t"].append(torch.einsum("kij,kj->ki", turns[1:], torch.tensor(chunk["t"][t0:t0 + k]) * near))
+            out["rays"].append(rays)
             out["origin"].append(torch.tensor([ox, oy], dtype=torch.float32))
+            out["mask"].append(mask)
         return {key: torch.stack(v) for key, v in out.items()}
+
+
+def rotation(axis, angle):
+    """Rodrigues: rotation by `angle` (rad) about the unit vector `axis`."""
+    x, y, z = axis.tolist()
+    k = torch.tensor([[0, -z, y], [z, 0, -x], [-y, x, 0]], dtype=torch.float32)
+    return torch.eye(3) + np.sin(angle) * k + (1 - np.cos(angle)) * k @ k
 
 
 def truth_state(batch, step, channels):
@@ -93,16 +129,18 @@ def rollout(net, data, batch, observe, record=False):
                                data.focal, cfg.data.size)
         pred = net(resolved)
         truth = truth_state(batch, k + 1, net.channels)
-        weight = 1 + cfg.train.hole_weight * hole
+        known = batch["mask"][:, k + 1, None]
+        weight = (1 + cfg.train.hole_weight * hole) * known
         image = torch.cat([pred[:, RGB], pred[:, INV:INV + 1] * near], 1)
         target = torch.cat([truth[:, RGB], truth[:, INV:INV + 1] * near], 1)
         step_loss = ((image - target).abs() * weight).mean()
-        for gp, gt in zip(gradients(image), gradients(target)):
-            step_loss = step_loss + cfg.train.edge_weight * (gp - gt).abs().mean()
+        pairs = (known[..., 1:, :] * known[..., :-1, :], known[..., :, 1:] * known[..., :, :-1])
+        for gp, gt, both in zip(gradients(image), gradients(target), pairs):
+            step_loss = step_loss + cfg.train.edge_weight * ((gp - gt).abs() * both).mean()
         loss = loss + step_loss / cfg.train.steps
         if record:
             frames.append((resolved, hole, pred, truth))
-        alpha = observe * torch.rand(len(pred), 1, 1, 1)
+        alpha = observe * torch.rand(len(pred), 1, 1, 1) * known
         state = pred.clone()
         for channels in (RGB, slice(INV, INV + 1), VEL):
             state[:, channels] = pred[:, channels] * (1 - alpha) + truth[:, channels] * alpha

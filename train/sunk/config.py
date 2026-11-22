@@ -46,6 +46,7 @@ class Train:
     batch: int = 16
     lr: float = 2e-3
     iters: int = 20000
+    turn: float = 0.0           # head-turn augmentation: max border shift (fraction of crop)
     observe: float = 0.3        # max blend toward the real frame per step (like the blocks)
     hole_weight: float = 4.0    # extra loss weight on pixels that were holes
     edge_weight: float = 1.0    # loss on image gradients
