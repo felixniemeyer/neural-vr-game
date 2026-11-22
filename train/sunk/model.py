@@ -147,18 +147,19 @@ class Net(nn.Module):
         }, indent=1))
 
 
-def splat(state, r, t, rays, origin, focal, full):
-    """2x2 tent splat of a state (camera c) into camera c' with p' = R (p + v) + t.
+def accumulate(state, r, t, rays, origin, focal, full, dt, keep=None):
+    """2x2 tent splat of a state (camera c) into camera c' with p' = R (p + v dt) + t.
 
     rays: [B, H, W, 3] of the crop's pixels (full-frame rays); origin [B, 2]: crop corner
-    in the full frame (size `full`); points landing outside the crop are lost. Returns the resolved state
-    and the hole mask.
+    in the full frame (size `full`); points landing outside the crop are lost. dt [B]
+    seconds (velocity is m/s); keep [B, 1, H, W]: which source pixels splat (default
+    all). Returns the weighted sums [B, C + 1, H, W] (last channel: the weight).
     """
     b, c, h, w = state.shape
     inv = state[:, INV]
-    alive = (inv > 0).float()
+    alive = (inv > 0).float() if keep is None else (inv > 0).float() * keep[:, 0]
     p = F.normalize(rays, dim=-1) / inv.clamp_min(1e-6)[..., None]  # [B, H, W, 3], radial
-    p = p + state[:, VEL].permute(0, 2, 3, 1)
+    p = p + state[:, VEL].permute(0, 2, 3, 1) * torch.as_tensor(dt, dtype=p.dtype).reshape(-1, 1, 1, 1)
     q = torch.einsum("bij,bhwj->bhwi", r, p) + t[:, None, None]
     z = q[..., 2]
     alive = alive * (z > 1e-3).float()
@@ -180,12 +181,21 @@ def splat(state, r, t, rays, origin, focal, full):
             index = (y.clamp(0, h - 1) * w + x.clamp(0, w - 1)).long().flatten(1)
             wv = (weight * inside).flatten(1)[:, None]
             acc.scatter_add_(2, index[:, None].expand(-1, c + 1, -1), values * wv)
-    acc = acc.view(b, c + 1, h, w)
+    return acc.view(b, c + 1, h, w)
+
+
+def resolve(acc):
+    """Normalise splat sums: the resolved state and the hole mask."""
     weight = acc[:, -1:]
     hole = (weight < 0.01).float()
     out = acc[:, :-1] / weight.clamp_min(0.01) * (1 - hole)
     out[:, CERT:CERT + 1] = acc[:, CERT:CERT + 1].clamp(0, 1) * (1 - hole)  # partial coverage lowers it
     return out, hole
+
+
+def splat(state, r, t, rays, origin, focal, full, dt=0.0):
+    """accumulate + resolve: the state seen from camera c', and its holes."""
+    return resolve(accumulate(state, r, t, rays, origin, focal, full, dt))
 
 
 def load_export(folder: Path) -> Net:

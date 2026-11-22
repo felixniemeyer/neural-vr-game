@@ -14,8 +14,9 @@ ROOT = Path(__file__).resolve().parent.parent
 
 @dataclass
 class Data:
-    name: str = ""              # data/prepared/<name>/; empty = "<infer>to<size>-<minutes>min"
-    infer: int = 256            # depth + flow run on data/frames/<infer>/ (SIZE=<infer> ./frames.sh)
+    name: str = ""              # data/prepared/<name>/; empty = "<infer>to<size>-<minutes>min-<rate>"
+    fps: float = 0              # video frame rate, 0 = each video's own (FPS=<fps> ./frames.sh)
+    infer: int = 256            # depth + flow run on data/frames/<infer>/<rate>/ (SIZE=<infer> ./frames.sh)
     size: int = 128             # stored resolution (downsampled from infer)
     minutes: float = 15.0       # total footage sampled from all videos
     chunk: float = 20.0         # seconds per contiguous chunk
@@ -43,8 +44,11 @@ class Net:
 @dataclass
 class Train:
     crop: int = 32              # training crop (px at data.size); the net is per pixel
-    steps: int = 8              # rollout length (frames, BPTT)
-    horizon: int = 8            # frames a sample follows its clip, continuing from its own state
+    steps: int = 8              # net steps per iteration (BPTT)
+    strides: list = field(default_factory=lambda: [1.0])  # video frames per net step, drawn per sample
+    horizon: int = 8            # video frames a sample follows its clip, continuing from its own state
+    stereo: float = 0.0         # weight of the two eyes' disagreement; 0 = one eye
+    baseline: float = 1.0       # max distance of the second eye (m, uniform 0..baseline)
     batch: int = 16
     lr: float = 2e-3
     iters: int = 20000
@@ -65,7 +69,14 @@ class Config:
 
     def prep_dir(self) -> Path:
         d = self.data
-        return ROOT / "data" / "prepared" / (d.name or f"{d.infer}to{d.size}-{d.minutes:g}min")
+        return ROOT / "data" / "prepared" / (d.name or f"{d.infer}to{d.size}-{d.minutes:g}min-{self.rate()}")
+
+    def rate(self) -> str:
+        """The frame rate as a folder name: 'native' or e.g. '10fps'."""
+        return f"{self.data.fps:g}fps" if self.data.fps else "native"
+
+    def frames_dir(self) -> Path:
+        return ROOT / "data" / "frames" / str(self.data.infer) / self.rate()
 
 
 def _toml(value) -> str:
@@ -74,7 +85,8 @@ def _toml(value) -> str:
 
 def _cast(default, value):
     if isinstance(default, list):
-        return [int(v) for v in (value.split(",") if isinstance(value, str) else value)]
+        kind = type(default[0]) if default else int
+        return [kind(v) for v in (value.split(",") if isinstance(value, str) else value)]
     return type(default)(value)
 
 

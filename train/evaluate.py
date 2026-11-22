@@ -6,6 +6,8 @@ before the net ran. Lower than "push-pull" = the net adds something.
 """
 import sys
 
+from fractions import Fraction
+
 import numpy as np
 import torch
 
@@ -20,7 +22,9 @@ config = load(project)
 data = Footage(config)
 net = load_export(f"{project}/net")
 steps = int(sys.argv[3]) if len(sys.argv) > 3 else config.train.steps
-batch = data.batch(samples, np.random.default_rng(7), steps=steps)
+g = np.random.default_rng(7)
+one = Fraction(1)  # whole video frames, one eye
+batch = data.batch(samples, g, steps=steps, picks=[(*data.pick(g, steps, one)[:4], one, 0.0) for _ in range(samples)])
 
 
 def run(change):
@@ -31,8 +35,8 @@ def run(change):
     with torch.no_grad():
         for k in range(steps):
             resolved, hole = splat(state, batch["R"][:, k], batch["t"][:, k], batch["rays"], batch["origin"],
-                                   data.focal, config.data.size)
-            state = net(resolved)
+                                   data.focal, config.data.size, batch["dt"])
+            state = net(resolved, batch["dt"] * net.rate)
             truth = truth_state(batch, k + 1, net.channels)
             known = batch["mask"][:, k + 1, None]
             error = torch.cat([(state[:, RGB] - truth[:, RGB]).abs(),

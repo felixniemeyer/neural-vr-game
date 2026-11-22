@@ -48,7 +48,7 @@ def read(path, start, seconds, width, height):
 
 def chunks(config):
     """Stratified: split the total length into equal segments, one random chunk each."""
-    videos = sorted((ROOT / "data" / "frames" / str(config.data.infer)).glob("*.mp4"))
+    videos = sorted(config.frames_dir().glob("*.mp4"))
     lengths = [probe(v)[0] - config.data.chunk for v in videos]
     total = sum(lengths)
     count = max(1, round(config.data.minutes * 60 / config.data.chunk))
@@ -207,8 +207,9 @@ def main():
         if path.exists():
             continue
         began = time.time()
-        _, _, w, h = probe(video)
+        _, fps, w, h = probe(video)
         out = process(models, config, read(video, start, config.data.chunk, w, h))
+        out["fps"] = np.float32(fps)
         np.savez_compressed(path.with_suffix(".tmp.npz"), **out)
         path.with_suffix(".tmp.npz").rename(path)
         preview(path.with_suffix(".png"), out)

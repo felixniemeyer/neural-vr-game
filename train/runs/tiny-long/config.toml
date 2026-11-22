@@ -1,5 +1,6 @@
 [data]
 name = ""
+fps = 10.0
 infer = 256
 size = 128
 minutes = 15.0
