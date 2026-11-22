@@ -301,7 +301,7 @@ def knock_out(resolved, hole, most):
     return resolved * (1 - out), torch.maximum(hole, out)
 
 
-def rollout(net, data, batch, observe, record=False, start=None):
+def rollout(net, data, batch, observe, record=False, start=None, dropout=0.0):
     """Loss over the batch's steps; start: initial states (per sample [eyes * C, H, W]
     as [C, H, W] per eye stacked, None where the rollout starts from the real frame).
     Returns (loss, recorded frames (left eye), final state [eyes * B, C, H, W])."""
@@ -319,8 +319,8 @@ def rollout(net, data, batch, observe, record=False, start=None):
     loss, total_known, frames = 0.0, 0.0, []
     for k in range(steps):
         resolved, hole = eyes.step(state, k)
-        if cfg.train.dropout:
-            resolved, hole = knock_out(resolved, hole, cfg.train.dropout)
+        if dropout:  # training only (train.dropout); validation sees the real holes
+            resolved, hole = knock_out(resolved, hole, dropout)
         pred = net(resolved, tau)
         truth, known = eyes.truth(k + 1, net.channels)
         weight = (1 + cfg.train.hole_weight * hole) * known
@@ -453,7 +453,7 @@ def main():
     stereo = config.train.stereo
     for it in range(start + 1, config.train.iters + 1):
         batch, initial = streams.batch(rng)
-        loss, _, final = rollout(net, data, batch, config.train.observe, start=initial)
+        loss, _, final = rollout(net, data, batch, config.train.observe, start=initial, dropout=config.train.dropout)
         streams.advance(final)
         opt.zero_grad()
         loss.backward()

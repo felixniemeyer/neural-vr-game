@@ -23,13 +23,13 @@
   "committedIn": [],
   "status": {
     "state": "partially",
-    "comment": "Border regeneration: already covered by train.turn (head-turn augmentation opens thick borders). Dropout: new train.dropout (train.py knock_out): per step, smooth-noise blobs (~8 px at data.size) covering up to that fraction of each sample are zeroed in the resolved state and count as holes (hole_weight) in the loss. Verified: unit check (zeroed pixels == hole mask, per-sample fractions 0.07..0.39 at 0.5), 3-iteration end-to-end run with dropout 0.3 completed (val printed). Not yet: a real run comparing with/without dropout (CPU busy with deep24, ~6 h).",
+    "comment": "A/B, 500 its each from nice-net (runs/nodrop vs runs/drop30, dropout 0.3). Validation of drop30 also had dropout holes (bug, fixed: dropout now only in training rollouts), so compare against each run's own push-pull: nodrop short 0.0769 vs pp 0.0777 (-1%), 96 frames 0.1560 vs 0.1349 (+16% worse); drop30 short 0.0913 vs pp 0.0982 (-7%: it learned to regenerate knocked-out blobs), 96 frames 0.1800 vs 0.1677 (+7% worse). Suggestive, not conclusive. Clean comparison queued: evaluate.py both nets at 96 steps without dropout, after deep24 finishes (memory: one job at a time) -> runs/<r>/eval96.txt.",
     "date": 1795380103192
   },
   "intrinsicValue": 0,
+  "cost": 1,
   "selfWeight": 1,
   "duration": 1,
   "costVariance": 0,
-  "valueVariance": 0,
-  "cost": 1
+  "valueVariance": 0
 }
