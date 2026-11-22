@@ -17,6 +17,7 @@ layout(set = 0, binding = 0) uniform Frame {
     vec4 mixing;     // this frame's blend toward the scene: colour, sky inverse depth, depth + velocity + certainty, focus
     vec4 player;     // ground position x, z now (xy) and in the previous frame (zw)
     vec4 tone[3];    // display exposure per channel: pow(max(rgb * tone[0] + tone[1], 0), tone[2])
+    vec4 gaze;       // focus centre per eye (x right, y down, -1..1): left xy, right zw; 0 = view centre
 } u;
 
 // Pixel convention: integer pixel centres, origin top-left, y down.

@@ -62,6 +62,8 @@ pub struct Settings {
     pub sky: f32,
     /// Extra scene blend toward the view centre ("looking uncovers detail"), 0 = off.
     pub focus: f32,
+    /// Where the eyes look (world point), if tracked; else the focus is the view centre.
+    pub gaze: Option<Vec3>,
     /// Blocks per side, cell size (m), maximum height (m).
     pub blocks: u32,
     pub cell: f32,
@@ -86,8 +88,9 @@ struct Uniforms {
     mixing: [f32; 4],
     player: [f32; 4],
     tone: [[f32; 4]; 3],
+    gaze: [f32; 4],
 }
-const _: () = assert!(size_of::<Uniforms>() == 480 + (2 + MAX_LAYERS + MAX_TAPS + 6) * 16);
+const _: () = assert!(size_of::<Uniforms>() == 480 + (2 + MAX_LAYERS + MAX_TAPS + 7) * 16);
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -737,6 +740,18 @@ impl World {
                 [now.x, now.z, before.x, before.z]
             },
             tone: self.tone_uniform(),
+            gaze: {
+                // Per eye: the gaze point in centred view coordinates (x right, y down, -1..1).
+                let at = |camera: &EyeCamera| {
+                    settings.gaze.map_or([0., 0.], |point| {
+                        let clip = camera.view_proj * point.extend(1.);
+                        if clip.w <= 1e-4 { return [0., 0.] }
+                        [(clip.x / clip.w).clamp(-1.5, 1.5), (-clip.y / clip.w).clamp(-1.5, 1.5)]
+                    })
+                };
+                let [l, r] = [at(&cameras[0]), at(&cameras[1])];
+                [l[0], l[1], r[0], r[1]]
+            },
         };
         let area = vk::Rect2D::default().extent(self.size);
         let viewport = vk::Viewport::default()

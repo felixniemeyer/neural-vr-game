@@ -231,6 +231,8 @@ struct Hands {
     zip: xr::Action<bool>,
     buzz: xr::Action<xr::Haptic>,
     aims: [xr::Space; 2],
+    /// XR_EXT_eye_gaze_interaction: the gaze pose (action kept alive with its space).
+    gaze: Option<(xr::Action<xr::Posef>, xr::Space)>,
 }
 
 /// One hand this frame: trigger held, and its aim ray in tracking space.
@@ -240,7 +242,7 @@ struct Held {
 }
 
 impl Hands {
-    fn new(instance: &xr::Instance, session: &xr::Session<xr::Vulkan>) -> Result<Self> {
+    fn new(instance: &xr::Instance, session: &xr::Session<xr::Vulkan>, eye_gaze: bool) -> Result<Self> {
         let set = instance.create_action_set("sunk", "Sunk City", 0)?;
         let paths = [instance.string_to_path("/user/hand/left")?, instance.string_to_path("/user/hand/right")?];
         let zip = set.create_action::<bool>("zip", "Zip toward a block", &paths)?;
@@ -264,12 +266,33 @@ impl Hands {
                 println!("Controller bindings for {profile:?} not accepted: {error}");
             }
         }
+        let gaze = if eye_gaze {
+            let action = set.create_action::<xr::Posef>("gaze", "Eye gaze", &[])?;
+            let binding = [xr::Binding::new(&action, instance.string_to_path("/user/eyes_ext/input/gaze_ext/pose")?)];
+            let profile = instance.string_to_path("/interaction_profiles/ext/eye_gaze_interaction")?;
+            match instance.suggest_interaction_profile_bindings(profile, &binding) {
+                Ok(()) => Some(action),
+                Err(error) => {
+                    println!("Eye gaze binding not accepted: {error}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
         session.attach_action_sets(&[&set])?;
+        let gaze = match gaze {
+            Some(action) => {
+                let space = action.create_space(session.clone(), xr::Path::NULL, xr::Posef::IDENTITY)?;
+                Some((action, space))
+            }
+            None => None,
+        };
         let aims = [
             aim.create_space(session.clone(), paths[0], xr::Posef::IDENTITY)?,
             aim.create_space(session.clone(), paths[1], xr::Posef::IDENTITY)?,
         ];
-        Ok(Self { set, paths, zip, buzz, aims })
+        Ok(Self { set, paths, zip, buzz, aims, gaze })
     }
 
     fn sync(&self, session: &xr::Session<xr::Vulkan>, space: &xr::Space, time: xr::Time) -> Result<[Held; 2]> {
@@ -285,6 +308,15 @@ impl Hands {
             }
         }
         Ok(held)
+    }
+
+    /// The gaze ray (origin, direction) in tracking space, after sync, where tracked.
+    fn gaze(&self, space: &xr::Space, time: xr::Time) -> Option<(Vec3, Vec3)> {
+        let (_, gaze) = self.gaze.as_ref()?;
+        let location = gaze.locate(space, time).ok()?;
+        let valid = xr::SpaceLocationFlags::POSITION_VALID | xr::SpaceLocationFlags::ORIENTATION_VALID;
+        let pose = location.pose;
+        location.location_flags.contains(valid).then(|| (vector(pose.position), quaternion(pose.orientation) * Vec3::NEG_Z))
     }
 
     fn buzz(&self, session: &xr::Session<xr::Vulkan>, hand: usize) {
@@ -504,6 +536,10 @@ fn run(shaders: &Path) -> Result<()> {
     .context("Loading OpenXR")?;
     let mut extensions = xr::ExtensionSet::default();
     extensions.khr_vulkan_enable2 = true;
+    // Eye tracking (Steam Frame): the focus fader follows the gaze where the runtime has it.
+    let eye_gaze = entry.enumerate_extensions()?.ext_eye_gaze_interaction;
+    extensions.ext_eye_gaze_interaction = eye_gaze;
+    println!("Eye gaze: {}", if eye_gaze { "available" } else { "not offered by the runtime (focus at the view centre)" });
     let instance = entry.create_instance(
         &xr::ApplicationInfo {
             application_name: "Sunk City",
@@ -532,7 +568,7 @@ fn run(shaders: &Path) -> Result<()> {
     };
     let space =
         session.create_reference_space(xr::ReferenceSpaceType::LOCAL, xr::Posef::IDENTITY)?;
-    let hands = Hands::new(&instance, &session)?;
+    let hands = Hands::new(&instance, &session, eye_gaze)?;
 
     let formats = session.enumerate_swapchain_formats()?;
     let format = [
@@ -821,6 +857,8 @@ fn run(shaders: &Path) -> Result<()> {
             depth: per_second(controls.get("depth")),
             sky: controls.get("sky"),
             focus: controls.get("focus"),
+            // A point 50 m along the gaze in the world (as the hands' rays, zip.update).
+            gaze: hands.gaze(&space, time).map(|(from, dir)| origin + turn * (from - head) + turn * dir * 50.),
             blocks: controls.get("blocks").round().max(1.) as u32,
             cell: controls.get("cell"),
             height: controls.get("height"),

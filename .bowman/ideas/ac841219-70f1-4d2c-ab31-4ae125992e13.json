@@ -12,7 +12,7 @@
   "committedIn": [],
   "status": {
     "state": "open",
-    "comment": "",
+    "comment": "Groundwork: eye gaze is now read (XR_EXT_eye_gaze_interaction) and available per eye as u.gaze (centred view coords) in all shaders; the focus fader uses it. Multi-resolution layers themselves not started.",
     "date": 1795225101725
   },
   "intrinsicValue": 0,

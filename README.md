@@ -88,7 +88,7 @@ Live controls (av-controls panel `sunk-city`, in tabs: net, scene, city, motion,
 |------------|---------|---------|
 | `color`, `depth` | 0.01, 0.05 | How much of the rendered scene's colour, and depth (with velocity and certainty), goes into the state per frame at 90 Hz (applied per second, so other frame rates look the same). Only where the state has data; fading out with distance |
 | `sky` | 150 | Distance (m) of the sky: where no block or ground is rendered, depth is blended toward it like `depth` (no colour), so the net's sky doesn't come close; 0 = off |
-| `focus` | 0 | Looking uncovers detail: toward the view centre the scene blends in up to 1 + `focus` times faster (gaussian, ~a quarter of the view), so detail gathers where you look and stays; 0 = off |
+| `focus` | 0 | Looking uncovers detail: toward where you look (eye gaze via `XR_EXT_eye_gaze_interaction` where the runtime tracks it, e.g. Steam Frame; else the view centre) the scene blends in up to 1 + `focus` times faster (gaussian, ~a quarter of the view), so detail gathers where you look and stays; 0 = off |
 | `wild` | 0 | Trained → randomly morphing weights (the distortion knob) |
 | `timescale`, `netfps` | 1, 24 | How fast the net's world runs (1 = real time, as in the footage); net updates per second. Between updates frames only reproject and fill holes; each update covers the (scaled) time since the last one |
 | `blocks`   | 24      | Blocks per side around the player |

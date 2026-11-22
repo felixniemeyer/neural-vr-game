@@ -13,7 +13,7 @@
   "committedIn": [],
   "status": {
     "state": "human-dependent",
-    "comment": "First step without eye tracking: `focus` fader (scene tab, default 0 = off). resolve.frag multiplies the scene's colour and depth blend by 1 + focus * exp(-r^2/0.18) around the view centre, so rendered detail gathers where you look and is kept by reprojection. Builds and runs in dev.sh (14.5 ms/frame unchanged). Human step: look around with focus ~5-10, color ~0.01: does detail gather where you look, and does it feel like discovering? Next if yes: drive the centre from the Frame's eye tracking (XR_EXT_eye_gaze_interaction).",
+    "comment": "focus fader (ca745ef) + eye gaze: XR_EXT_eye_gaze_interaction enabled when offered (Valve's Steam Frame docs name this extension for eye tracking), gaze pose -> world point 50 m out -> per-eye centred coords in the uniform `gaze`; resolve.frag centres the focus boost there (view centre when untracked). Verified on Monado: extension offered, binding accepted, renders 13.4 ms/frame. Human step: on the Frame (eye tracking enabled), set focus ~5-10: does detail gather where you look and feel like discovering?",
     "date": 1795380664327
   },
   "intrinsicValue": 0,

@@ -43,9 +43,9 @@ void main() {
     vec4 g = sceneAt(TARGET, p, fade);
     vec3 motion = sceneFetch(TARGET, 1, p).xyz;
     float sky = sceneFetch(TARGET, 0, p).w > 0.0 ? 0.0 : 1.0;
-    // Focus: where you look (the view centre), the scene blends in up to 1 + focus times
+    // Focus: where you look (the gaze where tracked, else the view centre), the scene blends in up to 1 + focus times
     // as fast (a gaussian of about a quarter of the view), so detail gathers there.
-    vec2 centred = (vec2(p) + 0.5) / u.info.xy * 2.0 - 1.0;
+    vec2 centred = (vec2(p) + 0.5) / u.info.xy * 2.0 - 1.0 - (TARGET == 0 ? u.gaze.xy : u.gaze.zw);
     float focus = 1.0 + u.mixing.w * exp(-dot(centred, centred) / 0.18);
     float alpha = hole ? 0.0 : min(fade * u.mixing.x * (1.0 - sky) * focus, 1.0);
     float depthAlpha = hole ? 0.0 : min(fade * u.mixing.z * focus, 1.0);
