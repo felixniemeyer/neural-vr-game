@@ -143,6 +143,7 @@ Training settings worth knowing (`[train]`):
   its step size (tau ticks, `net.rate` per second), so the app can update it at any rate
 - `horizon`: video frames a sample follows its clip, continuing from the net's own state
 - `steps`: net steps per iteration that gradients flow through (longer = slower per iteration, fights slow drift)
+- `corridor`: weight of a loss that only acts when a prediction's mean luminance leaves the real frame's ±0.05 or its contrast falls below 0.8× (against drifting dark or fading to fog)
 - `dropout`: up to this fraction of each step's resolved state is knocked out in ~8 px blobs, which the net learns to regenerate (counted as holes in the loss)
 - `init`: start from an exported net (e.g. `../stereo24/nets/001250`) with a fresh optimiser
 - `stereo`, `baseline`: a second eye up to `baseline` m to the right, with the app's

@@ -276,6 +276,21 @@ class Eyes:
         return loss / 2
 
 
+def corridor(pred, truth, known, slack=0.05, contrast=0.8):
+    """Global stats in a corridor (train.corridor): per sample, the known pixels' mean
+    luminance may differ from the truth's by `slack`, and their spread (std) may not fall
+    below `contrast` times the truth's. Zero inside, linear outside: no pull toward the
+    exact frame, only against drifting dark/bright or fading to fog."""
+    def stats(x):
+        y = x.mean(1, keepdim=True)
+        weight = known / known.sum((1, 2, 3), keepdim=True).clamp_min(1)
+        mean = (y * weight).sum((1, 2, 3))
+        std = (((y - mean.view(-1, 1, 1, 1)) ** 2 * weight).sum((1, 2, 3)) + 1e-6).sqrt()
+        return mean, std
+    (mp, sp), (mt, st) = stats(pred), stats(truth)
+    return (F.relu((mp - mt).abs() - slack) + F.relu(contrast * st - sp)).mean()
+
+
 def knock_out(resolved, hole, most):
     """Dropout (train.dropout): blobs of about 8 px (smooth noise, thresholded) covering
     up to `most` of each sample become holes (all channels 0, as the splat leaves them),
@@ -324,6 +339,8 @@ def rollout(net, data, batch, observe, record=False, start=None):
                 return F.avg_pool2d(g, 8, stride=4)
             window = F.avg_pool2d(known[..., :-1, :-1], 8, stride=4) > 0.99
             step_loss = step_loss + cfg.train.texture * ((energy(image) - energy(target)).abs() * window).mean()
+        if cfg.train.corridor:
+            step_loss = step_loss + cfg.train.corridor * corridor(pred[:, RGB], truth[:, RGB], known)
         if eyes.stereo:
             step_loss = step_loss + cfg.train.stereo * eyes.disagreement(pred, near)
         loss = loss + step_loss

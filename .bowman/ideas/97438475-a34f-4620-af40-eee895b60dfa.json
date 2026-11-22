@@ -14,9 +14,9 @@
   ],
   "committedIn": [],
   "status": {
-    "state": "open",
-    "comment": "",
-    "date": 1795165952938
+    "state": "partially",
+    "comment": "Two priors exist: train.texture (local edge energy in 8x8 windows, position-free) and now train.corridor (contrast may not fade below 0.8x truth, mean luminance within +-0.05). Not done: 1/f spectrum, vertical structure prior, CLIP teacher.",
+    "date": 1795380493614
   },
   "intrinsicValue": 0,
   "selfWeight": 1,

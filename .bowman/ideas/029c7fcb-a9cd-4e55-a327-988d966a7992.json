@@ -15,9 +15,9 @@
   ],
   "committedIn": [],
   "status": {
-    "state": "open",
-    "comment": "",
-    "date": 1795167892717
+    "state": "partially",
+    "comment": "train.corridor (train.py corridor()): per sample, zero loss while the prediction's mean luminance stays within truth +-0.05 and its luminance std >= 0.8x truth's, linear outside. Unit check: same frame 0, slightly darker 0, fog (flat) 0.13, 0.2 darker 0.15. Targets are the real frame's stats (not slow-adapting targets yet). Pending: A/B training run (after the dropout A/B frees the CPU).",
+    "date": 1795380493494
   },
   "intrinsicValue": 0,
   "selfWeight": 1,
