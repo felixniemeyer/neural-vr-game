@@ -61,6 +61,7 @@ Environment variables (on the Frame, set them in `native/frame/start.sh`):
 | `WEIGHTS`  | unset   | A trained net, e.g. `train/runs/tiny/net`; unset = random weights |
 | `SNAPSHOT` | unset   | Write the left eye's colour to this `.ppm` every 300 frames |
 | `DUMP`, `DUMP_FRAME` | unset, 60 | Write eye 0's net input and output once (for `train/parity.py`) |
+| `ZIP_ANYWHERE` | 1 | 1: the trigger also zips when the ray misses the blocks (toward a point 40 m along it); 0: only toward blocks |
 | `OVERSCAN` | 1.15    | Field-of-view margin for the compositor's reprojection |
 | `VALIDATE` | unset   | 1 = Vulkan validation layer |
 

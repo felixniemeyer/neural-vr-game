@@ -24,6 +24,8 @@ use world::{EyeCamera, Settings, World, EYES};
 const STEREO: xr::ViewConfigurationType = xr::ViewConfigurationType::PRIMARY_STEREO;
 /// The player's collision radius around the head (m).
 const RADIUS: f32 = 0.3;
+/// ZIP_ANYWHERE: how far along the ray the anchor goes when it misses the blocks (m).
+const MISS_DISTANCE: f32 = 40.;
 const BLEND: xr::EnvironmentBlendMode = xr::EnvironmentBlendMode::OPAQUE;
 
 fn init_gpu(instance: &xr::Instance, system: xr::SystemId) -> Result<Gpu> {
@@ -249,6 +251,7 @@ struct Zip {
     was_pressed: [bool; 2],
     altitude: Option<f32>,
     last: Option<f32>,
+    anywhere: bool,
 }
 
 impl Zip {
@@ -269,7 +272,11 @@ impl Zip {
         let dt = (seconds - self.last.replace(seconds).unwrap_or(seconds)).clamp(0., 0.1);
         for (i, hand) in held.iter().enumerate() {
             if hand.pressed && !self.was_pressed[i] {
-                self.anchors[i] = hand.ray.and_then(|(from, dir)| city.hit(from - head + self.position, dir, 150.));
+                self.anchors[i] = hand.ray.and_then(|(from, dir)| {
+                    let from = from - head + self.position;
+                    // ZIP_ANYWHERE: missing the blocks anchors in the air, MISS_DISTANCE along the ray.
+                    city.hit(from, dir, 150.).or(self.anywhere.then(|| from + dir * MISS_DISTANCE))
+                });
                 if let Some(anchor) = self.anchors[i] {
                     println!("Zip ({}): anchored {:.1} m away", ["left", "right"][i], anchor.distance(self.position + eye));
                     hands.buzz(session, i);
@@ -470,7 +477,8 @@ fn run(shaders: &Path) -> Result<()> {
     let mut frames = 0u64;
     let mut gpu_ms = [0f64; world::STAMPS as usize - 1];
     let mut start = None;
-    let mut zip = Zip::default();
+    // ZIP_ANYWHERE=0: zip only toward blocks the ray hits (default 1: also into the air).
+    let mut zip = Zip { anywhere: env::var("ZIP_ANYWHERE").map_or(true, |v| v != "0"), ..Zip::default() };
     // Live settings from the av-controls broker (CONTROLS, default wss://localhost:8080);
     // without a broker the defaults below stay.
     // FADERS="wild=0.5,color=0.3": other initial fader values (e.g. without a broker).
