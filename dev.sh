@@ -9,7 +9,7 @@
 # then it is restarted too. Ctrl+C stops everything.
 #
 #   BROKER_PORT=8090  CONTROLLER_PORT=4173  HEADSET=qwerty|simulated (auto-rotating)
-#   MONADO_WORKSPACE (sway): where Monado's windows go, default: the current workspace
+#   MONADO_WORKSPACE (sway): where Monado's windows go, default 5
 #   plus the app's variables: EYE_SIZE=256 VIEW=... MOVE=4 ...
 set -euo pipefail
 root=$(cd -- "$(dirname -- "$0")" && pwd)
@@ -21,11 +21,13 @@ controller_port=${CONTROLLER_PORT:-4173}
 export EYE_SIZE=${EYE_SIZE:-1024} #384
 export MOVE=${MOVE:-4} # qwerty WASD is slow at city scale
 headset=${HEADSET:-qwerty}
-# sway: put Monado's windows (compositor + debug GUI) on this workspace.
+# sway: put Monado's windows on this workspace: the compositor (Wayland app_id
+# "openxr") and the debug GUI (XWayland class "monado-service"; its title comes late).
 if [[ -n ${SWAYSOCK:-} ]] && command -v swaymsg >/dev/null; then
-    workspace=${MONADO_WORKSPACE:-$(swaymsg -t get_workspaces | python3 -c \
-        'import json, sys; print(next(w["name"] for w in json.load(sys.stdin) if w["focused"]))')}
-    swaymsg "for_window [title=\"^Monado\"] move container to workspace $workspace" >/dev/null
+    workspace=${MONADO_WORKSPACE:-5}
+    for criteria in 'app_id="openxr"' 'class="monado-service"' 'title="^Monado"'; do
+        swaymsg "for_window [$criteria] move container to workspace $workspace" >/dev/null
+    done
 fi
 export CONTROLS=${CONTROLS:-ws://localhost:$broker_port}
 export XR_RUNTIME_JSON=${XR_RUNTIME_JSON:-/usr/share/openxr/1/openxr_monado.json}

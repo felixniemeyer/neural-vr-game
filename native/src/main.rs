@@ -141,9 +141,9 @@ fn widen(fov: xr::Fovf, factor: f32) -> xr::Fovf {
 
 /// Camera for one eye. `head` is subtracted from the tracked position: pass the head
 /// centre for rotation-only viewing (only the stereo eye offset remains), or zero to
-/// keep head translation. `origin` places the player in the world. OpenGL-style clip
-/// space, y up.
-fn camera(view: &xr::View, head: Vec3, origin: Vec3) -> EyeCamera {
+/// keep head translation. `origin` places the player in the world, turned by `turn`
+/// (the autopilot's look direction). OpenGL-style clip space, y up.
+fn camera(view: &xr::View, head: Vec3, origin: Vec3, turn: Quat) -> EyeCamera {
     let (l, r, d, u) = (
         view.fov.angle_left.tan(),
         view.fov.angle_right.tan(),
@@ -162,8 +162,8 @@ fn camera(view: &xr::View, head: Vec3, origin: Vec3) -> EyeCamera {
         ),
         Vec4::new(0., 0., -2. * far * near / (far - near), 0.),
     );
-    let position = vector(view.pose.position) - head + origin;
-    let pose = Mat4::from_rotation_translation(quaternion(view.pose.orientation), position);
+    let position = origin + turn * (vector(view.pose.position) - head);
+    let pose = Mat4::from_rotation_translation(turn * quaternion(view.pose.orientation), position);
     EyeCamera {
         view_proj: projection * pose.inverse(),
         position,
@@ -242,6 +242,11 @@ impl Hands {
     }
 }
 
+/// A blend weight per 90 Hz frame as a rate per second: 1 - (1 - w)^(90 dt) = 1 - exp(-rate dt).
+fn per_second(per_frame: f32) -> f32 {
+    -(1. - per_frame.min(0.999)).ln() * 90.
+}
+
 /// When the net updates: every 1/netfps seconds of (time-scaled) time, by the ticks
 /// that passed (tau = elapsed * rate, at most the largest trained step); the frames in
 /// between only reproject and fill holes (tau 0). The display stays at the full rate.
@@ -272,21 +277,51 @@ impl NetClock {
     }
 }
 
-/// Zip toward blocks: holding a trigger anchors the controller's ray on a block and
-/// accelerates the player toward it; drag damps the velocity, so releasing glides to a
-/// stop. `position` is the world origin of the tracking space (camera() `origin`).
+/// The player. Zip toward blocks: holding a trigger anchors the controller's ray on a
+/// block and accelerates the player toward it; drag damps the velocity, so releasing
+/// glides to a stop. Autopilot (switch `auto`): wanders through the city at about 0.9
+/// of the block height (+- 0.9 m), looking around. `position` is the world origin of
+/// the tracking space and `yaw` its turn (camera() `origin`, `turn`).
 #[derive(Default)]
 struct Zip {
     position: Vec3,
     velocity: Vec3,
+    yaw: f32,
     anchors: [Option<Vec3>; 2],
     was_pressed: [bool; 2],
     last: Option<f32>,
     anywhere: bool,
+    /// Autopilot: its time and heading.
+    flown: f32,
+    heading: f32,
 }
 
+/// Autopilot speed (m/s) and how quickly it steers, climbs and looks (1/s).
+const AUTO_SPEED: f32 = 3.;
+const AUTO_RESPONSE: f32 = 1.5;
+
 impl Zip {
-    /// `settings`: pull (m/s²), drag (1/s).
+    fn turn(&self) -> Quat {
+        Quat::from_rotation_y(self.yaw)
+    }
+
+    /// Steer the velocity along a wandering heading at ~0.9 of the block height, and turn
+    /// the view toward the heading, glancing around.
+    fn autopilot(&mut self, dt: f32, eye: Vec3, height: f32) {
+        self.flown += dt;
+        let t = self.flown;
+        self.heading += dt * (0.25 * (0.07 * t).sin() + 0.15 * (0.031 * t + 1.).sin());
+        let ahead = Vec3::new(-self.heading.sin(), 0., -self.heading.cos());
+        let altitude = 0.9 * height + 0.9 * (0.13 * t).sin();
+        let climb = (altitude - (self.position.y + eye.y)) * AUTO_RESPONSE;
+        let follow = 1. - (-AUTO_RESPONSE * dt).exp();
+        self.velocity += (ahead * AUTO_SPEED + Vec3::Y * climb - self.velocity) * follow;
+        let look = self.heading + 0.6 * (0.09 * t).sin();
+        self.yaw += (look - self.yaw) * follow;
+    }
+
+    /// `settings`: pull (m/s²), drag (1/s); `eye` the tracked eye centre after the head
+    /// scaling (tracking space).
     #[allow(clippy::too_many_arguments)]
     fn update(
         &mut self,
@@ -298,12 +333,17 @@ impl Zip {
         eye: Vec3,
         city: &city::City,
         [pull, drag]: [f32; 2],
+        auto: bool,
     ) {
         let dt = (seconds - self.last.replace(seconds).unwrap_or(seconds)).clamp(0., 0.1);
+        let eye = self.turn() * eye;
+        if auto {
+            self.autopilot(dt, eye, city.height);
+        }
         for (i, hand) in held.iter().enumerate() {
             if hand.pressed && !self.was_pressed[i] {
                 self.anchors[i] = hand.ray.and_then(|(from, dir)| {
-                    let from = from - head + self.position;
+                    let (from, dir) = (self.position + self.turn() * (from - head), self.turn() * dir);
                     // ZIP_ANYWHERE: missing the blocks anchors in the air, MISS_DISTANCE along the ray.
                     city.hit(from, dir, 150.).or(self.anywhere.then(|| from + dir * MISS_DISTANCE))
                 });
@@ -324,7 +364,9 @@ impl Zip {
             // Fade out over the last 1.5 m, so the pull does not end in the wall.
             self.velocity += to / distance.max(1e-3) * pull * (distance / 1.5).min(1.) * dt;
         }
-        self.velocity *= (-drag * dt).exp();
+        if !auto {
+            self.velocity *= (-drag * dt).exp();
+        }
         self.position += self.velocity * dt;
         // Keep the head out of the blocks: push it out, and drop the velocity into the walls.
         let (free, normals) = city.collide(self.position + eye, RADIUS);
@@ -523,18 +565,25 @@ fn run(shaders: &Path) -> Result<()> {
             .unwrap_or(default)
     };
     let controls = av_controls::Panel::new("sunk-city")
-        // Blend toward the scene per second; 0.9 and 4.6 are 0.01 and 0.05 per frame at 90 Hz.
-        .fader("color", 0., 5., initial("color", 0.9))
-        .fader("depth", 0., 20., initial("depth", 4.6))
+        .section("net")
         .fader("wild", 0., 1., initial("wild", 0.))
         .fader("timescale", 0., 4., initial("timescale", 1.))
         .fader_with("netfps", 5., 90., initial("netfps", 24.), 0)
+        // How much of the scene's colour and depth goes into the state per frame (at
+        // 90 Hz; applied per second, so other frame rates look the same).
+        .section("scene")
+        .fader_with("color", 0., 0.1, initial("color", 0.01), 3)
+        .fader_with("depth", 0., 0.3, initial("depth", 0.05), 3)
+        .section("city")
         .fader_with("blocks", 4., 64., initial("blocks", 24.), 0)
         .fader_with("cell", 1., 10., initial("cell", 4.), 1)
         .fader_with("height", 1., 25., initial("height", 7.), 1)
         .fader_with("radius", 3., 100., initial("radius", 20.), 1)
+        .section("motion")
+        .switch("auto", initial("auto", 0.) > 0.5)
         .fader_with("pull", 0., 60., initial("pull", 25.), 1)
         .fader_with("drag", 0., 6., initial("drag", 2.5), 2)
+        .section("display")
         .fader("mid", 0., 1., initial("mid", 0.5))
         .fader_with("clip", 0., 0.2, initial("clip", 0.03), 3)
         .fader_with("black", 0., 0.3, initial("black", 0.05), 3)
@@ -624,18 +673,22 @@ fn run(shaders: &Path) -> Result<()> {
             height: controls.get("height"),
             radius: controls.get("radius"),
             blocks: controls.get("blocks").round().max(1.) as u32,
-            player: glam::Vec2::new(zip.position.x + eye.x, zip.position.z + eye.z),
+            player: {
+                let p = zip.position + zip.turn() * eye;
+                glam::Vec2::new(p.x, p.z)
+            },
         };
         let held = hands.sync(&session, &space, time)?;
-        zip.update(&held, &hands, &session, seconds, head, eye, &city, [controls.get("pull"), controls.get("drag")]);
-        let origin = zip.position;
-        let cameras = [camera(&views[0], head, origin), camera(&views[1], head, origin)];
+        let motion = [controls.get("pull"), controls.get("drag")];
+        zip.update(&held, &hands, &session, seconds, head, eye, &city, motion, controls.on("auto"));
+        let (origin, turn) = (zip.position, zip.turn());
+        let cameras = [camera(&views[0], head, origin, turn), camera(&views[1], head, origin, turn)];
         let dumping = dump.is_some() && frames == dump_frame;
         let settings = Settings {
             wild: controls.get("wild"),
             tau: clock.tick(seconds, controls.get("timescale"), controls.get("netfps"), &rule, dumping),
-            color: controls.get("color"),
-            depth: controls.get("depth"),
+            color: per_second(controls.get("color")),
+            depth: per_second(controls.get("depth")),
             blocks: controls.get("blocks").round().max(1.) as u32,
             cell: controls.get("cell"),
             height: controls.get("height"),
