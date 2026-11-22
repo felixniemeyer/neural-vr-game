@@ -22,9 +22,9 @@
   ],
   "committedIn": [],
   "status": {
-    "state": "open",
-    "comment": "",
-    "date": 1795165952672
+    "state": "partially",
+    "comment": "Border regeneration: already covered by train.turn (head-turn augmentation opens thick borders). Dropout: new train.dropout (train.py knock_out): per step, smooth-noise blobs (~8 px at data.size) covering up to that fraction of each sample are zeroed in the resolved state and count as holes (hole_weight) in the loss. Verified: unit check (zeroed pixels == hole mask, per-sample fractions 0.07..0.39 at 0.5), 3-iteration end-to-end run with dropout 0.3 completed (val printed). Not yet: a real run comparing with/without dropout (CPU busy with deep24, ~6 h).",
+    "date": 1795380103192
   },
   "intrinsicValue": 0,
   "selfWeight": 1,

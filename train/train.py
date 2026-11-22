@@ -276,6 +276,16 @@ class Eyes:
         return loss / 2
 
 
+def knock_out(resolved, hole, most):
+    """Dropout (train.dropout): blobs of about 8 px (smooth noise, thresholded) covering
+    up to `most` of each sample become holes (all channels 0, as the splat leaves them),
+    so the net learns to regenerate them; they weigh as holes in the loss."""
+    b, _, h, w = resolved.shape
+    noise = F.interpolate(torch.rand(b, 1, max(h // 8, 1), max(w // 8, 1)), size=(h, w), mode="bilinear", align_corners=False)
+    out = (noise < most * torch.rand(b, 1, 1, 1)).float()
+    return resolved * (1 - out), torch.maximum(hole, out)
+
+
 def rollout(net, data, batch, observe, record=False, start=None):
     """Loss over the batch's steps; start: initial states (per sample [eyes * C, H, W]
     as [C, H, W] per eye stacked, None where the rollout starts from the real frame).
@@ -294,6 +304,8 @@ def rollout(net, data, batch, observe, record=False, start=None):
     loss, total_known, frames = 0.0, 0.0, []
     for k in range(steps):
         resolved, hole = eyes.step(state, k)
+        if cfg.train.dropout:
+            resolved, hole = knock_out(resolved, hole, cfg.train.dropout)
         pred = net(resolved, tau)
         truth, known = eyes.truth(k + 1, net.channels)
         weight = (1 + cfg.train.hole_weight * hole) * known
