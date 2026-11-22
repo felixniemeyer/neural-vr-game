@@ -31,4 +31,4 @@ observe = 0.3
 hole_weight = 4.0
 edge_weight = 1.0
 preview = 250
-threads = 0
+threads = 6

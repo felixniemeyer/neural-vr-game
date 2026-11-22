@@ -331,21 +331,31 @@ fn run(shaders: &Path) -> Result<()> {
     let mut start = None;
     // Live settings from the av-controls broker (CONTROLS, default wss://localhost:8080);
     // without a broker the defaults below stay.
+    // FADERS="wild=0.5,color=0.3": other initial fader values (e.g. without a broker).
+    let overrides = env::var("FADERS").unwrap_or_default();
+    let initial = |name: &str, default: f32| -> f32 {
+        overrides
+            .split(',')
+            .filter_map(|pair| pair.split_once('='))
+            .find(|(key, _)| key.trim() == name)
+            .and_then(|(_, value)| value.trim().parse().ok())
+            .unwrap_or(default)
+    };
     let controls = av_controls::Panel::new("sunk-city")
-        .fader("color", 0., 1., 0.2)
-        .fader("depth", 0., 1., 0.1)
-        .fader("identity", 0., 1., 0.1)
-        .fader("wild", 0., 1., 0.)
-        .fader("rate", 0., 2., 1.)
-        .fader_with("blocks", 4., 64., 24., 0)
-        .fader_with("cell", 1., 10., 4., 1)
-        .fader_with("height", 1., 25., 7., 1)
-        .fader_with("radius", 3., 100., 20., 1)
-        .fader_with("altitude", 0., 25., 7.5, 1)
-        .fader("mid", 0., 1., 0.5)
-        .fader_with("clip", 0., 0.2, 0.03, 3)
-        .fader_with("black", 0., 0.3, 0.05, 3)
-        .fader("tint", 0., 1., 0.3)
+        .fader("color", 0., 1., initial("color", 0.2))
+        .fader("depth", 0., 1., initial("depth", 0.1))
+        .fader("identity", 0., 1., initial("identity", 0.1))
+        .fader("wild", 0., 1., initial("wild", 0.))
+        .fader("rate", 0., 2., initial("rate", 1.))
+        .fader_with("blocks", 4., 64., initial("blocks", 24.), 0)
+        .fader_with("cell", 1., 10., initial("cell", 4.), 1)
+        .fader_with("height", 1., 25., initial("height", 7.), 1)
+        .fader_with("radius", 3., 100., initial("radius", 20.), 1)
+        .fader_with("altitude", 0., 25., initial("altitude", 7.5), 1)
+        .fader("mid", 0., 1., initial("mid", 0.5))
+        .fader_with("clip", 0., 0.2, initial("clip", 0.03), 3)
+        .fader_with("black", 0., 0.3, initial("black", 0.05), 3)
+        .fader("tint", 0., 1., initial("tint", 0.3))
         .connect(&env::var("CONTROLS").unwrap_or_else(|_| "wss://localhost:8080".into()));
     // MOVE scales head translation: 0 rotation only (default), 1 real scale, more =
     // giant steps (e.g. to cross the city with Monado's slow qwerty WASD).
