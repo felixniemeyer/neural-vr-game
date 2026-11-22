@@ -143,6 +143,15 @@ def rollout(net, data, batch, observe, record=False):
         pairs = (known[..., 1:, :] * known[..., :-1, :], known[..., :, 1:] * known[..., :, :-1])
         for gp, gt, both in zip(gradients(image), gradients(target), pairs):
             step_loss = step_loss + cfg.train.edge_weight * ((gp - gt).abs() * both).mean()
+        if cfg.train.texture:
+            # Local edge energy (mean gradient magnitude per 8x8 window), compared without
+            # requiring the edges to line up: rewards plausible structure over blur.
+            def energy(x):
+                gy, gx = gradients(x)
+                g = gy[..., :, :-1].abs() + gx[..., :-1, :].abs()
+                return F.avg_pool2d(g, 8, stride=4)
+            window = F.avg_pool2d(known[..., :-1, :-1], 8, stride=4) > 0.99
+            step_loss = step_loss + cfg.train.texture * ((energy(image) - energy(target)).abs() * window).mean()
         loss = loss + step_loss / cfg.train.steps
         if record:
             frames.append((resolved, hole, pred, truth))

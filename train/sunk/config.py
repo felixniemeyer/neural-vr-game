@@ -50,6 +50,7 @@ class Train:
     observe: float = 0.3        # max blend toward the real frame per step (like the blocks)
     hole_weight: float = 4.0    # extra loss weight on pixels that were holes
     edge_weight: float = 1.0    # loss on image gradients
+    texture: float = 0.0        # loss on local edge energy (8x8 windows, position-free)
     preview: int = 250          # write preview + export every n iterations
     threads: int = 0            # torch threads, 0 = all
 
