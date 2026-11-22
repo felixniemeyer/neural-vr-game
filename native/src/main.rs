@@ -1,5 +1,6 @@
 mod city;
 mod gpu;
+mod swing;
 mod rule;
 mod world;
 
@@ -341,6 +342,8 @@ struct Zip {
     velocity: Vec3,
     yaw: f32,
     anchors: [Option<Vec3>; 2],
+    /// Swing mode: each anchor's rope length (m).
+    ropes: [f32; 2],
     was_pressed: [bool; 2],
     last: Option<f32>,
     anywhere: bool,
@@ -387,6 +390,7 @@ impl Zip {
         [pull, drag, body, brake]: [f32; 4],
         walls: &[Vec3],
         auto: Option<f32>,
+        swing: Option<f32>,
     ) {
         let dt = (seconds - self.last.replace(seconds).unwrap_or(seconds)).clamp(0., 0.1);
         let eye = self.turn() * eye;
@@ -401,6 +405,7 @@ impl Zip {
                     city.hit(from, dir, 150.).or(self.anywhere.then(|| from + dir * MISS_DISTANCE))
                 });
                 if let Some(anchor) = self.anchors[i] {
+                    self.ropes[i] = anchor.distance(self.position + eye);
                     println!("Zip ({}): anchored {:.1} m away", ["left", "right"][i], anchor.distance(self.position + eye));
                     hands.buzz(session, i);
                 }
@@ -411,11 +416,24 @@ impl Zip {
             self.was_pressed[i] = hand.pressed;
         }
         let player = self.position + eye;
-        for anchor in self.anchors.iter().flatten() {
-            let to = *anchor - player;
-            let distance = to.length();
-            // Fade out over the last 1.5 m, so the pull does not end in the wall.
-            self.velocity += to / distance.max(1e-3) * pull * (distance / 1.5).min(1.) * dt;
+        match swing {
+            // Swing: gravity, and the ropes reel in at `reel` m/s (applied after the move).
+            Some(reel) if auto.is_none() => {
+                self.velocity.y -= swing::GRAVITY * dt;
+                for (rope, anchor) in self.ropes.iter_mut().zip(&self.anchors) {
+                    if anchor.is_some() {
+                        *rope = (*rope - reel * dt).max(swing::SHORTEST);
+                    }
+                }
+            }
+            _ => {
+                for anchor in self.anchors.iter().flatten() {
+                    let to = *anchor - player;
+                    let distance = to.length();
+                    // Fade out over the last 1.5 m, so the pull does not end in the wall.
+                    self.velocity += to / distance.max(1e-3) * pull * (distance / 1.5).min(1.) * dt;
+                }
+            }
         }
         if auto.is_none() {
             self.velocity *= (-drag * dt).exp();
@@ -433,6 +451,14 @@ impl Zip {
             }
         }
         self.position += self.velocity * dt;
+        if swing.is_some() && auto.is_none() {
+            for (anchor, &length) in self.anchors.iter().zip(&self.ropes) {
+                if let Some(anchor) = anchor {
+                    let (head, velocity) = swing::rope(self.position + eye, self.velocity, *anchor, length);
+                    (self.position, self.velocity) = (head - eye, velocity);
+                }
+            }
+        }
         // Keep the head out of the blocks: push it out, and drop the velocity into the walls.
         let (free, normals) = city.collide(self.position + eye, body);
         self.position = free - eye;
@@ -656,6 +682,9 @@ fn run(shaders: &Path) -> Result<()> {
         .fader_with("speed", 0., 15., initial("speed", 3.), 1)
         .fader_with("pull", 0., 60., initial("pull", 25.), 1)
         .fader_with("drag", 0., 6., initial("drag", 2.5), 2)
+        // Swing instead of zip: the trigger holds a rope (gravity on, `reel` m/s reeling in).
+        .switch("swing", initial("swing", 0.) > 0.5)
+        .fader_with("reel", 0., 10., initial("reel", 2.), 1)
         // The player's collision sphere around the head (radius, m).
         .fader_with("body", 0.05, 5., initial("body", 0.3), 2)
         // Braking distance (m) to the net's own geometry (the image's depth), 0 = off.
@@ -762,7 +791,8 @@ fn run(shaders: &Path) -> Result<()> {
         };
         let held = hands.sync(&session, &space, time)?;
         let motion = [controls.get("pull"), controls.get("drag"), controls.get("body"), controls.get("brake")];
-        zip.update(&held, &hands, &session, seconds, head, eye, &city, motion, &walls, controls.on("auto").then(|| controls.get("speed")));
+        zip.update(&held, &hands, &session, seconds, head, eye, &city, motion, &walls, controls.on("auto").then(|| controls.get("speed")),
+            controls.on("swing").then(|| controls.get("reel")));
         let (origin, turn) = (zip.position, zip.turn());
         let cameras = [camera(&views[0], head, origin, turn), camera(&views[1], head, origin, turn)];
         let dumping = dump.is_some() && frames == dump_frame;

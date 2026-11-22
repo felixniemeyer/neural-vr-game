@@ -13,9 +13,9 @@
   ],
   "committedIn": [],
   "status": {
-    "state": "open",
-    "comment": "",
-    "date": 1795260594709
+    "state": "partially",
+    "comment": "Swing mode (switch `swing`, fader `reel`, branch experiments): the trigger anchors a rope of the grab distance (block hit, or ZIP_ANYWHERE point), reeling in at reel m/s down to 1.5 m; gravity on; one-sided rope constraint (swing::rope) per hand, both hands at once; release = ballistic flight, drag fader for air damping. Verified: unit test (10 m rope from horizontal swings through the bottom at ~14 m/s within 3 s, never leaves the rope sphere; slack rope no-op), app builds and runs in dev.sh. Not yet: arm-pull momentum (controller velocity), feel-tested in a headset — needs Felix to try it with swing=on.",
+    "date": 1795379838113
   },
   "intrinsicValue": 0,
   "cost": 3,
