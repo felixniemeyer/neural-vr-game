@@ -107,7 +107,7 @@ The net is trained on video with a torch copy of the splat, resolve and net
 ```sh
 cd train
 ln -s /path/to/your/videos/*.mp4 videos/      # any footage
-SIZE=256 ./frames.sh                           # crop + scale to data/frames/256/
+SIZE=256 ./frames.sh                           # crop + scale to data/frames/256/native/ (FPS=10: .../10fps/)
 uv run new.py tiny                             # runs/tiny/config.toml: all settings
 uv run prepare.py runs/tiny                    # depth, flow, camera motion -> data/prepared/
 uv run view.py data/prepared/<name>/chunk_000.npz   # colour | depth | flow | object motion
@@ -118,6 +118,13 @@ WEIGHTS=train/runs/tiny/net ./dev.sh           # (from the repo root)
 Each project folder holds its `config.toml` (data, net and training settings, e.g.
 `uv run new.py big --net.hidden 32,16 --train.turn 0.5`); projects with the same
 `[data]` settings share their preprocessing.
+
+Training settings worth knowing (`[train]`):
+- `strides`: video frames per net step, drawn per sample (e.g. `0.25,0.5,1,2`); the net sees
+  its step size (tau ticks, `net.rate` per second), so the app can update it at any rate
+- `horizon`: video frames a sample follows its clip, continuing from the net's own state
+- `stereo`, `baseline`: a second eye up to `baseline` m to the right, with the app's
+  cross-eye splat and a loss on the eyes' disagreement
 
 To work on the av-controls Rust receiver locally, point cargo at your checkout in
 `native/.cargo/config.toml` (git-ignored):
