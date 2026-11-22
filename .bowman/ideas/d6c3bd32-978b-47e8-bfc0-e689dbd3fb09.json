@@ -7,15 +7,24 @@
   "tags": [
     "rendering"
   ],
-  "supportingConnections": [],
+  "supportingConnections": [
+    {
+      "ideaId": "001056b2-faff-4c67-af08-3707ec047f79",
+      "relativePosition": [
+        -1.03,
+        3.61
+      ],
+      "weight": 1
+    }
+  ],
   "supportedIdeas": [
     "ea8719aa-4554-4122-a393-61d4f3e657b0"
   ],
   "committedIn": [],
   "status": {
-    "state": "open",
-    "comment": "",
-    "date": 1795165916773
+    "state": "partially",
+    "comment": "Core loop exists: splat reprojection of the previous state every display frame (90 Hz), push-pull hole fill, then the per-pixel net (refine/evolve) at netfps. Note: the net runs on all pixels (residual update), not only holes. Open: 001056b2 (measure lowest netfps on the Frame).",
+    "date": 1795380170668
   },
   "intrinsicValue": 0,
   "selfWeight": 1,

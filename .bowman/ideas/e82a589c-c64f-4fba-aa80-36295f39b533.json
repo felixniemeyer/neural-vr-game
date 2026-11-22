@@ -14,9 +14,9 @@
   ],
   "committedIn": [],
   "status": {
-    "state": "open",
-    "comment": "",
-    "date": 1795166748997
+    "state": "implemented",
+    "comment": "splat.vert/splat.frag: each previous pixel is a 2x2 point sprite with bilinear tent weight, accumulated premultiplied; the summed weight is coverage/certainty (resolve.frag normalises). Mirrored in torch (sunk/model.py accumulate/resolve) and parity-checked.",
+    "date": 1795380170253
   },
   "intrinsicValue": 0,
   "selfWeight": 1,

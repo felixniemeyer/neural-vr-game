@@ -12,9 +12,9 @@
   ],
   "committedIn": [],
   "status": {
-    "state": "open",
-    "comment": "",
-    "date": 1795224829109
+    "state": "implemented",
+    "comment": "In code: state A = (rgb, inverse depth), B = (world velocity xyz, certainty) as rgba16f per eye (state.glsl header); splat.vert moves each point by vB.xyz * u.step.x before projecting with the current camera; training gets scene velocity from prepare.py residual flow. Deviation: the 4 hidden channels (C) were kept in addition, not replaced.",
+    "date": 1795380170001
   },
   "intrinsicValue": 0,
   "cost": 2,

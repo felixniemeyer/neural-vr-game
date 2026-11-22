@@ -22,9 +22,9 @@
   ],
   "committedIn": [],
   "status": {
-    "state": "open",
-    "comment": "",
-    "date": 1795165916856
+    "state": "implemented",
+    "comment": "State per pixel: colour + inverse depth (A), velocity + certainty (B), 4 hidden channels (C). Certainty from the splat's tent weight, decays per net tick toward a rest value (net.frag: rest + (c - rest) * 0.965^tau); the net sees certainty and validity as inputs.",
+    "date": 1795380170352
   },
   "intrinsicValue": 0,
   "selfWeight": 40,

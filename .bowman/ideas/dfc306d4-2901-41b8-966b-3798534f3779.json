@@ -13,9 +13,9 @@
   ],
   "committedIn": [],
   "status": {
-    "state": "open",
-    "comment": "",
-    "date": 1795165952603
+    "state": "partially",
+    "comment": "Stereo part done: train.stereo adds a second eye (baseline up to train.baseline), the app's cross-eye splat, and a loss on the eyes' disagreement (Eyes.disagreement: each prediction warped into the other eye by its depth). Temporal part: the rollout loss already compares reprojected predictions with the next real frames, weighted up in holes. Not done: an explicit low-certainty mask on the temporal term.",
+    "date": 1795380170586
   },
   "intrinsicValue": 0,
   "selfWeight": 1,
