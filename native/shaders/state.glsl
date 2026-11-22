@@ -5,7 +5,10 @@
 //   21-22  resolved certainty (per eye)
 //   23-28  new state (2 eyes x A, B, C)
 //   29-32  scene (2 eyes x colour + inverse distance, world velocity)
-//   33     net weights (storage buffer)
+//   33     net weights (uniform buffer)
+//
+// The fullscreen passes (resolve, net, display) are compiled per eye: TARGET is their eye
+// (world.rs pipelines), so the switches below fold to one image.
 //
 // State (prev, next):  A = (rgb, inverse depth; 0 = no data), B = (velocity, certainty),
 //                      C = (h0, h1, h2, h3)
@@ -13,6 +16,8 @@
 // Resolved (mid):      A = (rgb, inv), B = (velocity, coverage), C = h; holes are all 0, so
 //                      level 0 is "premultiplied by coverage" and its mips (2x2 averages)
 //                      are the hole-aware pyramid: value = mip / coverage.
+
+layout(constant_id = 7) const int TARGET = 0;
 
 layout(set = 0, binding = 1) uniform sampler2D prev00;
 layout(set = 0, binding = 2) uniform sampler2D prev01;
@@ -46,7 +51,8 @@ layout(set = 0, binding = 29) uniform sampler2D scene00;
 layout(set = 0, binding = 30) uniform sampler2D scene01;
 layout(set = 0, binding = 31) uniform sampler2D scene10;
 layout(set = 0, binding = 32) uniform sampler2D scene11;
-layout(std430, set = 0, binding = 33) readonly buffer Weights { vec4 weights[]; };
+// float16 weights (rule::pack), 8 per uvec4; 64 KiB = world.rs WEIGHT_HALVES
+layout(std140, set = 0, binding = 33) uniform Weights { uvec4 weights[4096]; };
 
 // Scene: image 0 = (colour, inverse distance; 0 = nothing rendered), image 1 = (world
 // velocity, 0).

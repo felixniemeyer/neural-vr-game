@@ -68,11 +68,33 @@ fn init_gpu(instance: &xr::Instance, system: xr::SystemId) -> Result<Gpu> {
             let queues = [vk::DeviceQueueCreateInfo::default()
                 .queue_family_index(family)
                 .queue_priorities(&[1.])];
+            // shaderFloat16: the net runs in float16 (net.frag, packed math).
+            let mut half = vk::PhysicalDeviceShaderFloat16Int8Features::default();
+            vulkan.get_physical_device_features2(
+                physical_handle,
+                &mut vk::PhysicalDeviceFeatures2::default().push_next(&mut half),
+            );
+            ensure!(half.shader_float16 == vk::TRUE, "The GPU lacks shaderFloat16");
+            let mut half = vk::PhysicalDeviceShaderFloat16Int8Features::default().shader_float16(true);
+            let mut extensions = vec![ash::khr::shader_float16_int8::NAME.as_ptr()];
+            // The driver's statistics (registers, instructions) per pipeline, if it has them.
+            let stats = vulkan
+                .enumerate_device_extension_properties(physical_handle)?
+                .iter()
+                .any(|e| e.extension_name_as_c_str() == Ok(ash::khr::pipeline_executable_properties::NAME));
+            let mut executable = vk::PhysicalDevicePipelineExecutablePropertiesFeaturesKHR::default()
+                .pipeline_executable_info(true);
+            if stats {
+                extensions.push(ash::khr::pipeline_executable_properties::NAME.as_ptr());
+            }
             // largePoints: the splat draws each previous pixel as a 2x2 point sprite.
             let features = vk::PhysicalDeviceFeatures::default().large_points(true);
             let info = vk::DeviceCreateInfo::default()
                 .queue_create_infos(&queues)
-                .enabled_features(&features);
+                .enabled_extension_names(&extensions)
+                .enabled_features(&features)
+                .push_next(&mut half);
+            let info = if stats { info.push_next(&mut executable) } else { info };
             let raw = instance
                 .create_vulkan_device(
                     system,
@@ -88,10 +110,13 @@ fn init_gpu(instance: &xr::Instance, system: xr::SystemId) -> Result<Gpu> {
                 "Vulkan GPU: {}",
                 CStr::from_ptr(properties.device_name.as_ptr()).to_string_lossy()
             );
-            Ok((physical_handle, device, queue, family))
+            world::CAPTURE_STATS.store(stats, std::sync::atomic::Ordering::Relaxed);
+            let stats = stats.then(|| ash::khr::pipeline_executable_properties::Device::new(&vulkan, &device));
+            Ok((physical_handle, device, queue, family, stats))
         })();
         match setup {
-            Ok((physical, device, queue, family)) => Ok(Gpu {
+            Ok((physical, device, queue, family, stats)) => Ok(Gpu {
+                stats,
                 _entry: entry,
                 instance: vulkan,
                 physical,
@@ -103,6 +128,36 @@ fn init_gpu(instance: &xr::Instance, system: xr::SystemId) -> Result<Gpu> {
                 vulkan.destroy_instance(None);
                 Err(error)
             }
+        }
+    }
+}
+
+/// The driver's statistics of each pipeline's shaders, one line per shader.
+fn print_stats(gpu: &Gpu, world: &World) {
+    let Some(stats) = &gpu.stats else { return };
+    for (name, pipeline) in world.named_pipelines() {
+        let info = vk::PipelineInfoKHR::default().pipeline(pipeline);
+        let Ok(executables) = (unsafe { stats.get_pipeline_executable_properties(&info) }) else { continue };
+        for (index, executable) in executables.iter().enumerate() {
+            let info = vk::PipelineExecutableInfoKHR::default().pipeline(pipeline).executable_index(index as u32);
+            let Ok(values) = (unsafe { stats.get_pipeline_executable_statistics(&info) }) else { continue };
+            let values: Vec<String> = values
+                .iter()
+                .map(|v| {
+                    let name = v.name_as_c_str().map(|n| n.to_string_lossy()).unwrap_or_default();
+                    let value = unsafe {
+                        match v.format {
+                            vk::PipelineExecutableStatisticFormatKHR::BOOL32 => v.value.b32.to_string(),
+                            vk::PipelineExecutableStatisticFormatKHR::INT64 => v.value.i64.to_string(),
+                            vk::PipelineExecutableStatisticFormatKHR::UINT64 => v.value.u64.to_string(),
+                            _ => format!("{:.2}", v.value.f64),
+                        }
+                    };
+                    format!("{name} {value}")
+                })
+                .collect();
+            let stage = executable.name_as_c_str().map(|n| n.to_string_lossy()).unwrap_or_default();
+            println!("stats {name} {stage}: {}", values.join(", "));
         }
     }
 }
@@ -492,6 +547,7 @@ fn run(shaders: &Path) -> Result<()> {
     );
     ensure!(edge % (1 << (rule.levels() - 1)) == 0, "EYE_SIZE must be divisible by 2^(levels - 1)");
     let mut weights = vec![0f32; rule.len()];
+    let mut packed = vec![0u16; rule.len()];
     let mut world = World::new(
         &mut resources,
         shaders,
@@ -501,6 +557,7 @@ fn run(shaders: &Path) -> Result<()> {
         rule.specialization(),
         rule.len(),
     )?;
+    print_stats(&gpu, &world);
     world.mode = match env::var("VIEW").as_deref() {
         Ok("certainty") => 1,
         Ok("depth") => 2,
@@ -558,6 +615,8 @@ fn run(shaders: &Path) -> Result<()> {
     let mut running = false;
     let mut frames = 0u64;
     let mut gpu_ms = [0f64; world::STAMPS as usize - 1];
+    // The net pass on frames where it runs (tau > 0): total ms and count; and the wall clock.
+    let (mut net_runs, mut net_run_ms, mut since) = (0u32, 0f64, std::time::Instant::now());
     let mut start = None;
     // ZIP_ANYWHERE=0: zip only toward blocks the ray hits (default 1: also into the air).
     let mut clock = NetClock::default();
@@ -664,7 +723,10 @@ fn run(shaders: &Path) -> Result<()> {
                 thread::sleep(Duration::from_millis(200)); // let the compiler finish writing
                 unsafe { d.device_wait_idle()? };
                 match world.reload(&mut resources, shaders) {
-                    Ok(()) => println!("Shaders reloaded"),
+                    Ok(()) => {
+                        println!("Shaders reloaded");
+                        print_stats(&gpu, &world);
+                    }
                     Err(error) => println!("Shader reload failed, keeping the old ones: {error:#}"),
                 }
             }
@@ -726,10 +788,11 @@ fn run(shaders: &Path) -> Result<()> {
             d.cmd_write_timestamp(cmd, vk::PipelineStageFlags::TOP_OF_PIPE, queries, 0);
             let frame_rule = rule.frame();
             rule.weights(seconds, settings.wild, &mut weights);
+            rule::pack(&rule.layers, &weights, &mut packed);
             // Every 8th frame: read back the left eye for the automatic exposure.
             world.capture = frames % 8 == 0;
             world.dumping = dumping;
-            world.draw(d, cmd, queries, cameras, indices, seconds, &frame_rule, &weights, settings);
+            world.draw(d, cmd, queries, cameras, indices, seconds, &frame_rule, &packed, settings);
             d.end_command_buffer(cmd)?;
             d.reset_fences(&[fence])?;
             let commands = [cmd];
@@ -746,6 +809,10 @@ fn run(shaders: &Path) -> Result<()> {
             {
                 for (ms, pair) in gpu_ms.iter_mut().zip(stamps.windows(2)) {
                     *ms += pair[1].wrapping_sub(pair[0]) as f64 * tick_ns / 1e6;
+                }
+                if settings.tau > 0. {
+                    net_runs += 1;
+                    net_run_ms += stamps[4].wrapping_sub(stamps[3]) as f64 * tick_ns / 1e6;
                 }
             }
         }
@@ -805,8 +872,11 @@ fn run(shaders: &Path) -> Result<()> {
             let forward = quaternion(views[0].pose.orientation) * Vec3::NEG_Z;
             let [r, g, b] = world.tone().map(|[k, w, y]| format!("{k:.2}..{w:.2}^{y:.2}"));
             let [scene, splat, resolve, net, display] = gpu_ms.map(|ms| ms / 120.);
+            let fps = 120. / std::mem::replace(&mut since, std::time::Instant::now()).elapsed().as_secs_f64();
+            let net_run = net_run_ms / net_runs.max(1) as f64;
+            let net_fill = (net * 120. - net_run_ms) / (120 - net_runs).max(1) as f64;
             println!(
-                "{frames} frames, GPU {:.3} ms/frame (both eyes: scene {scene:.2} splat {splat:.2} resolve {resolve:.2} net {net:.2} display {display:.2}), looking ({:.2}, {:.2}, {:.2}), exposure r {r} g {g} b {b}, image geometry {} points, nearest {:.1} m",
+                "{frames} frames, GPU {:.3} ms/frame at {fps:.0} fps (both eyes: scene {scene:.2} splat {splat:.2} resolve {resolve:.2} net {net:.2} [{net_runs} runs {net_run:.2}, fill {net_fill:.2}] display {display:.2}), looking ({:.2}, {:.2}, {:.2}), exposure r {r} g {g} b {b}, image geometry {} points, nearest {:.1} m",
                 scene + splat + resolve + net + display,
                 forward.x,
                 forward.y,
@@ -815,6 +885,7 @@ fn run(shaders: &Path) -> Result<()> {
                 walls.iter().map(|p| p.distance(cameras[0].position)).fold(f32::INFINITY, f32::min),
             );
             gpu_ms = [0.; world::STAMPS as usize - 1];
+            (net_runs, net_run_ms) = (0, 0.);
         }
     }
 }

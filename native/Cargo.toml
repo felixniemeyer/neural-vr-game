@@ -9,6 +9,7 @@ ash = "0.38"
 av-controls = { git = "https://github.com/avonx2/av-controls", version = "0.1.0" }
 ctrlc = { version = "3", features = ["termination"] }
 glam = "0.30"
+half = "2.7.1"
 openxr = "0.19"
 rand = "0.9"
 serde_json = "1.0.154"

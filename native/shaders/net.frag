@@ -1,5 +1,7 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_control_flow_attributes : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
 #include "common.glsl"
 #include "state.glsl"
 
@@ -9,14 +11,16 @@
 //   inputs   self (rgb, inv * near), (h); per tap (mip level L, offset dx, dy):
 //            (rgb, (inv - inv_self) * near), (h), bilinear from the hole-aware
 //            pyramid, 0 where it is empty; extra (certainty, valid, 1, tau)
-//   layers   1x1 "convolutions" from the weights buffer, relu between them
+//   layers   1x1 "convolutions" from the weights buffer, relu between them; float16
+//            (packed math: per input one fma for 4 outputs)
 //   update   d = max_change * tau * tanh(out) (an Euler step of tau ticks):
 //            rgb += d.rgb, inv *= exp(d.w), h += d_h; certainty decays by 0.965 per tick
 //
 // tau = u.step.y: the net runs at its own rate (main.rs); on the frames in between
 // tau = 0 and only the holes are filled.
 //
-// Weights (rule.rs): per layer W [outputs][inputs] row-major, then the bias, as vec4s.
+// Weights (rule::pack): float16 in slots of 4; per layer 4x4 blocks (q outputs, k inputs)
+// of 4 slots, one per input holding its 4 outputs' weights, then the bias.
 // The layout is fixed per net and comes in as specialization constants, so every loop
 // below has a constant trip count (unrolled, accumulators in registers, weight reads
 // at constant addresses). Layer 1 is accumulated while its inputs are read.
@@ -42,28 +46,34 @@ const int OFF2 = OFF1 + (UNITS0 * UNITS1 + UNITS1) / 4;
 const int OFF3 = OFF2 + (UNITS1 * UNITS2 + UNITS2) / 4;
 const int MAX_QUADS = 16;
 
-vec4 hidden[MAX_QUADS];
+f16vec4 hidden[MAX_QUADS];
+
+// Weight slot j: 4 halves (bit casts, free).
+f16vec4 slot(int j) {
+    uvec4 e = weights[j >> 1];
+    uvec2 h = (j & 1) == 0 ? e.xy : e.zw;
+    return f16vec4(unpackFloat2x16(h.x), unpackFloat2x16(h.y));
+}
+
+// Outputs 4q.. of a layer from its inputs 4k.. (x): block (q, k).
+f16vec4 block(const int offset, const int inputs, int q, int k, f16vec4 x) {
+    int b = offset + 4 * (q * (inputs / 4) + k);
+    return fma(slot(b), x.xxxx, fma(slot(b + 1), x.yyyy, fma(slot(b + 2), x.zzzz, slot(b + 3) * x.w)));
+}
 
 // Layer 1: add input vec4 number k to every unit.
 void feed(int k, vec4 x) {
-    for (int q = 0; q < UNITS0 / 4; q++) {
-        int row = OFF0 + 4 * q * (IN0 / 4) + k;
-        hidden[q] += vec4(dot(weights[row], x), dot(weights[row + IN0 / 4], x),
-                          dot(weights[row + 2 * (IN0 / 4)], x), dot(weights[row + 3 * (IN0 / 4)], x));
-    }
+    f16vec4 h = f16vec4(x);
+    [[unroll]] for (int q = 0; q < UNITS0 / 4; q++) hidden[q] += block(OFF0, IN0, q, k, h);
 }
 
 // A further layer: inputs relu(hidden[0 .. IN/4]), outputs into hidden[0 .. OUT/4].
 void dense(const int offset, const int inputs, const int outputs) {
-    vec4 x[MAX_QUADS];
-    for (int q = 0; q < inputs / 4; q++) x[q] = max(hidden[q], 0.0);
-    for (int q = 0; q < outputs / 4; q++) {
-        vec4 sum = weights[offset + outputs * (inputs / 4) + q];
-        for (int k = 0; k < inputs / 4; k++) {
-            int row = offset + 4 * q * (inputs / 4) + k;
-            sum += vec4(dot(weights[row], x[k]), dot(weights[row + inputs / 4], x[k]),
-                        dot(weights[row + 2 * (inputs / 4)], x[k]), dot(weights[row + 3 * (inputs / 4)], x[k]));
-        }
+    f16vec4 x[MAX_QUADS];
+    [[unroll]] for (int q = 0; q < inputs / 4; q++) x[q] = max(hidden[q], f16vec4(0.0));
+    [[unroll]] for (int q = 0; q < outputs / 4; q++) {
+        f16vec4 sum = slot(offset + outputs * (inputs / 4) + q);
+        [[unroll]] for (int k = 0; k < inputs / 4; k++) sum += block(offset, inputs, q, k, x[k]);
         hidden[q] = sum;
     }
 }
@@ -77,9 +87,9 @@ struct Tap {
 
 // Bilinear read of mip `level` at `uv`, normalised by its coverage.
 Tap read(vec2 uv, float level) {
-    vec4 a = midLod(pc.target, 0, uv, level);
-    vec4 b = midLod(pc.target, 1, uv, level);
-    vec4 c = midLod(pc.target, 2, uv, level);
+    vec4 a = midLod(TARGET, 0, uv, level);
+    vec4 b = midLod(TARGET, 1, uv, level);
+    vec4 c = midLod(TARGET, 2, uv, level);
     float k = 1.0 / max(b.w, 1e-4);
     return Tap(a * k, vec4(b.xyz * k, b.w), c * k, b.w > 1e-3 ? 1.0 : 0.0);
 }
@@ -89,15 +99,15 @@ void main() {
     vec2 size = u.info.xy;
     float near = u.net.z;
 
-    vec4 A = midFetch(pc.target, 0, p);
-    vec4 B = midFetch(pc.target, 1, p);
-    vec4 C = midFetch(pc.target, 2, p);
+    vec4 A = midFetch(TARGET, 0, p);
+    vec4 B = midFetch(TARGET, 1, p);
+    vec4 C = midFetch(TARGET, 2, p);
     float valid = A.w > 0.0 ? 1.0 : 0.0;
-    float certainty = certFetch(pc.target, p) * valid;
+    float certainty = certFetch(TARGET, p) * valid;
 
     // Push-pull hole fill from the pyramid.
     float need = 1.0 - valid;
-    for (int level = 1; level < LEVELS; level++) {
+    [[unroll]] for (int level = 1; level < LEVELS; level++) {
         Tap t = read(gl_FragCoord.xy / size, float(level));
         float take = need * t.covered;
         A = mix(A, t.a, take);
@@ -108,10 +118,10 @@ void main() {
     // Former holes take the scene's depth and velocity (colour stays push-pull's).
     if (valid == 0.0) {
         float fade;
-        vec4 g = sceneAt(pc.target, p, fade);
+        vec4 g = sceneAt(TARGET, p, fade);
         if (fade > 0.0) {
             A.w = g.w;
-            B.xyz = sceneFetch(pc.target, 1, p).xyz;
+            B.xyz = sceneFetch(TARGET, 1, p).xyz;
         }
     }
     float inv = A.w;
@@ -124,10 +134,10 @@ void main() {
     }
 
     // Layer 1, fed input by input.
-    for (int q = 0; q < UNITS0 / 4; q++) hidden[q] = weights[OFF0 + UNITS0 * (IN0 / 4) + q];
+    [[unroll]] for (int q = 0; q < UNITS0 / 4; q++) hidden[q] = slot(OFF0 + UNITS0 * (IN0 / 4) + q);
     feed(0, vec4(A.rgb, inv * near));
     feed(1, C);
-    for (int t = 0; t < TAPS; t++) {
+    [[unroll]] for (int t = 0; t < TAPS; t++) {
         vec4 tap = u.netTaps[t];
         Tap v = read((gl_FragCoord.xy + tap.yz) / size, tap.x);
         feed(2 + 2 * t, vec4(v.a.rgb, (v.a.w - inv) * near) * v.covered);
@@ -142,8 +152,8 @@ void main() {
 
     // Residual update (outputs: d rgb, d log inv, d h), tau ticks.
     float change = u.net.w * tau;
-    vec4 d0 = change * tanh(hidden[0]);
-    vec4 d1 = change * tanh(hidden[1]);
+    vec4 d0 = change * tanh(vec4(hidden[0]));
+    vec4 d1 = change * tanh(vec4(hidden[1]));
     stateA = vec4(clamp(A.rgb + d0.rgb, 0.0, 1.5), inv * exp(d0.w));
     const float rest = 0.03 / 0.035;
     stateB = vec4(B.xyz, rest + (certainty - rest) * pow(0.965, tau));

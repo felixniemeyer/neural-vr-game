@@ -35,6 +35,12 @@ const SCENES: usize = 2;
 /// prev state, accumulators, resolved state, certainty, new state, scene (per eye)
 const SAMPLED_BINDINGS: u32 = (EYES * (STATES + ACCS + STATES + 1 + STATES + SCENES)) as u32;
 const WEIGHTS_BINDING: u32 = SAMPLED_BINDINGS + 1;
+/// The weights uniform buffer (state.glsl Weights, rule::pack): float16, 64 KiB, the
+/// smallest guaranteed maxUniformBufferRange on mobile GPUs. Uniform (not storage) so the
+/// weights are read through the constant path (AMD scalar cache, Adreno constant RAM).
+pub const WEIGHT_HALVES: usize = 32768;
+/// Pipelines capture the driver's statistics (VK_KHR_pipeline_executable_properties on).
+pub static CAPTURE_STATS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// How fast the display exposure follows its measurement (1/s).
 const EXPOSURE_RATE: f32 = 1.5;
 /// Width (px) of the depth probe read back each frame for collisions.
@@ -115,9 +121,10 @@ pub struct World {
     display_pass: vk::RenderPass,
     scene: vk::Pipeline,
     splat: vk::Pipeline,
-    resolve: vk::Pipeline,
-    net: vk::Pipeline,
-    display: vk::Pipeline,
+    /// The fullscreen passes per eye (state.glsl TARGET).
+    resolve: [vk::Pipeline; EYES],
+    net: [vk::Pipeline; EYES],
+    display: [vk::Pipeline; EYES],
     layout: vk::PipelineLayout,
     sets: [vk::DescriptorSet; 2],
     state_images: Vec<vk::Image>,
@@ -127,7 +134,7 @@ pub struct World {
     levels: u32,
     /// Specialization constants of the net pipeline (the net's layout).
     spec: [i32; 7],
-    weights: *mut f32,
+    weights: *mut u16,
     weight_count: usize,
     /// Host-visible copy of eye 0's resolved state (A, B, C, certainty) and new state.
     dump: (vk::Buffer, *mut u8),
@@ -288,7 +295,13 @@ fn pipeline(
     let blending = vk::PipelineColorBlendStateCreateInfo::default().attachments(&attachments);
     let states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
     let dynamic = vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&states);
+    // Statistics for main.rs print_stats, where the device has them enabled.
+    let flags = match CAPTURE_STATS.load(std::sync::atomic::Ordering::Relaxed) {
+        true => vk::PipelineCreateFlags::CAPTURE_STATISTICS_KHR,
+        false => vk::PipelineCreateFlags::empty(),
+    };
     let info = [vk::GraphicsPipelineCreateInfo::default()
+        .flags(flags)
         .stages(&stages)
         .vertex_input_state(&input)
         .input_assembly_state(&assembly)
@@ -307,7 +320,7 @@ fn pipeline(
 
 impl World {
     /// `spec`: the net's layout (rule.rs specialization: taps, levels = mip levels of
-    /// the resolved state, layers, units); `weight_count`: floats in the weights buffer.
+    /// the resolved state, layers, units); `weight_count`: weights (halves) in the weights buffer.
     pub fn new(
         r: &mut Resources<'_>,
         shaders: &Path,
@@ -330,7 +343,7 @@ impl World {
                     .stage_flags(stages)
                     .descriptor_type(match i {
                         0 => vk::DescriptorType::UNIFORM_BUFFER,
-                        WEIGHTS_BINDING => vk::DescriptorType::STORAGE_BUFFER,
+                        WEIGHTS_BINDING => vk::DescriptorType::UNIFORM_BUFFER,
                         _ => vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
                     })
             })
@@ -367,7 +380,7 @@ impl World {
                 .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                 .descriptor_count(2 * SAMPLED_BINDINGS),
             vk::DescriptorPoolSize::default()
-                .ty(vk::DescriptorType::STORAGE_BUFFER)
+                .ty(vk::DescriptorType::UNIFORM_BUFFER)
                 .descriptor_count(2),
         ];
         let pool = r.keep(
@@ -431,7 +444,9 @@ impl World {
         let mut pipelines = Self::pipelines(&r.gpu.device, shaders, passes, layout, &spec)?
             .into_iter()
             .map(|p| r.keep(p, Resource::Pipeline));
-        let [scene, splat, resolve, net, display] = std::array::from_fn(|_| pipelines.next().unwrap());
+        let mut next = || pipelines.next().unwrap();
+        let (scene, splat) = (next(), next());
+        let [resolve, net, display] = std::array::from_fn(|_| [next(), next()]);
 
         // state[eye][parity] = (A, B, C)
         let state_usage = Usage::COLOR_ATTACHMENT | Usage::SAMPLED | Usage::TRANSFER_DST | Usage::TRANSFER_SRC;
@@ -510,8 +525,9 @@ impl World {
             &vec![[0u16; 4]; EYES * 2 * (probe_pixels.width * probe_pixels.height) as usize],
             vk::BufferUsageFlags::TRANSFER_DST,
         )?;
+        anyhow::ensure!(weight_count <= WEIGHT_HALVES, "the net has {weight_count} weights, at most {WEIGHT_HALVES} fit");
         let (weight_buffer, weights) =
-            r.buffer(&vec![0f32; weight_count.max(4)], vk::BufferUsageFlags::STORAGE_BUFFER)?;
+            r.buffer(&vec![0u16; WEIGHT_HALVES], vk::BufferUsageFlags::UNIFORM_BUFFER)?;
         let d = &r.gpu.device;
         let layouts = [set_layout; 2];
         let allocated = unsafe {
@@ -562,7 +578,7 @@ impl World {
                 vk::WriteDescriptorSet::default()
                     .dst_set(set)
                     .dst_binding(WEIGHTS_BINDING)
-                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                     .buffer_info(&storage),
             );
             unsafe { d.update_descriptor_sets(&writes, &[]) };
@@ -615,7 +631,9 @@ impl World {
         self.size
     }
 
-    /// The pipelines (scene, splat, resolve, net, display) from the SPIR-V in `shaders`.
+    /// The pipelines (scene, splat, then resolve, net, display for each eye) from the
+    /// SPIR-V in `shaders`. The fullscreen passes get the net's layout as constants 0..6
+    /// and their eye as 7 (state.glsl TARGET), so the per-eye image picks compile away.
     fn pipelines(
         d: &Device,
         shaders: &Path,
@@ -623,13 +641,26 @@ impl World {
         layout: vk::PipelineLayout,
         spec: &[i32],
     ) -> Result<Vec<vk::Pipeline>> {
-        Ok(vec![
-            pipeline(d, shaders, ("scene.vert.spv", "scene.frag.spv"), scene, layout, SCENES, false, true, false, &[])?,
-            pipeline(d, shaders, ("splat.vert.spv", "splat.frag.spv"), splat, layout, ACCS, true, false, true, &[])?,
-            pipeline(d, shaders, ("fullscreen.vert.spv", "resolve.frag.spv"), resolve, layout, ACCS, false, false, false, &[])?,
-            pipeline(d, shaders, ("fullscreen.vert.spv", "net.frag.spv"), net, layout, STATES, false, false, false, spec)?,
-            pipeline(d, shaders, ("fullscreen.vert.spv", "display.frag.spv"), display, layout, 1, false, false, false, &[])?,
-        ])
+        [
+            pipeline(d, shaders, ("scene.vert.spv", "scene.frag.spv"), scene, layout, SCENES, false, true, false, &[]),
+            pipeline(d, shaders, ("splat.vert.spv", "splat.frag.spv"), splat, layout, ACCS, true, false, true, &[]),
+        ]
+        .into_iter()
+        .chain(
+            [("resolve.frag.spv", resolve, ACCS), ("net.frag.spv", net, STATES), ("display.frag.spv", display, 1)]
+                .into_iter()
+                .flat_map(|(fragment, pass, targets)| {
+                    (0..EYES as i32).map(move |eye| {
+                        let spec: Vec<i32> = spec.iter().copied().chain([eye]).collect();
+                        pipeline(d, shaders, ("fullscreen.vert.spv", fragment), pass, layout, targets, false, false, false, &spec)
+                    })
+                }),
+        )
+        .collect()
+    }
+
+    pub fn named_pipelines(&self) -> [(&'static str, vk::Pipeline); 5] {
+        [("scene", self.scene), ("splat", self.splat), ("resolve", self.resolve[0]), ("net", self.net[0]), ("display", self.display[0])]
     }
 
     /// Recreate the pipelines from the (re)compiled SPIR-V in `shaders`.
@@ -640,8 +671,9 @@ impl World {
         let passes = [self.scene_pass, self.splat_pass, self.resolve_pass, self.net_pass, self.display_pass];
         let new = Self::pipelines(&r.gpu.device, shaders, passes, self.layout, &self.spec)?;
         let mut new = new.into_iter().map(|p| r.keep(p, Resource::Pipeline));
-        [self.scene, self.splat, self.resolve, self.net, self.display] =
-            std::array::from_fn(|_| new.next().unwrap());
+        let mut next = || new.next().unwrap();
+        (self.scene, self.splat) = (next(), next());
+        [self.resolve, self.net, self.display] = std::array::from_fn(|_| [next(), next()]);
         Ok(())
     }
 
@@ -656,7 +688,7 @@ impl World {
         images: [usize; EYES],
         time: f32,
         rule: &RuleFrame,
-        weights: &[f32],
+        weights: &[u16],
         settings: Settings,
     ) {
         if self.previous.is_none() {
@@ -776,7 +808,7 @@ impl World {
             ] {
                 for eye in 0..EYES {
                     begin(pass, targets[eye]);
-                    d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipeline);
+                    d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipeline[eye]);
                     push(eye, eye, 0);
                     d.cmd_draw(cmd, 3, 1, 0, 0);
                     d.cmd_end_render_pass(cmd);
@@ -788,7 +820,7 @@ impl World {
             }
             for eye in 0..EYES {
                 begin(self.display_pass, self.outputs[eye][images[eye]]);
-                d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.display);
+                d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.display[eye]);
                 push(eye, eye, self.mode);
                 d.cmd_draw(cmd, 3, 1, 0, 0);
                 d.cmd_end_render_pass(cmd);

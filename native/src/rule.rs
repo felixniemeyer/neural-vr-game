@@ -24,7 +24,7 @@ pub struct Rule {
     /// (mip level, dx, dy) per tap, pixels of level 0, y down.
     taps: Vec<[f32; 3]>,
     /// (inputs, outputs) per layer.
-    layers: Vec<(usize, usize)>,
+    pub layers: Vec<(usize, usize)>,
     near: f32,
     max_change: f32,
     /// Ticks per second, the largest trained step (ticks), and whether the net sees tau.
@@ -177,5 +177,47 @@ impl Rule {
             }
             start += i * o + o;
         }
+    }
+}
+
+/// Weights as the GPU reads them (state.glsl Weights, net.frag): float16, per layer in
+/// 4x4 blocks (4 outputs x 4 inputs), block (q, k) column by column, i.e. for each input
+/// the 4 outputs' weights side by side (one packed fma per input), then the bias. Same
+/// offsets (in groups of 4) as the float32 layout.
+pub fn pack(layers: &[(usize, usize)], weights: &[f32], out: &mut [u16]) {
+    let half = |w: f32| half::f16::from_f32(w).to_bits();
+    let mut start = 0;
+    for &(i, o) in layers {
+        let mut at = start;
+        for q in 0..o / 4 {
+            for k in 0..i / 4 {
+                for c in 0..4 {
+                    for r in 0..4 {
+                        out[at] = half(weights[start + (4 * q + r) * i + 4 * k + c]);
+                        at += 1;
+                    }
+                }
+            }
+        }
+        for b in 0..o {
+            out[at + b] = half(weights[start + i * o + b]);
+        }
+        start += i * o + o;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn pack_puts_each_inputs_four_outputs_together() {
+        // One layer, 8 inputs -> 4 outputs: W[r][j] = 10 r + j, bias 100 + r.
+        let mut w: Vec<f32> = (0..4).flat_map(|r| (0..8).map(move |j| (10 * r + j) as f32)).collect();
+        w.extend((0..4).map(|r| (100 + r) as f32));
+        let mut out = vec![0u16; w.len()];
+        super::pack(&[(8, 4)], &w, &mut out);
+        let f: Vec<f32> = out.iter().map(|&h| half::f16::from_bits(h).to_f32()).collect();
+        // Block k = 1, column c = 2 (input 6): outputs 0..3.
+        assert_eq!(&f[16 + 8..16 + 12], &[6., 16., 26., 36.]);
+        assert_eq!(&f[32..], &[100., 101., 102., 103.]);
     }
 }

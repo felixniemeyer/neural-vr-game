@@ -44,7 +44,9 @@ To run it on the headset, upload `build/frame/sunk-city/` with the SteamOS Devki
 - start command `./start.sh`
 - runtime **Steam Linux Runtime 4.0 ARM64**
 
-The log is at `~/sunk-city.log` on the headset; it prints the GPU time every 120 frames.
+The log is at `~/sunk-city.log` on the headset; it prints the GPU time every 120 frames
+(the net's time on frames where it runs, and fill-only frames) and, where the driver offers
+them, each shader's statistics (`stats ...`: registers, instructions) at start and reload.
 For a command-line alternative to the Devkit Client there is
 [sdev](https://github.com/neguse/sdev) (unofficial). This is untested on a real Frame so far.
 
@@ -96,7 +98,9 @@ Live controls (av-controls panel `sunk-city`, in tabs: net, scene, city, motion,
   - `resolve.frag` normalises the splat and blends in the blocks; its mips are the
     hole-aware pyramid
   - `net.frag` is the trained net: holes filled from the pyramid, then triangle taps on
-    5 mip levels, layers as in `net.json`
+    5 mip levels, layers as in `net.json`, in float16 (needs `shaderFloat16`; weights in a
+    uniform buffer, packed by `rule::pack`)
+  - the fullscreen passes are compiled per eye (`TARGET`), so no per-texel eye switches
 - `train/`: training on video (below)
 - `native/build.sh`, `native/build-frame.sh`: desktop and Steam Frame builds
 - `experiments/`: older experiments (submodule), not needed

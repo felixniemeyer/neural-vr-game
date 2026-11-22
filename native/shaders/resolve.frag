@@ -27,10 +27,10 @@ layout(location = 3) out float outCertainty;
 
 void main() {
     ivec2 p = ivec2(gl_FragCoord.xy);
-    vec4 a0 = accFetch(pc.target, 0, p);
-    vec4 a1 = accFetch(pc.target, 1, p);
-    vec4 a2 = accFetch(pc.target, 2, p);
-    float w = accFetch(pc.target, 3, p).x;
+    vec4 a0 = accFetch(TARGET, 0, p);
+    vec4 a1 = accFetch(TARGET, 1, p);
+    vec4 a2 = accFetch(TARGET, 2, p);
+    float w = accFetch(TARGET, 3, p).x;
     bool hole = w < 0.01 || any(isnan(a0)) || any(isnan(a1)) || any(isnan(a2));
     vec4 a = hole ? vec4(0.0) : a0 / w;
     vec3 velocity = hole ? vec3(0.0) : a1.xyz / w;
@@ -40,9 +40,9 @@ void main() {
     // Holes stay holes here (push-pull fills them in net.frag, which then takes the
     // scene's depth): seeding them here would mark black pixels as covered.
     float fade;
-    vec4 g = sceneAt(pc.target, p, fade);
-    vec3 motion = sceneFetch(pc.target, 1, p).xyz;
-    float sky = sceneFetch(pc.target, 0, p).w > 0.0 ? 0.0 : 1.0;
+    vec4 g = sceneAt(TARGET, p, fade);
+    vec3 motion = sceneFetch(TARGET, 1, p).xyz;
+    float sky = sceneFetch(TARGET, 0, p).w > 0.0 ? 0.0 : 1.0;
     float alpha = hole ? 0.0 : fade * u.mixing.x * (1.0 - sky);
     float depthAlpha = hole ? 0.0 : fade * u.mixing.z;
     a.rgb = mix(a.rgb, g.rgb, alpha);

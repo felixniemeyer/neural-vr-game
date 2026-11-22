@@ -9,6 +9,8 @@ pub struct Gpu {
     pub device: Device,
     pub queue: vk::Queue,
     pub family: u32,
+    /// VK_KHR_pipeline_executable_properties, where supported.
+    pub stats: Option<ash::khr::pipeline_executable_properties::Device>,
 }
 
 impl Drop for Gpu {
