@@ -1,19 +1,22 @@
-//! Per-eye neural-world state: reprojection splat, resolve, tiny net, display.
+//! Per-eye neural-world state: reprojection splat, resolve, trained net, display.
+//! The splat, resolve and net match train/sunk/model.py (the net is trained on them).
 //!
 //! Frame order per eye: scene (skyscraper G-buffer) -> splat -> resolve (normalise,
-//! composite the scene) -> net -> display.
+//! composite the scene) -> mips (hole-aware pyramid) -> net -> display.
 //!
 //! State per eye and parity (ping-pong), all RGBA16F:
-//!   A = (r, g, b, certainty)
-//!   B = (world velocity xyz, spare; in the resolved state: building 0/1)
-//!   C = (h0, h1, h2, inverse depth; 0 = no data)
-//! Splat accumulation per eye, RGBA16F with additive blending:
-//!   acc0 = (rgb, 1)*w, acc1 = (velocity, certainty)*w, acc2 = (h0, h1, h2, inv)*w
-//! Resolved state per eye (resolve output, net input): same layout as the state.
+//!   A = (r, g, b, inverse distance; 0 = no data)
+//!   B = (world velocity xyz, certainty)
+//!   C = (h0, h1, h2, h3)
+//! Splat accumulation per eye, additive blending:
+//!   acc0 = (rgb, inv)*w, acc1 = (velocity, certainty)*w, acc2 = h*w, acc3 = w (R16F)
+//! Resolved state per eye (net input): A = (rgb, inv), B = (velocity, coverage), C = h,
+//! holes all 0, with mip levels (2x2 averages = the hole-aware pyramid), plus the
+//! certainty (R16F).
 //! Scene G-buffer per eye: (sun shade, inverse distance, vertical velocity, id).
 
 use crate::gpu::{image_range, Resource, Resources, Shader};
-use crate::rule::{RuleFrame, TAPS, W1, W2};
+use crate::rule::{MAX_LAYERS, MAX_TAPS, RuleFrame};
 use anyhow::Result;
 use ash::{vk, Device};
 use glam::{Mat4, Vec3};
@@ -21,34 +24,32 @@ use std::{mem::size_of, path::Path};
 
 pub const EYES: usize = 2;
 const STATE: vk::Format = vk::Format::R16G16B16A16_SFLOAT;
+const SINGLE: vk::Format = vk::Format::R16_SFLOAT;
 const DEPTH: vk::Format = vk::Format::D32_SFLOAT;
-/// State images per eye (A, B, C); accumulators and resolved state match them.
+/// State images per eye (A, B, C); the resolved state matches them.
 const STATES: usize = 3;
-/// prev state, accumulators, resolved state, new state (2 eyes x 3 each), scene (2)
-const SAMPLED_BINDINGS: u32 = (EYES * (4 * STATES + 1)) as u32;
+/// Splat accumulators per eye (the three state images + the weight).
+const ACCS: usize = 4;
+/// prev state, accumulators, resolved state, certainty, new state, scene (per eye)
+const SAMPLED_BINDINGS: u32 = (EYES * (STATES + ACCS + STATES + 1 + STATES + 1)) as u32;
+const WEIGHTS_BINDING: u32 = SAMPLED_BINDINGS + 1;
 /// GPU timestamps per frame: start, after scene, splat, resolve, net, display.
 pub const STAMPS: u32 = 6;
 
 /// Live settings (av-controls faders).
 #[derive(Clone, Copy)]
 pub struct Settings {
-    /// Outermost spiral tap radius (px) and the update-rate floor on certain pixels.
-    pub reach: f32,
-    pub alive: f32,
+    /// Trained -> random weights (0..1), and the net's update rate (1 = as trained).
+    pub wild: f32,
+    pub rate: f32,
     /// Scene alpha for colour, for the building identity (hidden), for depth + velocity.
     pub color: f32,
     pub identity: f32,
     pub depth: f32,
-    /// Multipliers for the hidden-state noise and the seed frequency.
-    pub noise: f32,
-    pub seeds: f32,
     /// Blocks per side, cell size (m), maximum height (m), gaussian radius (m).
     pub blocks: u32,
     pub cell: f32,
     pub height: f32,
-    /// Depth range (m) of the CA's own geometry; it is pushed out of `near`.
-    pub near: f32,
-    pub far: f32,
     pub radius: f32,
 }
 
@@ -62,16 +63,16 @@ struct Uniforms {
     prev_eye: [[f32; 4]; EYES],
     info: [f32; 4],
     step: [f32; 4],
-    taps: [[f32; 4]; TAPS / 2],
-    w1: [[f32; 16]; W1],
-    w2: [[f32; 16]; W2],
-    nca: [f32; 4],
+    net: [f32; 4],
+    net_run: [f32; 4],
+    net_layers: [[f32; 4]; MAX_LAYERS],
+    net_taps: [[f32; 4]; MAX_TAPS],
     city: [f32; 4],
     mixing: [f32; 4],
     player: [f32; 4],
     tone: [[f32; 4]; 3],
 }
-const _: () = assert!(size_of::<Uniforms>() == 480 + (TAPS / 2 + 4 * (W1 + W2) + 1 + 6) * 16);
+const _: () = assert!(size_of::<Uniforms>() == 480 + (2 + MAX_LAYERS + MAX_TAPS + 6) * 16);
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -113,6 +114,15 @@ pub struct World {
     layout: vk::PipelineLayout,
     sets: [vk::DescriptorSet; 2],
     state_images: Vec<vk::Image>,
+    /// Resolved A, B, C per eye (with mip levels), and the certainty per eye.
+    mid_images: [[vk::Image; STATES]; EYES],
+    cert_images: [vk::Image; EYES],
+    levels: u32,
+    weights: *mut f32,
+    weight_count: usize,
+    /// Host-visible copy of eye 0's resolved state (A, B, C, certainty) and new state.
+    dump: (vk::Buffer, *mut u8),
+    pub dumping: bool,
     scene_targets: [vk::Framebuffer; EYES],
     acc_targets: [vk::Framebuffer; EYES],
     resolve_targets: [vk::Framebuffer; EYES],
@@ -273,27 +283,31 @@ fn pipeline(
 }
 
 impl World {
+    /// `levels`: mip levels of the resolved state (the net's pyramid); `weight_count`:
+    /// floats in the weights buffer.
     pub fn new(
         r: &mut Resources<'_>,
         shaders: &Path,
         size: vk::Extent2D,
         output_format: vk::Format,
         swapchains: [&[vk::Image]; EYES],
+        levels: u32,
+        weight_count: usize,
     ) -> Result<Self> {
         use vk::ImageUsageFlags as Usage;
         let d = &r.gpu.device;
         let stages = vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT;
 
-        let bindings: Vec<_> = (0..=SAMPLED_BINDINGS)
+        let bindings: Vec<_> = (0..=WEIGHTS_BINDING)
             .map(|i| {
                 vk::DescriptorSetLayoutBinding::default()
                     .binding(i)
                     .descriptor_count(1)
                     .stage_flags(stages)
-                    .descriptor_type(if i == 0 {
-                        vk::DescriptorType::UNIFORM_BUFFER
-                    } else {
-                        vk::DescriptorType::COMBINED_IMAGE_SAMPLER
+                    .descriptor_type(match i {
+                        0 => vk::DescriptorType::UNIFORM_BUFFER,
+                        WEIGHTS_BINDING => vk::DescriptorType::STORAGE_BUFFER,
+                        _ => vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
                     })
             })
             .collect();
@@ -328,6 +342,9 @@ impl World {
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                 .descriptor_count(2 * SAMPLED_BINDINGS),
+            vk::DescriptorPoolSize::default()
+                .ty(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(2),
         ];
         let pool = r.keep(
             unsafe {
@@ -352,13 +369,31 @@ impl World {
             },
             Resource::Sampler,
         );
+        // The pyramid: bilinear within a level, exact levels (textureLod with integers).
+        let linear = r.keep(
+            unsafe {
+                d.create_sampler(
+                    &vk::SamplerCreateInfo::default()
+                        .mag_filter(vk::Filter::LINEAR)
+                        .min_filter(vk::Filter::LINEAR)
+                        .mipmap_mode(vk::SamplerMipmapMode::NEAREST)
+                        .max_lod(vk::LOD_CLAMP_NONE)
+                        .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+                        .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+                        .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE),
+                    None,
+                )?
+            },
+            Resource::Sampler,
+        );
 
         let read_layout = vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
         let clear = vk::AttachmentLoadOp::CLEAR;
         let scene_pass = render_pass(r, &[STATE], true, clear, read_layout, true)?;
-        let splat_pass = render_pass(r, &[STATE; STATES], false, clear, read_layout, true)?;
+        let four = [STATE, STATE, STATE, SINGLE];
+        let splat_pass = render_pass(r, &four, false, clear, read_layout, true)?;
         let dont_care = vk::AttachmentLoadOp::DONT_CARE;
-        let resolve_pass = render_pass(r, &[STATE; STATES], false, dont_care, read_layout, true)?;
+        let resolve_pass = render_pass(r, &four, false, dont_care, read_layout, true)?;
         let net_pass = render_pass(r, &[STATE; STATES], false, dont_care, read_layout, true)?;
         let display_pass = render_pass(
             r,
@@ -388,10 +423,29 @@ impl World {
                 }
             }
         }
-        let mut acc = [[vk::ImageView::null(); STATES]; EYES];
+        let mut acc = [[vk::ImageView::null(); ACCS]; EYES];
+        for eye in &mut acc {
+            for (i, view) in eye.iter_mut().enumerate() {
+                *view = r.image(size, if i < STATES { STATE } else { SINGLE }, target_usage)?.1;
+            }
+        }
+        // Resolved state: written at level 0 (`mid_target`), sampled with all levels.
+        let mid_usage = target_usage | Usage::TRANSFER_SRC | Usage::TRANSFER_DST;
         let mut mid = [[vk::ImageView::null(); STATES]; EYES];
-        for view in acc.iter_mut().chain(mid.iter_mut()).flatten() {
-            *view = r.image(size, STATE, target_usage)?.1;
+        let mut mid_target = [[vk::ImageView::null(); STATES]; EYES];
+        let mut mid_images = [[vk::Image::null(); STATES]; EYES];
+        for eye in 0..EYES {
+            for i in 0..STATES {
+                let (image, level0) = r.image_levels(size, STATE, mid_usage, levels)?;
+                mid_images[eye][i] = image;
+                mid_target[eye][i] = level0;
+                mid[eye][i] = r.view_levels(image, STATE, vk::ImageAspectFlags::COLOR, levels)?;
+            }
+        }
+        let mut cert = [vk::ImageView::null(); EYES];
+        let mut cert_images = [vk::Image::null(); EYES];
+        for eye in 0..EYES {
+            (cert_images[eye], cert[eye]) = r.image(size, SINGLE, target_usage | Usage::TRANSFER_SRC)?;
         }
         let mut gbuffer = [vk::ImageView::null(); EYES];
         let mut scene_targets = [vk::Framebuffer::null(); EYES];
@@ -403,7 +457,8 @@ impl World {
             let depth = r.image(size, DEPTH, Usage::DEPTH_STENCIL_ATTACHMENT)?.1;
             scene_targets[eye] = r.framebuffer(scene_pass, size, &[gbuffer[eye], depth])?;
             acc_targets[eye] = r.framebuffer(splat_pass, size, &acc[eye])?;
-            resolve_targets[eye] = r.framebuffer(resolve_pass, size, &mid[eye])?;
+            let [a, b, c] = mid_target[eye];
+            resolve_targets[eye] = r.framebuffer(resolve_pass, size, &[a, b, c, cert[eye]])?;
             for parity in 0..2 {
                 net_targets[eye][parity] = r.framebuffer(net_pass, size, &state[eye][1 - parity])?;
             }
@@ -421,6 +476,9 @@ impl World {
         let (uniforms, mapped) = r.buffer(&[initial], vk::BufferUsageFlags::UNIFORM_BUFFER)?;
         let pixels = vec![[0u16; 4]; (size.width * size.height) as usize];
         let readback = r.buffer(&pixels, vk::BufferUsageFlags::TRANSFER_DST)?;
+        let dump = r.buffer(&vec![0u8; dump_bytes(size)], vk::BufferUsageFlags::TRANSFER_DST)?;
+        let (weight_buffer, weights) =
+            r.buffer(&vec![0f32; weight_count.max(4)], vk::BufferUsageFlags::STORAGE_BUFFER)?;
         let d = &r.gpu.device;
         let layouts = [set_layout; 2];
         let allocated = unsafe {
@@ -435,24 +493,26 @@ impl World {
             let uniform = [vk::DescriptorBufferInfo::default()
                 .buffer(uniforms)
                 .range(size_of::<Uniforms>() as u64)];
-            // Bindings 1.. : prev state, accumulators, resolved state, new state (each of
-            // both eyes), scene G-buffer of both eyes.
+            // Bindings 1.. : prev state, accumulators, resolved state (pyramid sampler),
+            // certainty, new state (each of both eyes), scene G-buffer of both eyes.
             let views: Vec<_> = (0..EYES)
                 .flat_map(|e| state[e][parity])
                 .chain(acc.into_iter().flatten())
-                .chain(mid.into_iter().flatten())
-                .chain((0..EYES).flat_map(|e| state[e][next]))
-                .chain(gbuffer)
+                .map(|v| (v, nearest))
+                .chain(mid.into_iter().flatten().map(|v| (v, linear)))
+                .chain(cert.into_iter().chain((0..EYES).flat_map(|e| state[e][next])).chain(gbuffer).map(|v| (v, nearest)))
                 .collect();
+            assert_eq!(views.len(), SAMPLED_BINDINGS as usize);
             let views: Vec<_> = views
                 .into_iter()
-                .map(|view| {
+                .map(|(view, sampler)| {
                     [vk::DescriptorImageInfo::default()
                         .image_view(view)
-                        .sampler(nearest)
+                        .sampler(sampler)
                         .image_layout(read_layout)]
                 })
                 .collect();
+            let storage = [vk::DescriptorBufferInfo::default().buffer(weight_buffer).range(vk::WHOLE_SIZE)];
             let mut writes = vec![vk::WriteDescriptorSet::default()
                 .dst_set(set)
                 .dst_binding(0)
@@ -465,6 +525,13 @@ impl World {
                     .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                     .image_info(info)
             }));
+            writes.push(
+                vk::WriteDescriptorSet::default()
+                    .dst_set(set)
+                    .dst_binding(WEIGHTS_BINDING)
+                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                    .buffer_info(&storage),
+            );
             unsafe { d.update_descriptor_sets(&writes, &[]) };
         }
 
@@ -484,6 +551,13 @@ impl World {
             layout,
             sets: [allocated[0], allocated[1]],
             state_images,
+            mid_images,
+            cert_images,
+            levels,
+            weights,
+            weight_count,
+            dump,
+            dumping: false,
             acc_targets,
             resolve_targets,
             net_targets,
@@ -512,8 +586,8 @@ impl World {
     ) -> Result<Vec<vk::Pipeline>> {
         Ok(vec![
             pipeline(d, shaders, ("scene.vert.spv", "scene.frag.spv"), scene, layout, 1, false, true, false)?,
-            pipeline(d, shaders, ("splat.vert.spv", "splat.frag.spv"), splat, layout, STATES, true, false, true)?,
-            pipeline(d, shaders, ("fullscreen.vert.spv", "resolve.frag.spv"), resolve, layout, STATES, false, false, false)?,
+            pipeline(d, shaders, ("splat.vert.spv", "splat.frag.spv"), splat, layout, ACCS, true, false, true)?,
+            pipeline(d, shaders, ("fullscreen.vert.spv", "resolve.frag.spv"), resolve, layout, ACCS, false, false, false)?,
             pipeline(d, shaders, ("fullscreen.vert.spv", "net.frag.spv"), net, layout, STATES, false, false, false)?,
             pipeline(d, shaders, ("fullscreen.vert.spv", "display.frag.spv"), display, layout, 1, false, false, false)?,
         ])
@@ -543,6 +617,7 @@ impl World {
         images: [usize; EYES],
         time: f32,
         rule: &RuleFrame,
+        weights: &[f32],
         settings: Settings,
     ) {
         if self.previous.is_none() {
@@ -562,13 +637,13 @@ impl World {
                 time,
                 (self.frame % 65536) as f32,
             ],
-            step: [dt, settings.near, settings.far, 0.],
-            taps: rule.taps,
-            w1: rule.w1,
-            w2: rule.w2,
-            nca: rule.params,
+            step: [dt, 0., 0., 0.],
+            net: rule.net,
+            net_run: [settings.rate, 0., 0., 0.],
+            net_layers: rule.layers,
+            net_taps: rule.taps,
             city: [settings.cell, settings.height, settings.radius, settings.blocks as f32],
-            mixing: [settings.color, settings.identity, settings.depth, settings.noise],
+            mixing: [settings.color, settings.identity, settings.depth, 0.],
             player: {
                 let ground = |c: [EyeCamera; EYES]| (c[0].position + c[1].position) * 0.5;
                 let (now, before) = (ground(cameras), ground(previous));
@@ -583,7 +658,7 @@ impl World {
             .max_depth(1.);
         let zero = [vk::ClearValue {
             color: vk::ClearColorValue { float32: [0.; 4] },
-        }; STATES];
+        }; ACCS];
         let scene_clear = [
             zero[0],
             vk::ClearValue {
@@ -594,6 +669,8 @@ impl World {
         let pixels = self.size.width * self.size.height;
         unsafe {
             self.mapped.write(uniforms);
+            let count = weights.len().min(self.weight_count);
+            self.weights.copy_from_nonoverlapping(weights.as_ptr(), count);
             d.cmd_bind_descriptor_sets(
                 cmd,
                 vk::PipelineBindPoint::GRAPHICS,
@@ -655,6 +732,9 @@ impl World {
                     d.cmd_draw(cmd, 3, 1, 0, 0);
                     d.cmd_end_render_pass(cmd);
                 }
+                if index == 3 {
+                    build_mips(d, cmd, self.mid_images.as_flattened(), self.size, self.levels);
+                }
                 stamp(index);
             }
             for eye in 0..EYES {
@@ -669,10 +749,32 @@ impl World {
         if self.capture {
             // The new state A of the left eye: state[0][1 - parity], first image.
             let image = self.state_images[(1 - self.parity) * STATES];
-            copy_to_buffer(d, cmd, image, self.size, self.readback.0);
+            copy_to_buffer(d, cmd, image, self.size, self.readback.0, 0);
+        }
+        if self.dumping {
+            // Eye 0: resolved A, B, C, certainty, then the new A, B, C.
+            let state = 8 * (self.size.width * self.size.height) as u64;
+            let mut offset = 0;
+            for image in self.mid_images[0] {
+                copy_to_buffer(d, cmd, image, self.size, self.dump.0, offset);
+                offset += state;
+            }
+            copy_to_buffer(d, cmd, self.cert_images[0], self.size, self.dump.0, offset);
+            offset += state / 4;
+            for i in 0..STATES {
+                let image = self.state_images[(1 - self.parity) * STATES + i];
+                copy_to_buffer(d, cmd, image, self.size, self.dump.0, offset);
+                offset += state;
+            }
         }
         self.parity = 1 - self.parity;
         self.frame += 1;
+    }
+
+    /// The dump of the last frame with `dumping` set (after its commands finished):
+    /// eye 0's resolved A, B, C (RGBA16F), certainty (R16F), new A, B, C (RGBA16F).
+    pub fn dumped(&self) -> &[u8] {
+        unsafe { std::slice::from_raw_parts(self.dump.1, dump_bytes(self.size)) }
     }
 
     fn captured(&self) -> &[[u16; 4]] {
@@ -763,8 +865,76 @@ fn half_to_f32(h: u16) -> f32 {
     }
 }
 
-/// Copy a shader-readable colour image into a buffer, leaving it shader-readable.
-fn copy_to_buffer(d: &Device, cmd: vk::CommandBuffer, image: vk::Image, size: vk::Extent2D, buffer: vk::Buffer) {
+fn dump_bytes(size: vk::Extent2D) -> usize {
+    let pixels = (size.width * size.height) as usize;
+    pixels * (8 * 2 * STATES + 2)
+}
+
+/// Fill mip levels 1.. of the resolved images (level 0 written by the resolve pass,
+/// shader-readable) with 2x2 averages (linear blits halve exactly), leaving all
+/// levels shader-readable.
+fn build_mips(d: &Device, cmd: vk::CommandBuffer, images: &[vk::Image], size: vk::Extent2D, levels: u32) {
+    use vk::{AccessFlags as A, ImageLayout as L, PipelineStageFlags as S};
+    let barriers = |level: u32, count: u32, old, new, src, dst| -> Vec<_> {
+        images
+            .iter()
+            .map(|&image| {
+                vk::ImageMemoryBarrier::default()
+                    .image(image)
+                    .subresource_range(image_range(vk::ImageAspectFlags::COLOR).base_mip_level(level).level_count(count))
+                    .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .old_layout(old)
+                    .new_layout(new)
+                    .src_access_mask(src)
+                    .dst_access_mask(dst)
+            })
+            .collect()
+    };
+    let none = vk::DependencyFlags::empty();
+    let extent = |level: u32| vk::Offset3D {
+        x: (size.width >> level).max(1) as i32,
+        y: (size.height >> level).max(1) as i32,
+        z: 1,
+    };
+    unsafe {
+        let b = barriers(0, 1, L::SHADER_READ_ONLY_OPTIMAL, L::TRANSFER_SRC_OPTIMAL, A::COLOR_ATTACHMENT_WRITE, A::TRANSFER_READ);
+        d.cmd_pipeline_barrier(cmd, S::COLOR_ATTACHMENT_OUTPUT, S::TRANSFER, none, &[], &[], &b);
+        for level in 1..levels {
+            let b = barriers(level, 1, L::UNDEFINED, L::TRANSFER_DST_OPTIMAL, A::empty(), A::TRANSFER_WRITE);
+            d.cmd_pipeline_barrier(cmd, S::TOP_OF_PIPE, S::TRANSFER, none, &[], &[], &b);
+            let layers = |mip_level| vk::ImageSubresourceLayers {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                mip_level,
+                base_array_layer: 0,
+                layer_count: 1,
+            };
+            let region = vk::ImageBlit::default()
+                .src_subresource(layers(level - 1))
+                .src_offsets([vk::Offset3D::default(), extent(level - 1)])
+                .dst_subresource(layers(level))
+                .dst_offsets([vk::Offset3D::default(), extent(level)]);
+            for &image in images {
+                d.cmd_blit_image(cmd, image, L::TRANSFER_SRC_OPTIMAL, image, L::TRANSFER_DST_OPTIMAL, &[region], vk::Filter::LINEAR);
+            }
+            let b = barriers(level, 1, L::TRANSFER_DST_OPTIMAL, L::TRANSFER_SRC_OPTIMAL, A::TRANSFER_WRITE, A::TRANSFER_READ);
+            d.cmd_pipeline_barrier(cmd, S::TRANSFER, S::TRANSFER, none, &[], &[], &b);
+        }
+        let b = barriers(0, levels, L::TRANSFER_SRC_OPTIMAL, L::SHADER_READ_ONLY_OPTIMAL, A::TRANSFER_READ | A::TRANSFER_WRITE, A::SHADER_READ);
+        d.cmd_pipeline_barrier(cmd, S::TRANSFER, S::FRAGMENT_SHADER, none, &[], &[], &b);
+    }
+}
+
+/// Copy a shader-readable colour image (level 0) into a buffer at `offset` bytes,
+/// leaving it shader-readable.
+fn copy_to_buffer(
+    d: &Device,
+    cmd: vk::CommandBuffer,
+    image: vk::Image,
+    size: vk::Extent2D,
+    buffer: vk::Buffer,
+    offset: u64,
+) {
     use vk::{AccessFlags as A, ImageLayout as L, PipelineStageFlags as S};
     let barrier = |old, new, src, dst| {
         vk::ImageMemoryBarrier::default()
@@ -778,6 +948,7 @@ fn copy_to_buffer(d: &Device, cmd: vk::CommandBuffer, image: vk::Image, size: vk
             .dst_access_mask(dst)
     };
     let region = vk::BufferImageCopy::default()
+        .buffer_offset(offset)
         .image_subresource(vk::ImageSubresourceLayers {
             aspect_mask: vk::ImageAspectFlags::COLOR,
             mip_level: 0,

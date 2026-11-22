@@ -10,12 +10,12 @@ layout(location = 0) out vec4 color;
 
 void main() {
     ivec2 p = ivec2(gl_FragCoord.xy);
-    vec4 a = nextFetch(pc.target, 0, p); // rgb, certainty
-    vec4 b = nextFetch(pc.target, 1, p); // velocity
-    vec4 h = nextFetch(pc.target, 2, p); // hidden, inverse depth
+    vec4 a = nextFetch(pc.target, 0, p); // rgb, inverse depth
+    vec4 b = nextFetch(pc.target, 1, p); // velocity, certainty
+    vec4 h = nextFetch(pc.target, 2, p); // hidden
     vec3 c = clamp(pow(max(a.rgb * u.tone[0].rgb + u.tone[1].rgb, 0.0), u.tone[2].rgb), 0.0, 1.0);
-    if (pc.mode == 1) c = vec3(a.a);
-    if (pc.mode == 2) c = vec3(clamp(h.w * u.step.y, 0.0, 1.0)); // near = white
+    if (pc.mode == 1) c = vec3(b.w);
+    if (pc.mode == 2) c = vec3(clamp(a.w * u.net.z, 0.0, 1.0)); // near = white
     if (pc.mode == 3) c = b.xyz * 0.5 + 0.5;
     if (pc.mode == 4) c = h.xyz * 0.5 + 0.5;
     if (pc.mode == 6) c = sceneFetch(pc.target, p).xww;

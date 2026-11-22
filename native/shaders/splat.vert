@@ -3,8 +3,8 @@
 #include "common.glsl"
 #include "state.glsl"
 
-// Previous state of the source eye: A = (rgb, certainty), B = (world velocity, -),
-// C = (h0, h1, h2, inverse depth).
+// Previous state of the source eye: A = (rgb, inverse depth), B = (world velocity,
+// certainty), C = (h0, h1, h2, h3).
 layout(push_constant) uniform Push { int target; int source; int mode; } pc;
 
 layout(location = 0) flat out vec4 vA;
@@ -24,7 +24,7 @@ void main() {
     vCenter = vec2(0.0);
     gl_PointSize = 2.0;
     gl_Position = vec4(2.0, 2.0, 0.0, 1.0); // outside: dropped
-    if (vC.w <= 1e-5) return; // no depth yet
+    if (vA.w <= 1e-5) return; // no depth yet
     // The other eye's state mostly lands where our own already is; splat only half of
     // it (checkerboard, alternating per frame): half the blending cost, and the own
     // eye dominates where both cover.
@@ -32,13 +32,13 @@ void main() {
 
     vec4 p = u.prevInvViewProj[pc.source] * vec4(ndcFromPixel(vec2(px), size), 0.0, 1.0);
     vec3 eye = u.prevEye[pc.source].xyz;
-    vec3 world = eye + normalize(p.xyz / p.w - eye) / vC.w;
+    vec3 world = eye + normalize(p.xyz / p.w - eye) / vA.w;
     world += vB.xyz * u.step.x; // the point's own motion; camera motion comes on top
     vec4 clip = u.viewProj[pc.target] * vec4(world, 1.0);
     if (clip.w <= 1e-4) return;
 
     vec2 center = pixelFromClip(clip, size);
     gl_Position = vec4((center + 0.5) / size * 2.0 - 1.0, 0.0, 1.0);
-    vC.w = 1.0 / max(length(world - u.eye[pc.target].xyz), 0.05); // depth as seen from the target eye
+    vA.w = 1.0 / max(length(world - u.eye[pc.target].xyz), 0.05); // depth as seen from the target eye
     vCenter = center;
 }

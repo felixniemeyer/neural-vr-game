@@ -53,7 +53,9 @@ class Footage:
             ox, oy = rng.integers(size - crop + 1, size=2)
             window = np.s_[t0:t0 + k + 1, oy:oy + crop, ox:ox + crop]
             out["rgb"].append(torch.tensor(chunk["rgb"][window]).float() / 255)
-            out["inv"].append(torch.tensor(chunk["disp"][window].astype(np.float32)) / near)
+            # disp is planar (1 / z in near units); the state holds radial 1 / distance.
+            planar = torch.tensor(chunk["disp"][window].astype(np.float32)) / near
+            out["inv"].append(planar / self.rays[oy:oy + crop, ox:ox + crop].norm(dim=-1))
             r = torch.tensor(chunk["R"][t0:t0 + k])
             # Object velocity of pair t -> t+1 is in camera t+1 coords (near units);
             # the state carries it in camera t coords (m): R^T v * near.

@@ -252,7 +252,25 @@ fn run(shaders: &Path) -> Result<()> {
 
     // These resources are dropped before the OpenXR images and session.
     let mut resources = Resources::new(&gpu);
-    let mut world = World::new(&mut resources, shaders, size, format, [&images[0], &images[1]])?;
+    // WEIGHTS=dir: a trained net (train/runs/<name>/net); without it random weights.
+    let rule = rule::Rule::load(env::var_os("WEIGHTS").map(PathBuf::from).as_deref())?;
+    println!(
+        "Net: {} ({} weights, {} mip levels)",
+        if rule.trained() { "trained" } else { "random" },
+        rule.len(),
+        rule.levels()
+    );
+    ensure!(edge % (1 << (rule.levels() - 1)) == 0, "EYE_SIZE must be divisible by 2^(levels - 1)");
+    let mut weights = vec![0f32; rule.len()];
+    let mut world = World::new(
+        &mut resources,
+        shaders,
+        size,
+        format,
+        [&images[0], &images[1]],
+        rule.levels(),
+        rule.len(),
+    )?;
     world.mode = match env::var("VIEW").as_deref() {
         Ok("certainty") => 1,
         Ok("depth") => 2,
@@ -311,24 +329,19 @@ fn run(shaders: &Path) -> Result<()> {
     let mut frames = 0u64;
     let mut gpu_ms = [0f64; world::STAMPS as usize - 1];
     let mut start = None;
-    let rule = rule::Rule::random();
     // Live settings from the av-controls broker (CONTROLS, default wss://localhost:8080);
     // without a broker the defaults below stay.
     let controls = av_controls::Panel::new("sunk-city")
-        .fader("color", 0., 1., 0.)
+        .fader("color", 0., 1., 0.2)
         .fader("depth", 0., 1., 0.1)
         .fader("identity", 0., 1., 0.1)
-        .fader("noise", 0., 4., 1.)
-        .fader("seeds", 0., 4., 1.)
-        .fader_with("reach", 2., 48., 16., 0)
-        .fader("alive", 0., 1., 0.3)
+        .fader("wild", 0., 1., 0.)
+        .fader("rate", 0., 2., 1.)
         .fader_with("blocks", 4., 64., 24., 0)
         .fader_with("cell", 1., 10., 4., 1)
         .fader_with("height", 1., 25., 7., 1)
         .fader_with("radius", 3., 100., 20., 1)
         .fader_with("altitude", 0., 25., 7.5, 1)
-        .fader_with("near", 1., 40., 10., 1)
-        .fader_with("far", 10., 300., 80., 0)
         .fader("mid", 0., 1., 0.5)
         .fader_with("clip", 0., 0.2, 0.03, 3)
         .fader_with("black", 0., 0.3, 0.05, 3)
@@ -343,6 +356,10 @@ fn run(shaders: &Path) -> Result<()> {
         .unwrap_or(1.15);
     // SNAPSHOT=file.ppm: write the left eye's colour every 300 frames (debugging).
     let snapshot = env::var_os("SNAPSHOT").map(PathBuf::from);
+    // DUMP=dir: after DUMP_FRAME (60) frames write eye 0's resolved and new state once (dump.bin +
+    // dump.json) for train/parity.py, which runs the torch net on the same input.
+    let dump = env::var_os("DUMP").map(PathBuf::from);
+    let dump_frame: u64 = env::var("DUMP_FRAME").ok().and_then(|v| v.parse().ok()).unwrap_or(60);
     println!("Sunk City session created ({edge}x{edge} per eye)");
 
     loop {
@@ -410,19 +427,15 @@ fn run(shaders: &Path) -> Result<()> {
         let origin = Vec3::new(0., controls.get("altitude"), 0.);
         let cameras = [camera(&views[0], head, origin), camera(&views[1], head, origin)];
         let settings = Settings {
-            reach: controls.get("reach"),
-            alive: controls.get("alive"),
+            wild: controls.get("wild"),
+            rate: controls.get("rate"),
             color: controls.get("color"),
             identity: controls.get("identity"),
             depth: controls.get("depth"),
-            noise: controls.get("noise"),
-            seeds: controls.get("seeds"),
             blocks: controls.get("blocks").round().max(1.) as u32,
             cell: controls.get("cell"),
             height: controls.get("height"),
             radius: controls.get("radius"),
-            near: controls.get("near"),
-            far: controls.get("far"),
         };
         let mut indices = [0; EYES];
         for (swapchain, index) in swapchains.iter_mut().zip(&mut indices) {
@@ -434,10 +447,12 @@ fn run(shaders: &Path) -> Result<()> {
             d.begin_command_buffer(cmd, &vk::CommandBufferBeginInfo::default())?;
             d.cmd_reset_query_pool(cmd, queries, 0, world::STAMPS);
             d.cmd_write_timestamp(cmd, vk::PipelineStageFlags::TOP_OF_PIPE, queries, 0);
-            let frame_rule = rule.at(seconds, settings.reach, settings.alive, settings.seeds);
+            let frame_rule = rule.frame();
+            rule.weights(seconds, settings.wild, &mut weights);
             // Every 8th frame: read back the left eye for the automatic exposure.
             world.capture = frames % 8 == 0;
-            world.draw(d, cmd, queries, cameras, indices, seconds, &frame_rule, settings);
+            world.dumping = dump.is_some() && frames == dump_frame;
+            world.draw(d, cmd, queries, cameras, indices, seconds, &frame_rule, &weights, settings);
             d.end_command_buffer(cmd)?;
             d.reset_fences(&[fence])?;
             let commands = [cmd];
@@ -456,6 +471,18 @@ fn run(shaders: &Path) -> Result<()> {
                     *ms += pair[1].wrapping_sub(pair[0]) as f64 * tick_ns / 1e6;
                 }
             }
+        }
+        if let (true, Some(dir)) = (world.dumping, &dump) {
+            std::fs::create_dir_all(dir)?;
+            std::fs::write(dir.join("dump.bin"), world.dumped())?;
+            std::fs::write(
+                dir.join("dump.json"),
+                format!(
+                    "{{\"size\": {edge}, \"rate\": {}, \"wild\": {}, \"layout\": \"mid A, B, C (rgba16f), certainty (r16f), next A, B, C (rgba16f)\"}}\n",
+                    settings.rate, settings.wild
+                ),
+            )?;
+            println!("Dumped to {}", dir.display());
         }
         if world.capture {
             world.calibrate(

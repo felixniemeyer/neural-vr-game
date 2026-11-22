@@ -1,101 +1,155 @@
-//! Weights of the tiny per-pixel net (see shaders/net.frag), random for now and
-//! slowly morphing; a trained network would be exported to the same layout.
+//! Weights of the per-pixel net (see shaders/net.frag), in the layout train.py exports:
+//! net.json (inputs, layers, taps, near, max_change) + weights.bin (float32, per layer
+//! W [outputs][inputs] row-major, then the bias).
 //!
-//!   layer 1: 14 input vec4s (12 spiral taps + 2 self) -> 16 hidden, as 56 mat4
-//!            (w1[k * 4 + q]: input k to hidden quad q), relu
-//!   layer 2: 16 hidden -> 2 output vec4s, as 8 mat4 (w2[j * 4 + q])
-//!
-//! Several random bases are blended with sines, normalised so the weight scale stays
-//! constant, and a gain sine moves the net between calm and chaotic. The spiral tap
-//! offsets are computed here too (golden angle, exponential radius, slowly turning).
+//! `WEIGHTS=dir` loads a trained net; without it the default layout runs with random
+//! weights only. The `wild` fader blends the trained weights toward random ones that
+//! slowly morph (several random bases mixed with sines, normalised): 0 = as trained,
+//! 1 = fully random, the artistic distortion knob.
 
-pub const TAPS: usize = 12;
-pub const W1: usize = (TAPS + 2) * 4;
-pub const W2: usize = 2 * 4;
+use anyhow::{Context, Result, ensure};
+use serde_json::Value;
+use std::path::Path;
 
+pub const MAX_TAPS: usize = 32;
+pub const MAX_LAYERS: usize = 4;
+const MAX_UNITS: usize = 64;
 const BASES: usize = 4;
 const PERIODS: [f32; BASES] = [41., 59., 73., 97.];
-const GOLDEN_ANGLE: f32 = 2.399_963;
-
-type Mat4 = [f32; 16];
 
 pub struct Rule {
-    w1: Vec<[Mat4; W1]>,
-    w2: Vec<[Mat4; W2]>,
+    /// (mip level, dx, dy) per tap, pixels of level 0, y down.
+    taps: Vec<[f32; 3]>,
+    /// (inputs, outputs) per layer.
+    layers: Vec<(usize, usize)>,
+    near: f32,
+    max_change: f32,
+    trained: Option<Vec<f32>>,
+    bases: Vec<Vec<f32>>,
 }
 
+/// Per-frame uniforms of the net.
 pub struct RuleFrame {
-    pub taps: [[f32; 4]; TAPS / 2],
-    pub w1: [Mat4; W1],
-    pub w2: [Mat4; W2],
-    /// update rate, noise, alive, seed probability
-    pub params: [f32; 4],
+    /// taps, layers, near, max change
+    pub net: [f32; 4],
+    /// per layer: inputs, outputs, offset (vec4s), 0
+    pub layers: [[f32; 4]; MAX_LAYERS],
+    /// per tap: level, dx, dy, 0
+    pub taps: [[f32; 4]; MAX_TAPS],
 }
 
-fn uniform_unit() -> f32 {
-    // Uniform with unit variance: [-sqrt(3), sqrt(3)].
-    (rand::random::<f32>() * 2. - 1.) * 3f32.sqrt()
+/// The layout train.py uses by default (net.levels 5, points 3, hidden [16]).
+fn default_taps() -> Vec<[f32; 3]> {
+    let mut taps = Vec::new();
+    for level in 0..5 {
+        let radius = 2f32.powi(level);
+        for k in 0..3 {
+            let angle = (90. + 60. * level as f32 + 120. * k as f32).to_radians();
+            taps.push([level as f32, radius * angle.cos(), -radius * angle.sin()]);
+        }
+    }
+    taps
 }
 
 fn wave(time: f32, period: f32, phase: f32) -> f32 {
     (std::f32::consts::TAU * time / period + phase).sin()
 }
 
-/// Normalised blend weights of the bases at `time`.
-fn blend(time: f32) -> [f32; BASES] {
-    let mut weights: [f32; BASES] = std::array::from_fn(|k| wave(time, PERIODS[k], k as f32 * 1.7));
-    let norm = weights.iter().map(|w| w * w).sum::<f32>().sqrt().max(1e-3);
-    weights.iter_mut().for_each(|w| *w /= norm);
-    weights
-}
-
-fn random<const N: usize>() -> [Mat4; N] {
-    std::array::from_fn(|_| std::array::from_fn(|_| uniform_unit()))
-}
-
-fn mix<const N: usize>(bases: &[[Mat4; N]], weights: &[f32; BASES], scale: f32) -> [Mat4; N] {
-    std::array::from_fn(|m| {
-        std::array::from_fn(|i| (0..BASES).map(|k| bases[k][m][i] * weights[k]).sum::<f32>() * scale)
-    })
-}
-
 impl Rule {
-    pub fn random() -> Self {
-        Self {
-            w1: (0..BASES).map(|_| random()).collect(),
-            w2: (0..BASES).map(|_| random()).collect(),
+    pub fn load(dir: Option<&Path>) -> Result<Self> {
+        let (taps, layers, near, max_change, trained) = match dir {
+            None => {
+                let taps = default_taps();
+                let inputs = 4 * (2 * (1 + taps.len()) + 1);
+                (taps, vec![(inputs, 16), (16, 8)], 10., 0.5, None)
+            }
+            Some(dir) => {
+                let json: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("net.json"))?)?;
+                let number = |v: &Value| v.as_f64().context("number expected in net.json").map(|x| x as f32);
+                let taps = json["taps"]
+                    .as_array()
+                    .context("taps")?
+                    .iter()
+                    .map(|t| Ok([number(&t[0])?, number(&t[1])?, number(&t[2])?]))
+                    .collect::<Result<Vec<_>>>()?;
+                let layers = json["layers"]
+                    .as_array()
+                    .context("layers")?
+                    .iter()
+                    .map(|l| Ok((number(&l[0])? as usize, number(&l[1])? as usize)))
+                    .collect::<Result<Vec<_>>>()?;
+                ensure!(json["hidden_state"].as_u64() == Some(4), "the runtime state holds 4 hidden channels");
+                let bytes = std::fs::read(dir.join("weights.bin"))?;
+                let weights: Vec<f32> =
+                    bytes.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect();
+                let expected: usize = layers.iter().map(|&(i, o)| i * o + o).sum();
+                ensure!(weights.len() == expected, "weights.bin has {} floats, net.json needs {expected}", weights.len());
+                (taps, layers, number(&json["near"])?, number(&json["max_change"])?, Some(weights))
+            }
+        };
+        ensure!(taps.len() <= MAX_TAPS && layers.len() <= MAX_LAYERS, "net too large for the shader");
+        ensure!(layers[0].0 == 4 * (2 * (1 + taps.len()) + 1), "layer 1 inputs do not match the taps");
+        ensure!(layers.last().unwrap().1 == 8, "the net must output 8 values");
+        for &(i, o) in &layers {
+            ensure!(i % 4 == 0 && o % 4 == 0 && o <= MAX_UNITS, "layer sizes must be multiples of 4, at most {MAX_UNITS}");
+        }
+        let count: usize = layers.iter().map(|&(i, o)| i * o + o).sum();
+        let bases = (0..BASES)
+            .map(|_| (0..count).map(|_| (rand::random::<f32>() * 2. - 1.) * 3f32.sqrt()).collect())
+            .collect();
+        Ok(Self { taps, layers, near, max_change, trained, bases })
+    }
+
+    pub fn trained(&self) -> bool {
+        self.trained.is_some()
+    }
+
+    /// Mip levels the net reads (the pyramid depth).
+    pub fn levels(&self) -> u32 {
+        self.taps.iter().map(|t| t[0] as u32 + 1).max().unwrap_or(1)
+    }
+
+    /// Number of floats in the weights buffer.
+    pub fn len(&self) -> usize {
+        self.bases[0].len()
+    }
+
+    pub fn frame(&self) -> RuleFrame {
+        let mut layers = [[0.; 4]; MAX_LAYERS];
+        let mut offset = 0;
+        for (slot, &(i, o)) in layers.iter_mut().zip(&self.layers) {
+            *slot = [i as f32, o as f32, (offset / 4) as f32, 0.];
+            offset += i * o + o;
+        }
+        let mut taps = [[0.; 4]; MAX_TAPS];
+        for (slot, t) in taps.iter_mut().zip(&self.taps) {
+            *slot = [t[0], t[1], t[2], 0.];
+        }
+        RuleFrame {
+            net: [self.taps.len() as f32, self.layers.len() as f32, self.near, self.max_change],
+            layers,
+            taps,
         }
     }
 
-    /// Weights and taps at `time`; `reach` is the outermost tap radius in pixels,
-    /// `alive` the rate floor on certain pixels, `seeds` scales the seed probability.
-    pub fn at(&self, time: f32, reach: f32, alive: f32, seeds: f32) -> RuleFrame {
-        let weights = blend(time);
-        // Gain ~0.7 (calm) .. ~2.2 (chaotic), He-style per-layer fan-in scaling.
+    /// The weights at `time`: trained blended toward random by `wild` (always random
+    /// without a trained net). Random weights use He scaling per layer (gain on the
+    /// hidden layers), the bases blended with normalised sines.
+    pub fn weights(&self, time: f32, wild: f32, out: &mut [f32]) {
+        let wild = if self.trained.is_some() { wild.clamp(0., 1.) } else { 1. };
+        let mut blend: [f32; BASES] = std::array::from_fn(|k| wave(time, PERIODS[k], k as f32 * 1.7));
+        let norm = blend.iter().map(|w| w * w).sum::<f32>().sqrt().max(1e-3);
+        blend.iter_mut().for_each(|w| *w /= norm);
         let gain = 1.45 + 0.75 * wave(time, 31., 0.5);
-        let w1 = mix(&self.w1, &weights, gain * (2. / (W1 * 4) as f32).sqrt());
-        let w2 = mix(&self.w2, &weights, 1.5 * (2. / 16f32).sqrt());
-        let turn = 0.05 * time;
-        let reach = reach.max(1.);
-        let taps = std::array::from_fn(|i| {
-            let offset = |k: usize| {
-                let radius = reach.powf(k as f32 / (TAPS - 1) as f32);
-                let angle = k as f32 * GOLDEN_ANGLE + turn;
-                [(radius * angle.cos()).round(), (radius * angle.sin()).round()]
-            };
-            let [a, b] = [offset(2 * i), offset(2 * i + 1)];
-            [a[0], a[1], b[0], b[1]]
-        });
-        RuleFrame {
-            taps,
-            w1,
-            w2,
-            params: [
-                0.25 + 0.15 * wave(time, 23., 2.),
-                0.02,
-                alive,
-                0.0032 * (1. + wave(time, 47., 1.)) * seeds,
-            ],
+        let mut start = 0;
+        for (l, &(i, o)) in self.layers.iter().enumerate() {
+            let scale = if l + 1 < self.layers.len() { gain } else { 1. } * (2. / i as f32).sqrt();
+            for index in start..start + i * o + o {
+                let random = (0..BASES).map(|k| self.bases[k][index] * blend[k]).sum::<f32>() * scale;
+                let trained = self.trained.as_ref().map_or(0., |w| w[index]);
+                out[index] = trained + (random - trained) * wild;
+            }
+            start += i * o + o;
         }
     }
 }

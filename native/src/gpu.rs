@@ -146,11 +146,22 @@ impl<'a> Resources<'a> {
         format: vk::Format,
         aspect: vk::ImageAspectFlags,
     ) -> Result<vk::ImageView> {
+        self.view_levels(image, format, aspect, 1)
+    }
+
+    /// A view of mip levels 0..levels.
+    pub fn view_levels(
+        &mut self,
+        image: vk::Image,
+        format: vk::Format,
+        aspect: vk::ImageAspectFlags,
+        levels: u32,
+    ) -> Result<vk::ImageView> {
         let info = vk::ImageViewCreateInfo::default()
             .image(image)
             .view_type(vk::ImageViewType::TYPE_2D)
             .format(format)
-            .subresource_range(image_range(aspect));
+            .subresource_range(image_range(aspect).level_count(levels));
         Ok(self.keep(
             unsafe { self.gpu.device.create_image_view(&info, None)? },
             Resource::View,
@@ -163,6 +174,17 @@ impl<'a> Resources<'a> {
         format: vk::Format,
         usage: vk::ImageUsageFlags,
     ) -> Result<(vk::Image, vk::ImageView)> {
+        self.image_levels(size, format, usage, 1)
+    }
+
+    /// An image with `levels` mip levels; the view shows level 0 only.
+    pub fn image_levels(
+        &mut self,
+        size: vk::Extent2D,
+        format: vk::Format,
+        usage: vk::ImageUsageFlags,
+        levels: u32,
+    ) -> Result<(vk::Image, vk::ImageView)> {
         let d = &self.gpu.device;
         let info = vk::ImageCreateInfo::default()
             .image_type(vk::ImageType::TYPE_2D)
@@ -172,7 +194,7 @@ impl<'a> Resources<'a> {
                 height: size.height,
                 depth: 1,
             })
-            .mip_levels(1)
+            .mip_levels(levels)
             .array_layers(1)
             .samples(vk::SampleCountFlags::TYPE_1)
             .usage(usage);

@@ -3,7 +3,7 @@ same math (see native/shaders); export() writes what they load.
 
 State [B, C, H, W], channels:
   0:3  rgb
-  3    inverse depth (1/m), 0 = no data (hole)
+  3    inverse distance (1/m, radial like the GPU), 0 = no data (hole)
   4:7  velocity (m per frame, current camera coords: x right, y up, z ahead)
   7    certainty
   8:   hidden state (net.hidden_state channels)
@@ -147,7 +147,7 @@ def splat(state, r, t, rays, origin, focal, full):
     b, c, h, w = state.shape
     inv = state[:, INV]
     alive = (inv > 0).float()
-    p = rays / inv.clamp_min(1e-6)[..., None]  # [B, H, W, 3]
+    p = F.normalize(rays, dim=-1) / inv.clamp_min(1e-6)[..., None]  # [B, H, W, 3], radial
     p = p + state[:, VEL].permute(0, 2, 3, 1)
     q = torch.einsum("bij,bhwj->bhwi", r, p) + t[:, None, None]
     z = q[..., 2]
@@ -157,7 +157,7 @@ def splat(state, r, t, rays, origin, focal, full):
     cy = -focal * q[..., 1] / zs + full / 2 - 0.5 - origin[:, 1, None, None]
 
     values = state.clone()
-    values[:, INV] = 1 / zs
+    values[:, INV] = 1 / q.norm(dim=-1).clamp_min(0.05)  # as the GPU: 1 / max(distance, 0.05)
     values[:, VEL] = torch.einsum("bij,bjhw->bihw", r, state[:, VEL])
     values = torch.cat([values, torch.ones_like(inv)[:, None]], 1).flatten(2)  # + weight channel
     acc = torch.zeros(b, c + 1, h * w)
@@ -176,3 +176,30 @@ def splat(state, r, t, rays, origin, focal, full):
     out = acc[:, :-1] / weight.clamp_min(0.01) * (1 - hole)
     out[:, CERT:CERT + 1] = acc[:, CERT:CERT + 1].clamp(0, 1) * (1 - hole)  # partial coverage lowers it
     return out, hole
+
+
+def load_export(folder: Path) -> Net:
+    """A Net from an export (net.json + weights.bin), as the runtime loads it."""
+    from sunk.config import Config
+    spec = json.loads((Path(folder) / "net.json").read_text())
+    config = Config()
+    config.net.levels = spec["levels"]
+    taps_per_level = sum(1 for t in spec["taps"] if t[0] == 1)
+    config.net.points = taps_per_level
+    config.net.hidden = [o for _, o in spec["layers"][:-1]]
+    config.net.hidden_state = spec["hidden_state"]
+    config.net.near = spec["near"]
+    config.net.max_change = spec["max_change"]
+    net = Net(config)
+    assert [list(t) for t in net.taps] == [list(t) for t in spec["taps"]], "tap layout differs"
+    flat = torch.tensor(np.fromfile(Path(folder) / "weights.bin", dtype="<f4"))
+    at = 0
+    with torch.no_grad():
+        for layer in net.layers:
+            n = layer.weight.numel()
+            layer.weight.copy_(flat[at:at + n].view_as(layer.weight))
+            at += n
+            layer.bias.copy_(flat[at:at + layer.bias.numel()])
+            at += layer.bias.numel()
+    assert at == len(flat)
+    return net
