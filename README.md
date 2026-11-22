@@ -114,7 +114,7 @@ SIZE=256 ./frames.sh                           # crop + scale to data/frames/256
 uv run new.py tiny                             # runs/tiny/config.toml: all settings
 uv run prepare.py runs/tiny                    # depth, flow, camera motion -> data/prepared/
 uv run view.py data/prepared/<name>/chunk_000.npz   # colour | depth | flow | object motion
-uv run train.py runs/tiny                      # previews in runs/tiny/preview/, net in runs/tiny/net/
+uv run train.py runs/tiny                      # previews in runs/tiny/preview/, net in runs/tiny/net/ (every version in nets/<iteration>/)
 WEIGHTS=train/runs/tiny/net ./dev.sh           # (from the repo root)
 ```
 

@@ -451,6 +451,7 @@ def main():
             log.write(line + "\n")
             preview(project / "preview" / f"{it:06d}.png", frames, config.net.near)
             net.export(project / "net", config, max_tau=max_tau)
+            net.export(project / "nets" / f"{it:06d}", config, max_tau=max_tau)  # every version (~20 KB)
             torch.save({"net": net.state_dict(), "opt": opt.state_dict(), "sched": sched.state_dict(), "iter": it},
                        checkpoint)
 
