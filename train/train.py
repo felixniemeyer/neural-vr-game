@@ -27,20 +27,26 @@ from sunk.model import CERT, HID, INV, RGB, VEL, Net, splat
 class Footage:
     def __init__(self, config):
         self.config = config
-        self.chunks = []
-        for path in sorted(config.prep_dir().glob("chunk_[0-9][0-9][0-9].npz")):
-            z = np.load(path)
-            self.chunks.append({k: z[k] for k in ("rgb", "disp", "vel", "R", "t", "ok")})
-        steps = config.train.steps
-        self.starts = []  # (chunk, t0) with steps usable pairs ahead
-        for c, chunk in enumerate(self.chunks):
-            ok = chunk["ok"]
-            run = np.convolve(ok.astype(int), np.ones(steps, int), "valid")
-            self.starts += [(c, t) for t in np.nonzero(run == steps)[0]]
+        self.paths, self.chunks = [], []
+        self.starts = []  # (chunk, t0) with train.steps usable pairs ahead
         size = config.data.size
         self.focal = size / 2 / np.tan(np.radians(config.data.fov) / 2)
         self.rays = make_rays(size, size, config.data.fov)
-        print(f"{len(self.chunks)} chunks, {len(self.starts)} rollout starts")
+        self.refresh()
+
+    def refresh(self):
+        """Load chunks that appeared since (prepare.py may still be running)."""
+        steps = self.config.train.steps
+        for path in sorted(self.config.prep_dir().glob("chunk_[0-9][0-9][0-9].npz")):
+            if path in self.paths:
+                continue
+            z = np.load(path)
+            chunk = {k: z[k] for k in ("rgb", "disp", "vel", "R", "t", "ok")}
+            run = np.convolve(chunk["ok"].astype(int), np.ones(steps, int), "valid")
+            self.starts += [(len(self.chunks), t) for t in np.nonzero(run == steps)[0]]
+            self.paths.append(path)
+            self.chunks.append(chunk)
+            print(f"{len(self.chunks)} chunks, {len(self.starts)} rollout starts", flush=True)
 
     def batch(self, n, rng):
         """Frames [B, K+1, ...] as seen by the (virtual) cameras, their motion [B, K],
@@ -211,6 +217,7 @@ def main():
             log.flush()
             began, total = time.time(), 0.0
         if it % config.train.preview == 0 or it == config.train.iters:
+            data.refresh()
             with torch.no_grad():
                 val, frames = rollout(net, data, fixed, 0.0, record=True)
                 change, net.max_change = net.max_change, 0.0
