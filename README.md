@@ -60,7 +60,7 @@ Environment variables (on the Frame, set them in `native/frame/start.sh`):
 | `CONTROLS` | wss://localhost:8080 (`dev.sh`: ws://localhost:8090) | av-controls broker; on the Frame, use your PC's IP |
 | `WEIGHTS`  | unset   | A trained net, e.g. `train/runs/tiny/net`; unset = random weights |
 | `SNAPSHOT` | unset   | Write the left eye's colour to this `.ppm` every 300 frames |
-| `DUMP`, `DUMP_FRAME` | unset, 60 | Write eye 0's net input and output once (for `train/parity.py`) |
+| `DUMP`, `DUMP_FRAME`, `DUMP_TAU` | unset, 60, 1 | Write eye 0's net input and output once, one update of `DUMP_TAU` ticks (for `train/parity.py`) |
 | `ZIP_ANYWHERE` | 1 | 1: the trigger also zips when the ray misses the blocks (toward a point 40 m along it); 0: only toward blocks |
 | `OVERSCAN` | 1.15    | Field-of-view margin for the compositor's reprojection |
 | `VALIDATE` | unset   | 1 = Vulkan validation layer |
@@ -74,7 +74,8 @@ Live faders (av-controls panel `sunk-city`). Without a broker these defaults app
 | Fader      | Default | Meaning |
 |------------|---------|---------|
 | `color`, `depth`, `identity` | 0.2, 0.1, 0.1 | How strongly the rendered blocks set colour, depth (+ velocity) and the hidden state (from the block id) per frame |
-| `wild`, `rate` | 0, 1 | Trained → randomly morphing weights (the distortion knob); speed of the net's changes (1 = per second as in training, whose steps were 10 fps video frames) |
+| `wild` | 0 | Trained → randomly morphing weights (the distortion knob) |
+| `timescale`, `netfps` | 1, 24 | How fast the net's world runs (1 = real time, as in the footage); net updates per second. Between updates frames only reproject and fill holes; each update covers the (scaled) time since the last one |
 | `blocks`   | 24      | Blocks per side around the player |
 | `cell`, `height` | 4, 7 | Grid cell size and maximum block height (m) |
 | `radius`   | 20      | Gaussian falloff (m): blocks rise as you approach and sink as you leave |

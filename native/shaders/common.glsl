@@ -7,10 +7,10 @@ layout(set = 0, binding = 0) uniform Frame {
     vec4 eye[2];
     vec4 prevEye[2];
     vec4 info; // width, height, time, frame index
-    vec4 step; // dt seconds, near and far (m) of the blocks' depth range, 0
+    vec4 step; // dt seconds, tau (net ticks this frame, 0 = fill only), 0, 0
     // Net (see net.frag; layout from the trained net.json, rule.rs):
     vec4 net;        // taps, layers, near (m; depth scale the net was trained with), max change
-    vec4 netRun;     // update rate (1 = as trained), training fps (0 = one training step per frame), 0, 0
+    vec4 netRun;     // tau input (1, 0 for nets trained before it), 0, 0, 0
     vec4 netLayers[4]; // per layer: inputs, outputs, offset into weights (vec4s), 0
     vec4 netTaps[32];  // per tap: mip level, dx, dy (px, y down), 0
     vec4 city;       // cell size m, max height m, gaussian radius m, blocks per side

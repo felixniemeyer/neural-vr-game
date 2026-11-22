@@ -8,10 +8,13 @@
 //   fill     holes take the finest pyramid level that has data here (push-pull)
 //   inputs   self (rgb, inv * near), (h); per tap (mip level L, offset dx, dy):
 //            (rgb, (inv - inv_self) * near), (h), bilinear from the hole-aware
-//            pyramid, 0 where it is empty; extra (certainty, valid, 1, 0)
+//            pyramid, 0 where it is empty; extra (certainty, valid, 1, tau)
 //   layers   1x1 "convolutions" from the weights buffer, relu between them
-//   update   d = max_change * tanh(out) * rate * min(dt * training fps, 1):
-//            rgb += d.rgb, inv *= exp(d.w), h += d_h; certainty decays toward 0.03 / 1
+//   update   d = max_change * tau * tanh(out) (an Euler step of tau ticks):
+//            rgb += d.rgb, inv *= exp(d.w), h += d_h; certainty decays by 0.965 per tick
+//
+// tau = u.step.y: the net runs at its own rate (main.rs); on the frames in between
+// tau = 0 and only the holes are filled.
 //
 // Weights (rule.rs): per layer W [outputs][inputs] row-major, then the bias, as vec4s.
 // The layout is fixed per net and comes in as specialization constants, so every loop
@@ -103,6 +106,13 @@ void main() {
         need *= 1.0 - t.covered;
     }
     float inv = A.w;
+    float tau = u.step.y;
+    if (tau == 0.0) {
+        stateA = vec4(A.rgb, inv);
+        stateB = vec4(B.xyz, certainty);
+        stateC = C;
+        return;
+    }
 
     // Layer 1, fed input by input.
     for (int q = 0; q < UNITS0 / 4; q++) hidden[q] = weights[OFF0 + UNITS0 * (IN0 / 4) + q];
@@ -114,20 +124,19 @@ void main() {
         feed(2 + 2 * t, vec4(v.a.rgb, (v.a.w - inv) * near) * v.covered);
         feed(3 + 2 * t, v.c * v.covered);
     }
-    feed(2 + 2 * TAPS, vec4(certainty, valid, 1.0, 0.0));
+    feed(2 + 2 * TAPS, vec4(certainty, valid, 1.0, tau * u.netRun.x));
 
     // Further layers (relu between).
     if (LAYERS > 1) dense(OFF1, UNITS0, UNITS1);
     if (LAYERS > 2) dense(OFF2, UNITS1, UNITS2);
     if (LAYERS > 3) dense(OFF3, UNITS2, UNITS3);
 
-    // Residual update (outputs: d rgb, d log inv, d h). Training stepped once per video
-    // frame (u.netRun.y fps); per second the net changes as much as it did there.
-    float perSecond = u.netRun.y > 0.0 ? min(u.step.x * u.netRun.y, 1.0) : 1.0;
-    float change = u.net.w * u.netRun.x * perSecond;
+    // Residual update (outputs: d rgb, d log inv, d h), tau ticks.
+    float change = u.net.w * tau;
     vec4 d0 = change * tanh(hidden[0]);
     vec4 d1 = change * tanh(hidden[1]);
     stateA = vec4(clamp(A.rgb + d0.rgb, 0.0, 1.5), inv * exp(d0.w));
-    stateB = vec4(B.xyz, certainty * 0.995 + (1.0 - certainty) * 0.03);
+    const float rest = 0.03 / 0.035;
+    stateB = vec4(B.xyz, rest + (certainty - rest) * pow(0.965, tau));
     stateC = clamp(C + d1, -4.0, 4.0);
 }

@@ -240,6 +240,36 @@ impl Hands {
     }
 }
 
+/// When the net updates: every 1/netfps seconds of (time-scaled) time, by the ticks
+/// that passed (tau = elapsed * rate, at most the largest trained step); the frames in
+/// between only reproject and fill holes (tau 0). The display stays at the full rate.
+#[derive(Default)]
+struct NetClock {
+    /// Real and time-scaled seconds since the last update.
+    real: f32,
+    scaled: f32,
+    last: Option<f32>,
+}
+
+impl NetClock {
+    fn tick(&mut self, seconds: f32, timescale: f32, netfps: f32, rule: &rule::Rule, dump: bool) -> f32 {
+        let dt = (seconds - self.last.replace(seconds).unwrap_or(seconds)).clamp(0., 0.1);
+        self.real += dt;
+        self.scaled += dt * timescale;
+        if dump {
+            // One update of DUMP_TAU (default 1) ticks, for train/parity.py.
+            (self.real, self.scaled) = (0., 0.);
+            return env::var("DUMP_TAU").ok().and_then(|v| v.parse().ok()).unwrap_or(1.);
+        }
+        let period = 1. / netfps.max(1.);
+        if self.real < period {
+            return 0.;
+        }
+        self.real = (self.real - period).min(period);
+        (std::mem::take(&mut self.scaled) * rule.rate).min(rule.max_tau)
+    }
+}
+
 /// Zip toward blocks: holding a trigger anchors the controller's ray on a block and
 /// accelerates the player toward it; drag damps the velocity, so releasing glides to a
 /// stop. `position` is the world origin of the tracking space (camera() `origin`).
@@ -478,6 +508,7 @@ fn run(shaders: &Path) -> Result<()> {
     let mut gpu_ms = [0f64; world::STAMPS as usize - 1];
     let mut start = None;
     // ZIP_ANYWHERE=0: zip only toward blocks the ray hits (default 1: also into the air).
+    let mut clock = NetClock::default();
     let mut zip = Zip { anywhere: env::var("ZIP_ANYWHERE").map_or(true, |v| v != "0"), ..Zip::default() };
     // Live settings from the av-controls broker (CONTROLS, default wss://localhost:8080);
     // without a broker the defaults below stay.
@@ -496,7 +527,8 @@ fn run(shaders: &Path) -> Result<()> {
         .fader("depth", 0., 1., initial("depth", 0.1))
         .fader("identity", 0., 1., initial("identity", 0.1))
         .fader("wild", 0., 1., initial("wild", 0.))
-        .fader("rate", 0., 4., initial("rate", 1.))
+        .fader("timescale", 0., 4., initial("timescale", 1.))
+        .fader_with("netfps", 5., 90., initial("netfps", 24.), 0)
         .fader_with("blocks", 4., 64., initial("blocks", 24.), 0)
         .fader_with("cell", 1., 10., initial("cell", 4.), 1)
         .fader_with("height", 1., 25., initial("height", 7.), 1)
@@ -603,9 +635,10 @@ fn run(shaders: &Path) -> Result<()> {
         ]);
         let origin = zip.position;
         let cameras = [camera(&views[0], head, origin), camera(&views[1], head, origin)];
+        let dumping = dump.is_some() && frames == dump_frame;
         let settings = Settings {
             wild: controls.get("wild"),
-            rate: controls.get("rate"),
+            tau: clock.tick(seconds, controls.get("timescale"), controls.get("netfps"), &rule, dumping),
             color: controls.get("color"),
             identity: controls.get("identity"),
             depth: controls.get("depth"),
@@ -628,7 +661,7 @@ fn run(shaders: &Path) -> Result<()> {
             rule.weights(seconds, settings.wild, &mut weights);
             // Every 8th frame: read back the left eye for the automatic exposure.
             world.capture = frames % 8 == 0;
-            world.dumping = dump.is_some() && frames == dump_frame;
+            world.dumping = dumping;
             world.draw(d, cmd, queries, cameras, indices, seconds, &frame_rule, &weights, settings);
             d.end_command_buffer(cmd)?;
             d.reset_fences(&[fence])?;
@@ -655,8 +688,8 @@ fn run(shaders: &Path) -> Result<()> {
             std::fs::write(
                 dir.join("dump.json"),
                 format!(
-                    "{{\"size\": {edge}, \"rate\": {}, \"wild\": {}, \"layout\": \"mid A, B, C (rgba16f), certainty (r16f), next A, B, C (rgba16f)\"}}\n",
-                    settings.rate, settings.wild
+                    "{{\"size\": {edge}, \"tau\": {}, \"wild\": {}, \"layout\": \"mid A, B, C (rgba16f), certainty (r16f), next A, B, C (rgba16f)\"}}\n",
+                    settings.tau, settings.wild
                 ),
             )?;
             println!("Dumped to {}", dir.display());

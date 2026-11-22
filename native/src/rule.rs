@@ -2,6 +2,9 @@
 //! net.json (inputs, layers, taps, near, max_change) + weights.bin (float32, per layer
 //! W [outputs][inputs] row-major, then the bias).
 //!
+//! Time: net.json "rate" (ticks per second) and "max_tau" (the largest step it trained
+//! on); nets from before (no rate) trained on 10 fps steps without seeing tau.
+//!
 //! `WEIGHTS=dir` loads a trained net; without it the default layout runs with random
 //! weights only. The `wild` fader blends the trained weights toward random ones that
 //! slowly morph (several random bases mixed with sines, normalised): 0 = as trained,
@@ -24,6 +27,10 @@ pub struct Rule {
     layers: Vec<(usize, usize)>,
     near: f32,
     max_change: f32,
+    /// Ticks per second, the largest trained step (ticks), and whether the net sees tau.
+    pub rate: f32,
+    pub max_tau: f32,
+    tau_input: bool,
     trained: Option<Vec<f32>>,
     bases: Vec<Vec<f32>>,
 }
@@ -36,6 +43,8 @@ pub struct RuleFrame {
     pub layers: [[f32; 4]; MAX_LAYERS],
     /// per tap: level, dx, dy, 0
     pub taps: [[f32; 4]; MAX_TAPS],
+    /// tau input (1 or 0), 0, 0, 0
+    pub run: [f32; 4],
 }
 
 /// The layout train.py uses by default (net.levels 5, points 3, hidden [16]).
@@ -57,11 +66,11 @@ fn wave(time: f32, period: f32, phase: f32) -> f32 {
 
 impl Rule {
     pub fn load(dir: Option<&Path>) -> Result<Self> {
-        let (taps, layers, near, max_change, trained) = match dir {
+        let (taps, layers, near, max_change, trained, time) = match dir {
             None => {
                 let taps = default_taps();
                 let inputs = 4 * (2 * (1 + taps.len()) + 1);
-                (taps, vec![(inputs, 16), (16, 8)], 10., 0.5, None)
+                (taps, vec![(inputs, 16), (16, 8)], 10., 0.5, None, (24., 1., true))
             }
             Some(dir) => {
                 let json: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("net.json"))?)?;
@@ -84,7 +93,11 @@ impl Rule {
                     bytes.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect();
                 let expected: usize = layers.iter().map(|&(i, o)| i * o + o).sum();
                 ensure!(weights.len() == expected, "weights.bin has {} floats, net.json needs {expected}", weights.len());
-                (taps, layers, number(&json["near"])?, number(&json["max_change"])?, Some(weights))
+                let time = match json.get("rate") {
+                    Some(rate) => (number(rate)?, json.get("max_tau").map_or(Ok(1.), number)?, true),
+                    None => (10., 1., false),
+                };
+                (taps, layers, number(&json["near"])?, number(&json["max_change"])?, Some(weights), time)
             }
         };
         ensure!(taps.len() <= MAX_TAPS && layers.len() <= MAX_LAYERS, "net too large for the shader");
@@ -97,7 +110,8 @@ impl Rule {
         let bases = (0..BASES)
             .map(|_| (0..count).map(|_| (rand::random::<f32>() * 2. - 1.) * 3f32.sqrt()).collect())
             .collect();
-        Ok(Self { taps, layers, near, max_change, trained, bases })
+        let (rate, max_tau, tau_input) = time;
+        Ok(Self { taps, layers, near, max_change, rate, max_tau, tau_input, trained, bases })
     }
 
     pub fn trained(&self) -> bool {
@@ -138,6 +152,7 @@ impl Rule {
             net: [self.taps.len() as f32, self.layers.len() as f32, self.near, self.max_change],
             layers,
             taps,
+            run: [if self.tau_input { 1. } else { 0. }, 0., 0., 0.],
         }
     }
 

@@ -36,7 +36,8 @@ class Net:
     hidden: list = field(default_factory=lambda: [16])  # hidden layer widths (multiples of 4)
     hidden_state: int = 4       # hidden channels in the state (multiple of 4)
     near: float = 10.0          # depth range (m): the footage's near .. near * data.ratio
-    max_change: float = 0.5     # tanh-bounded update per step
+    max_change: float = 0.5     # tanh-bounded update per tick
+    rate: float = 24.0          # net ticks per second: a step of dt seconds is tau = dt * rate ticks
 
 
 @dataclass
