@@ -586,8 +586,8 @@ fn run(shaders: &Path) -> Result<()> {
         .section("scene")
         .fader_with("color", 0., 0.1, initial("color", 0.01), 3)
         .fader_with("depth", 0., 0.3, initial("depth", 0.05), 3)
-        // Where nothing is rendered: the sky's distance (m), blended in like depth.
-        .fader_with("sky", 20., 1000., initial("sky", 150.), 0)
+        // Where nothing is rendered: the sky's distance (m), blended in like depth; 0 = off.
+        .fader_with("sky", 0., 1000., initial("sky", 150.), 0)
         .section("city")
         .fader_with("blocks", 4., 64., initial("blocks", 24.), 0)
         .fader_with("cell", 1., 10., initial("cell", 4.), 1)

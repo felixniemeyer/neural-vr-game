@@ -690,7 +690,7 @@ impl World {
             net_taps: rule.taps,
             city: [settings.cell, settings.height, 0., settings.blocks as f32],
             // Per-second rates as this frame's blend weights (frame-rate independent).
-            mixing: [1. - (-settings.color * dt).exp(), 1. / settings.sky.max(1.), 1. - (-settings.depth * dt).exp(), 0.],
+            mixing: [1. - (-settings.color * dt).exp(), if settings.sky > 0. { 1. / settings.sky.max(1.) } else { 0. }, 1. - (-settings.depth * dt).exp(), 0.],
             player: {
                 let ground = |c: [EyeCamera; EYES]| (c[0].position + c[1].position) * 0.5;
                 let (now, before) = (ground(cameras), ground(previous));
