@@ -143,7 +143,7 @@ impl Rule {
 
     /// The weights at `time`: trained blended toward random by `wild` (always random
     /// without a trained net). Random weights use He scaling per layer (gain on the
-    /// hidden layers), the bases blended with normalised sines.
+    /// hidden layers, 0.1 on the output layer), the bases blended with normalised sines.
     pub fn weights(&self, time: f32, wild: f32, out: &mut [f32]) {
         let wild = if self.trained.is_some() { wild.clamp(0., 1.) } else { 1. };
         let mut blend: [f32; BASES] = std::array::from_fn(|k| wave(time, PERIODS[k], k as f32 * 1.7));
@@ -152,7 +152,9 @@ impl Rule {
         let gain = 1.45 + 0.75 * wave(time, 31., 0.5);
         let mut start = 0;
         for (l, &(i, o)) in self.layers.iter().enumerate() {
-            let scale = if l + 1 < self.layers.len() { gain } else { 1. } * (2. / i as f32).sqrt();
+            // The output layer small, as train.py initialises it: random weights then
+            // perturb by small steps instead of throwing depth and colour around.
+            let scale = if l + 1 < self.layers.len() { gain } else { 0.1 } * (2. / i as f32).sqrt();
             for index in start..start + i * o + o {
                 let random = (0..BASES).map(|k| self.bases[k][index] * blend[k]).sum::<f32>() * scale;
                 let trained = self.trained.as_ref().map_or(0., |w| w[index]);

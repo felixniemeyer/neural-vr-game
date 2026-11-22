@@ -12,16 +12,22 @@ settings=("$@")
 root=$(cd .. && pwd)
 out=$run/app && mkdir -p "$out"
 
-for p in $(pgrep -x monado-service); do kill -INT "$p"; done
-for _ in $(seq 20); do pgrep -x monado-service >/dev/null || break; sleep 0.2; done
-for p in $(pgrep -x monado-service); do kill -9 "$p"; done
-SIMULATED_ENABLE=1 SIMULATED_ROTATE=1 setsid sh -c 'sleep infinity | monado-service' >"$out/monado.log" 2>&1 &
-monado=$!
-trap 'kill -- -$monado 2>/dev/null || true; pkill -INT -x monado-service || true' EXIT
-sleep 3
+# A fresh Monado per run: it stalls when an app reconnects.
+monado=
+restart_monado() {
+    [[ -n $monado ]] && kill -- -"$monado" 2>/dev/null || true
+    for p in $(pgrep -x monado-service); do kill -INT "$p"; done
+    for _ in $(seq 20); do pgrep -x monado-service >/dev/null || break; sleep 0.2; done
+    for p in $(pgrep -x monado-service); do kill -9 "$p"; done
+    SIMULATED_ENABLE=1 SIMULATED_ROTATE=1 setsid sh -c 'sleep infinity | monado-service' >"$out/monado.log" 2>&1 &
+    monado=$!
+    sleep 3
+}
+trap '[[ -n $monado ]] && kill -- -$monado 2>/dev/null; pkill -INT -x monado-service || true' EXIT
 
 for setting in "${settings[@]}"; do
     label=${setting%%=*} faders=${setting#*=}
+    restart_monado
     (cd "$root/build/native" && XR_RUNTIME_JSON=/usr/share/openxr/1/openxr_monado.json CONTROLS=ws://localhost:1 \
         EYE_SIZE=${EYE_SIZE:-256} WEIGHTS="$run/net" FADERS="$faders" SNAPSHOT="$out/$label.ppm" \
         timeout -s INT 20 ./sunk-city >"$out/$label.log" 2>&1) || true
