@@ -329,7 +329,8 @@ impl Zip {
         head: Vec3,
         eye: Vec3,
         city: &city::City,
-        [pull, drag, body]: [f32; 3],
+        [pull, drag, body, brake]: [f32; 4],
+        walls: &[Vec3],
         auto: Option<f32>,
     ) {
         let dt = (seconds - self.last.replace(seconds).unwrap_or(seconds)).clamp(0., 0.1);
@@ -363,6 +364,18 @@ impl Zip {
         }
         if auto.is_none() {
             self.velocity *= (-drag * dt).exp();
+        }
+        // The image's own geometry (last frame's depth probe): within `brake` of the body,
+        // the velocity toward a point fades out (fully at the body's surface).
+        for point in walls {
+            let to = *point - player;
+            let distance = to.length();
+            let reach = body + brake;
+            if brake > 0. && distance < reach && distance > 1e-3 {
+                let toward = to / distance;
+                let closing = self.velocity.dot(toward).max(0.);
+                self.velocity -= toward * closing * ((reach - distance) / brake).min(1.);
+            }
         }
         self.position += self.velocity * dt;
         // Keep the head out of the blocks: push it out, and drop the velocity into the walls.
@@ -548,6 +561,8 @@ fn run(shaders: &Path) -> Result<()> {
     let mut start = None;
     // ZIP_ANYWHERE=0: zip only toward blocks the ray hits (default 1: also into the air).
     let mut clock = NetClock::default();
+    // The image's geometry around the player, from the last frame (for the brake).
+    let mut walls: Vec<Vec3> = Vec::new();
     let mut zip = Zip { position: Vec3::new(0., START_HEIGHT, 0.), anywhere: env::var("ZIP_ANYWHERE").map_or(true, |v| v != "0"), ..Zip::default() };
     // Live settings from the av-controls broker (CONTROLS, default wss://localhost:8080);
     // without a broker the defaults below stay.
@@ -584,6 +599,8 @@ fn run(shaders: &Path) -> Result<()> {
         .fader_with("drag", 0., 6., initial("drag", 2.5), 2)
         // The player's collision sphere around the head (radius, m).
         .fader_with("body", 0.05, 5., initial("body", 0.3), 2)
+        // Braking distance (m) to the net's own geometry (the image's depth), 0 = off.
+        .fader_with("brake", 0., 5., initial("brake", 1.5), 2)
         // exposure off: the state's colour shown 1:1 (a trained net stays in the video's
         // range); on: automatic per-channel exposure (mid, clip, black, tint).
         .section("display")
@@ -682,8 +699,8 @@ fn run(shaders: &Path) -> Result<()> {
             },
         };
         let held = hands.sync(&session, &space, time)?;
-        let motion = [controls.get("pull"), controls.get("drag"), controls.get("body")];
-        zip.update(&held, &hands, &session, seconds, head, eye, &city, motion, controls.on("auto").then(|| controls.get("speed")));
+        let motion = [controls.get("pull"), controls.get("drag"), controls.get("body"), controls.get("brake")];
+        zip.update(&held, &hands, &session, seconds, head, eye, &city, motion, &walls, controls.on("auto").then(|| controls.get("speed")));
         let (origin, turn) = (zip.position, zip.turn());
         let cameras = [camera(&views[0], head, origin, turn), camera(&views[1], head, origin, turn)];
         let dumping = dump.is_some() && frames == dump_frame;
@@ -744,6 +761,7 @@ fn run(shaders: &Path) -> Result<()> {
             )?;
             println!("Dumped to {}", dir.display());
         }
+        walls = world.surroundings();
         if world.capture {
             if controls.on("exposure") {
                 world.calibrate(controls.get("mid"), controls.get("clip"), controls.get("black"), controls.get("tint"));
@@ -788,11 +806,13 @@ fn run(shaders: &Path) -> Result<()> {
             let [r, g, b] = world.tone().map(|[k, w, y]| format!("{k:.2}..{w:.2}^{y:.2}"));
             let [scene, splat, resolve, net, display] = gpu_ms.map(|ms| ms / 120.);
             println!(
-                "{frames} frames, GPU {:.3} ms/frame (both eyes: scene {scene:.2} splat {splat:.2} resolve {resolve:.2} net {net:.2} display {display:.2}), looking ({:.2}, {:.2}, {:.2}), exposure r {r} g {g} b {b}",
+                "{frames} frames, GPU {:.3} ms/frame (both eyes: scene {scene:.2} splat {splat:.2} resolve {resolve:.2} net {net:.2} display {display:.2}), looking ({:.2}, {:.2}, {:.2}), exposure r {r} g {g} b {b}, image geometry {} points, nearest {:.1} m",
                 scene + splat + resolve + net + display,
                 forward.x,
                 forward.y,
-                forward.z
+                forward.z,
+                walls.len(),
+                walls.iter().map(|p| p.distance(cameras[0].position)).fold(f32::INFINITY, f32::min),
             );
             gpu_ms = [0.; world::STAMPS as usize - 1];
         }

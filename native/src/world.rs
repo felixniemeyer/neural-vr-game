@@ -19,7 +19,7 @@ use crate::gpu::{image_range, Resource, Resources, Shader};
 use crate::rule::{MAX_LAYERS, MAX_TAPS, RuleFrame};
 use anyhow::Result;
 use ash::{vk, Device};
-use glam::{Mat4, Vec3};
+use glam::{Mat4, Vec2, Vec3};
 use std::{mem::size_of, path::Path};
 
 pub const EYES: usize = 2;
@@ -37,6 +37,8 @@ const SAMPLED_BINDINGS: u32 = (EYES * (STATES + ACCS + STATES + 1 + STATES + SCE
 const WEIGHTS_BINDING: u32 = SAMPLED_BINDINGS + 1;
 /// How fast the display exposure follows its measurement (1/s).
 const EXPOSURE_RATE: f32 = 1.5;
+/// Width (px) of the depth probe read back each frame for collisions.
+const PROBE: u32 = 32;
 /// GPU timestamps per frame: start, after scene, splat, resolve, net, display.
 pub const STAMPS: u32 = 6;
 
@@ -141,6 +143,11 @@ pub struct World {
     readback: (vk::Buffer, *mut [u16; 4]),
     /// Record a copy of the new state A into `readback` in the next `draw`.
     pub capture: bool,
+    /// Host-visible copy of a small mip level of both eyes' resolved A and B (every
+    /// frame), with the cameras it was seen from: the image's geometry for collisions.
+    probe: (vk::Buffer, *mut [u16; 4]),
+    probe_level: u32,
+    probe_cameras: [EyeCamera; EYES],
     /// Display exposure per channel (r, g, b): black point, white point, gamma.
     tone: [[f32; 3]; 3],
     /// The exposure the last measurement asks for; `tone` glides toward it every frame.
@@ -496,6 +503,13 @@ impl World {
         let pixels = vec![[0u16; 4]; (size.width * size.height) as usize];
         let readback = r.buffer(&pixels, vk::BufferUsageFlags::TRANSFER_DST)?;
         let dump = r.buffer(&vec![0u8; dump_bytes(size)], vk::BufferUsageFlags::TRANSFER_DST)?;
+        // The level about PROBE pixels wide (within the pyramid).
+        let probe_level = (size.width / PROBE).max(1).ilog2().min(levels - 1);
+        let probe_pixels = mip_extent(size, probe_level);
+        let probe = r.buffer(
+            &vec![[0u16; 4]; EYES * 2 * (probe_pixels.width * probe_pixels.height) as usize],
+            vk::BufferUsageFlags::TRANSFER_DST,
+        )?;
         let (weight_buffer, weights) =
             r.buffer(&vec![0f32; weight_count.max(4)], vk::BufferUsageFlags::STORAGE_BUFFER)?;
         let d = &r.gpu.device;
@@ -585,6 +599,9 @@ impl World {
             mapped,
             readback,
             capture: false,
+            probe,
+            probe_level,
+            probe_cameras: [EyeCamera { view_proj: Mat4::IDENTITY, position: Vec3::ZERO }; EYES],
             tone: [[0., 1., 1.]; 3],
             tone_goal: [[0., 1., 1.]; 3],
             previous: None,
@@ -781,24 +798,31 @@ impl World {
         if self.capture {
             // The new state A of the left eye: state[0][1 - parity], first image.
             let image = self.state_images[(1 - self.parity) * STATES];
-            copy_to_buffer(d, cmd, image, self.size, self.readback.0, 0);
+            copy_to_buffer(d, cmd, image, self.size, 0, self.readback.0, 0);
         }
         if self.dumping {
             // Eye 0: resolved A, B, C, certainty, then the new A, B, C.
             let state = 8 * (self.size.width * self.size.height) as u64;
             let mut offset = 0;
             for image in self.mid_images[0] {
-                copy_to_buffer(d, cmd, image, self.size, self.dump.0, offset);
+                copy_to_buffer(d, cmd, image, self.size, 0, self.dump.0, offset);
                 offset += state;
             }
-            copy_to_buffer(d, cmd, self.cert_images[0], self.size, self.dump.0, offset);
+            copy_to_buffer(d, cmd, self.cert_images[0], self.size, 0, self.dump.0, offset);
             offset += state / 4;
             for i in 0..STATES {
                 let image = self.state_images[(1 - self.parity) * STATES + i];
-                copy_to_buffer(d, cmd, image, self.size, self.dump.0, offset);
+                copy_to_buffer(d, cmd, image, self.size, 0, self.dump.0, offset);
                 offset += state;
             }
         }
+        // The probe: both eyes' resolved A and B at a small mip level.
+        let probe = mip_extent(self.size, self.probe_level);
+        let bytes = 8 * (probe.width * probe.height) as u64;
+        for (i, image) in self.mid_images.iter().flat_map(|eye| &eye[..2]).enumerate() {
+            copy_to_buffer(d, cmd, *image, self.size, self.probe_level, self.probe.0, i as u64 * bytes);
+        }
+        self.probe_cameras = cameras;
         self.parity = 1 - self.parity;
         self.frame += 1;
     }
@@ -807,6 +831,32 @@ impl World {
     /// eye 0's resolved A, B, C (RGBA16F), certainty (R16F), new A, B, C (RGBA16F).
     pub fn dumped(&self) -> &[u8] {
         unsafe { std::slice::from_raw_parts(self.dump.1, dump_bytes(self.size)) }
+    }
+
+    /// World points of the image's geometry around both eyes, from the last frame's
+    /// probe (call after its commands finished): one per covered probe pixel.
+    pub fn surroundings(&self) -> Vec<Vec3> {
+        let size = mip_extent(self.size, self.probe_level);
+        let (w, h) = (size.width as usize, size.height as usize);
+        let probe = unsafe { std::slice::from_raw_parts(self.probe.1, EYES * 2 * w * h) };
+        let mut points = Vec::new();
+        for (eye, camera) in self.probe_cameras.iter().enumerate() {
+            let inverse = camera.view_proj.inverse();
+            let (a, b) = (&probe[2 * eye * w * h..][..w * h], &probe[(2 * eye + 1) * w * h..][..w * h]);
+            for (i, (a, b)) in a.iter().zip(b).enumerate() {
+                let coverage = half_to_f32(b[3]);
+                let inv = half_to_f32(a[3]) / coverage;
+                if !(coverage > 0.5 && inv > 0.) {
+                    continue;
+                }
+                // common.glsl ndcFromPixel: y points down in the image.
+                let ndc = Vec2::new(((i % w) as f32 + 0.5) / w as f32 * 2. - 1., 1. - ((i / w) as f32 + 0.5) / h as f32 * 2.);
+                let far = inverse * ndc.extend(0.).extend(1.);
+                let dir = (far.truncate() / far.w - camera.position).normalize_or_zero();
+                points.push(camera.position + dir / inv);
+            }
+        }
+        points
     }
 
     fn captured(&self) -> &[[u16; 4]] {
@@ -968,6 +1018,7 @@ fn copy_to_buffer(
     cmd: vk::CommandBuffer,
     image: vk::Image,
     size: vk::Extent2D,
+    level: u32,
     buffer: vk::Buffer,
     offset: u64,
 ) {
@@ -975,7 +1026,7 @@ fn copy_to_buffer(
     let barrier = |old, new, src, dst| {
         vk::ImageMemoryBarrier::default()
             .image(image)
-            .subresource_range(image_range(vk::ImageAspectFlags::COLOR))
+            .subresource_range(image_range(vk::ImageAspectFlags::COLOR).base_mip_level(level))
             .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
             .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
             .old_layout(old)
@@ -987,11 +1038,14 @@ fn copy_to_buffer(
         .buffer_offset(offset)
         .image_subresource(vk::ImageSubresourceLayers {
             aspect_mask: vk::ImageAspectFlags::COLOR,
-            mip_level: 0,
+            mip_level: level,
             base_array_layer: 0,
             layer_count: 1,
         })
-        .image_extent(vk::Extent3D { width: size.width, height: size.height, depth: 1 });
+        .image_extent({
+            let size = mip_extent(size, level);
+            vk::Extent3D { width: size.width, height: size.height, depth: 1 }
+        });
     let none = vk::DependencyFlags::empty();
     unsafe {
         let to_copy = [barrier(L::SHADER_READ_ONLY_OPTIMAL, L::TRANSFER_SRC_OPTIMAL, A::COLOR_ATTACHMENT_WRITE | A::SHADER_READ, A::TRANSFER_READ)];
@@ -1008,6 +1062,10 @@ fn copy_to_buffer(
             .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)];
         d.cmd_pipeline_barrier(cmd, S::TRANSFER, S::HOST, none, &[], &host, &[]);
     }
+}
+
+fn mip_extent(size: vk::Extent2D, level: u32) -> vk::Extent2D {
+    vk::Extent2D { width: (size.width >> level).max(1), height: (size.height >> level).max(1) }
 }
 
 /// Zero all state images (no depth = nothing to splat, certainty 0) and make them readable.
