@@ -50,6 +50,8 @@ pub struct Settings {
     /// velocity and certainty.
     pub color: f32,
     pub depth: f32,
+    /// Distance (m) of the sky, where the scene has no geometry.
+    pub sky: f32,
     /// Blocks per side, cell size (m), maximum height (m), gaussian radius (m).
     pub blocks: u32,
     pub cell: f32,
@@ -672,7 +674,7 @@ impl World {
             net_taps: rule.taps,
             city: [settings.cell, settings.height, settings.radius, settings.blocks as f32],
             // Per-second rates as this frame's blend weights (frame-rate independent).
-            mixing: [1. - (-settings.color * dt).exp(), 0., 1. - (-settings.depth * dt).exp(), 0.],
+            mixing: [1. - (-settings.color * dt).exp(), 1. / settings.sky.max(1.), 1. - (-settings.depth * dt).exp(), 0.],
             player: {
                 let ground = |c: [EyeCamera; EYES]| (c[0].position + c[1].position) * 0.5;
                 let (now, before) = (ground(cameras), ground(previous));

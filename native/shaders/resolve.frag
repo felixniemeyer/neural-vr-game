@@ -12,7 +12,9 @@
 // analogue of training's "observe" blend): colour with u.mixing.x, depth, velocity and
 // certainty with u.mixing.z, both fading to 0 at GROUND_REACH field radii. In holes
 // the scene gives the depth (and velocity) outright, the colour only by the same gentle
-// blend, and a low certainty: the net fills in the look.
+// blend, and a low certainty: the net fills in the look. Where the scene has no
+// geometry it is sky: depth at the `sky` distance, no colour, so the image's own
+// guesses there don't come close.
 //
 // Output B.w is the coverage (inverse depth > 0), so that the mip chain of A, B, C
 // is the hole-aware pyramid the net reads; certainty goes to its own image.
@@ -41,6 +43,10 @@ void main() {
     float there = g.w > 0.0 ? 1.0 : 0.0;
     float fade = there * clamp(1.0 - 1.0 / max(g.w, 1e-6) / (GROUND_REACH * fieldRadius()), 0.0, 1.0);
     float alpha = fade * u.mixing.x;
+    // No geometry: the sky, a depth (and resting velocity) at u.mixing.y, no colour.
+    float sky = 1.0 - there;
+    g.w = mix(g.w, u.mixing.y, sky);
+    fade = max(fade, sky);
     float depthAlpha = fade * u.mixing.z;
     float geometry = hole && fade > 0.0 ? 1.0 : depthAlpha;
     a.rgb = mix(a.rgb, g.rgb, alpha);

@@ -69,17 +69,18 @@ Controllers: point at a block and hold the trigger to zip toward it (it buzzes w
 hits); release to glide to a stop. Both hands work at once. Bindings are suggested for the
 simple, Index and Touch profiles (Monado's qwerty device emulates simple controllers).
 
-Live controls (av-controls panel `sunk-city`, in rows: net, scene, city, motion, display). Without a broker these defaults apply:
+Live controls (av-controls panel `sunk-city`, in tabs: net, scene, city, motion, display). Without a broker these defaults apply:
 
 | Fader      | Default | Meaning |
 |------------|---------|---------|
 | `color`, `depth` | 0.01, 0.05 | How much of the rendered scene's colour, and depth (with velocity and certainty), goes into the state per frame at 90 Hz (applied per second, so other frame rates look the same). Only where the state has data; fading out with distance |
+| `sky` | 150 | Distance (m) of the sky: where no block or ground is rendered, depth is blended toward it like `depth` (no colour), so the net's sky doesn't come close |
 | `wild` | 0 | Trained → randomly morphing weights (the distortion knob) |
 | `timescale`, `netfps` | 1, 24 | How fast the net's world runs (1 = real time, as in the footage); net updates per second. Between updates frames only reproject and fill holes; each update covers the (scaled) time since the last one |
 | `blocks`   | 24      | Blocks per side around the player |
 | `cell`, `height` | 4, 7 | Grid cell size and maximum block height (m) |
 | `radius`   | 20      | Gaussian falloff (m): blocks grow out of the ground (from 0 at the field's edge) as you approach, turning from the ground colour to their own, and sink as you leave |
-| `auto` | off | Autopilot: wander through the city at about 0.9 of the block height (± 0.9 m), looking around (also `FADERS=auto=1`) |
+| `auto` | off | Autopilot: wander through the city at about 0.9 of the block height (± 0.9 m), looking around (also `FADERS=auto=1`); `speed` its speed (m/s, default 3) |
 | `pull`, `drag` | 25, 2.5 | Zip: acceleration toward the anchored block (m/s²) and velocity damping (1/s); top speed ≈ pull / drag |
 | `exposure` | off | Off: the state's colour is shown 1:1. On: automatic per-channel exposure with the faders below |
 | `mid`, `clip`, `black`, `tint` | 0.5, 0.03, 0.05, 0.3 | Display auto-exposure, per channel: 80th percentile → `mid`, brightest `clip` fraction clips, darkest `black` fraction is 0; `tint` pulls the channels' mappings together (keeps some colour cast) |

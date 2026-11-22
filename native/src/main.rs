@@ -296,8 +296,7 @@ struct Zip {
     heading: f32,
 }
 
-/// Autopilot speed (m/s) and how quickly it steers, climbs and looks (1/s).
-const AUTO_SPEED: f32 = 3.;
+/// How quickly the autopilot steers, climbs and looks (1/s).
 const AUTO_RESPONSE: f32 = 1.5;
 
 impl Zip {
@@ -307,7 +306,7 @@ impl Zip {
 
     /// Steer the velocity along a wandering heading at ~0.9 of the block height, and turn
     /// the view toward the heading, glancing around.
-    fn autopilot(&mut self, dt: f32, eye: Vec3, height: f32) {
+    fn autopilot(&mut self, dt: f32, eye: Vec3, height: f32, speed: f32) {
         self.flown += dt;
         let t = self.flown;
         self.heading += dt * (0.25 * (0.07 * t).sin() + 0.15 * (0.031 * t + 1.).sin());
@@ -315,7 +314,7 @@ impl Zip {
         let altitude = 0.9 * height + 0.9 * (0.13 * t).sin();
         let climb = (altitude - (self.position.y + eye.y)) * AUTO_RESPONSE;
         let follow = 1. - (-AUTO_RESPONSE * dt).exp();
-        self.velocity += (ahead * AUTO_SPEED + Vec3::Y * climb - self.velocity) * follow;
+        self.velocity += (ahead * speed + Vec3::Y * climb - self.velocity) * follow;
         let look = self.heading + 0.6 * (0.09 * t).sin();
         self.yaw += (look - self.yaw) * follow;
     }
@@ -333,12 +332,12 @@ impl Zip {
         eye: Vec3,
         city: &city::City,
         [pull, drag]: [f32; 2],
-        auto: bool,
+        auto: Option<f32>,
     ) {
         let dt = (seconds - self.last.replace(seconds).unwrap_or(seconds)).clamp(0., 0.1);
         let eye = self.turn() * eye;
-        if auto {
-            self.autopilot(dt, eye, city.height);
+        if let Some(speed) = auto {
+            self.autopilot(dt, eye, city.height, speed);
         }
         for (i, hand) in held.iter().enumerate() {
             if hand.pressed && !self.was_pressed[i] {
@@ -364,7 +363,7 @@ impl Zip {
             // Fade out over the last 1.5 m, so the pull does not end in the wall.
             self.velocity += to / distance.max(1e-3) * pull * (distance / 1.5).min(1.) * dt;
         }
-        if !auto {
+        if auto.is_none() {
             self.velocity *= (-drag * dt).exp();
         }
         self.position += self.velocity * dt;
@@ -574,6 +573,8 @@ fn run(shaders: &Path) -> Result<()> {
         .section("scene")
         .fader_with("color", 0., 0.1, initial("color", 0.01), 3)
         .fader_with("depth", 0., 0.3, initial("depth", 0.05), 3)
+        // Where nothing is rendered: the sky's distance (m), blended in like depth.
+        .fader_with("sky", 20., 1000., initial("sky", 150.), 0)
         .section("city")
         .fader_with("blocks", 4., 64., initial("blocks", 24.), 0)
         .fader_with("cell", 1., 10., initial("cell", 4.), 1)
@@ -581,6 +582,7 @@ fn run(shaders: &Path) -> Result<()> {
         .fader_with("radius", 3., 100., initial("radius", 20.), 1)
         .section("motion")
         .switch("auto", initial("auto", 0.) > 0.5)
+        .fader_with("speed", 0., 15., initial("speed", 3.), 1)
         .fader_with("pull", 0., 60., initial("pull", 25.), 1)
         .fader_with("drag", 0., 6., initial("drag", 2.5), 2)
         // exposure off: the state's colour shown 1:1 (a trained net stays in the video's
@@ -683,7 +685,7 @@ fn run(shaders: &Path) -> Result<()> {
         };
         let held = hands.sync(&session, &space, time)?;
         let motion = [controls.get("pull"), controls.get("drag")];
-        zip.update(&held, &hands, &session, seconds, head, eye, &city, motion, controls.on("auto"));
+        zip.update(&held, &hands, &session, seconds, head, eye, &city, motion, controls.on("auto").then(|| controls.get("speed")));
         let (origin, turn) = (zip.position, zip.turn());
         let cameras = [camera(&views[0], head, origin, turn), camera(&views[1], head, origin, turn)];
         let dumping = dump.is_some() && frames == dump_frame;
@@ -692,6 +694,7 @@ fn run(shaders: &Path) -> Result<()> {
             tau: clock.tick(seconds, controls.get("timescale"), controls.get("netfps"), &rule, dumping),
             color: per_second(controls.get("color")),
             depth: per_second(controls.get("depth")),
+            sky: controls.get("sky"),
             blocks: controls.get("blocks").round().max(1.) as u32,
             cell: controls.get("cell"),
             height: controls.get("height"),
