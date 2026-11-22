@@ -689,6 +689,8 @@ fn run(shaders: &Path) -> Result<()> {
         .fader_with("depth", 0., 0.3, initial("depth", 0.05), 3)
         // Where nothing is rendered: the sky's distance (m), blended in like depth; 0 = off.
         .fader_with("sky", 0., 1000., initial("sky", 150.), 0)
+        // Looking uncovers detail: the scene blends in up to 1 + focus times faster at the view centre.
+        .fader_with("focus", 0., 20., initial("focus", 0.), 1)
         .section("city")
         .fader_with("blocks", 4., 64., initial("blocks", 24.), 0)
         .fader_with("cell", 1., 10., initial("cell", 4.), 1)
@@ -818,6 +820,7 @@ fn run(shaders: &Path) -> Result<()> {
             color: per_second(controls.get("color")),
             depth: per_second(controls.get("depth")),
             sky: controls.get("sky"),
+            focus: controls.get("focus"),
             blocks: controls.get("blocks").round().max(1.) as u32,
             cell: controls.get("cell"),
             height: controls.get("height"),

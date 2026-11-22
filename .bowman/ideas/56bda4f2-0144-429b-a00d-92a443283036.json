@@ -12,9 +12,9 @@
   ],
   "committedIn": [],
   "status": {
-    "state": "open",
-    "comment": "",
-    "date": 1795225101898
+    "state": "human-dependent",
+    "comment": "First step without eye tracking: `focus` fader (scene tab, default 0 = off). resolve.frag multiplies the scene's colour and depth blend by 1 + focus * exp(-r^2/0.18) around the view centre, so rendered detail gathers where you look and is kept by reprojection. Builds and runs in dev.sh (14.5 ms/frame unchanged). Human step: look around with focus ~5-10, color ~0.01: does detail gather where you look, and does it feel like discovering? Next if yes: drive the centre from the Frame's eye tracking (XR_EXT_eye_gaze_interaction).",
+    "date": 1795380664327
   },
   "intrinsicValue": 0,
   "cost": 5,

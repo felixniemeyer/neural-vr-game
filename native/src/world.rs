@@ -60,6 +60,8 @@ pub struct Settings {
     pub depth: f32,
     /// Distance (m) of the sky, where the scene has no geometry.
     pub sky: f32,
+    /// Extra scene blend toward the view centre ("looking uncovers detail"), 0 = off.
+    pub focus: f32,
     /// Blocks per side, cell size (m), maximum height (m).
     pub blocks: u32,
     pub cell: f32,
@@ -728,7 +730,7 @@ impl World {
             net_taps: rule.taps,
             city: [settings.cell, settings.height, 0., settings.blocks as f32],
             // Per-second rates as this frame's blend weights (frame-rate independent).
-            mixing: [1. - (-settings.color * dt).exp(), if settings.sky > 0. { 1. / settings.sky.max(1.) } else { 0. }, 1. - (-settings.depth * dt).exp(), 0.],
+            mixing: [1. - (-settings.color * dt).exp(), if settings.sky > 0. { 1. / settings.sky.max(1.) } else { 0. }, 1. - (-settings.depth * dt).exp(), settings.focus],
             player: {
                 let ground = |c: [EyeCamera; EYES]| (c[0].position + c[1].position) * 0.5;
                 let (now, before) = (ground(cameras), ground(previous));
