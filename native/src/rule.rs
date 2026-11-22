@@ -109,6 +109,15 @@ impl Rule {
         self.taps.iter().map(|t| t[0] as u32 + 1).max().unwrap_or(1)
     }
 
+    /// Specialization constants of net.frag: taps, levels, layers, units per layer (4).
+    pub fn specialization(&self) -> [i32; 7] {
+        let mut out = [self.taps.len() as i32, self.levels() as i32, self.layers.len() as i32, 8, 8, 8, 8];
+        for (slot, &(_, o)) in out[3..].iter_mut().zip(&self.layers) {
+            *slot = o as i32;
+        }
+        out
+    }
+
     /// Number of floats in the weights buffer.
     pub fn len(&self) -> usize {
         self.bases[0].len()

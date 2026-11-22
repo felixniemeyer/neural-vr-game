@@ -118,6 +118,8 @@ pub struct World {
     mid_images: [[vk::Image; STATES]; EYES],
     cert_images: [vk::Image; EYES],
     levels: u32,
+    /// Specialization constants of the net pipeline (the net's layout).
+    spec: [i32; 7],
     weights: *mut f32,
     weight_count: usize,
     /// Host-visible copy of eye 0's resolved state (A, B, C, certainty) and new state.
@@ -230,12 +232,19 @@ fn pipeline(
     additive: bool,
     depth_test: bool,
     points: bool,
+    spec: &[i32],
 ) -> Result<vk::Pipeline> {
     let vertex = Shader::load(d, dir, vert)?;
     let fragment = Shader::load(d, dir, frag)?;
+    // Fragment specialization constants 0..: the i32 values of `spec`.
+    let entries: Vec<_> = (0..spec.len() as u32)
+        .map(|i| vk::SpecializationMapEntry { constant_id: i, offset: 4 * i, size: 4 })
+        .collect();
+    let data: Vec<u8> = spec.iter().flat_map(|v| v.to_ne_bytes()).collect();
+    let specialization = vk::SpecializationInfo::default().map_entries(&entries).data(&data);
     let stages = [
         vertex.stage(vk::ShaderStageFlags::VERTEX),
-        fragment.stage(vk::ShaderStageFlags::FRAGMENT),
+        fragment.stage(vk::ShaderStageFlags::FRAGMENT).specialization_info(&specialization),
     ];
     let input = vk::PipelineVertexInputStateCreateInfo::default();
     let assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
@@ -283,17 +292,18 @@ fn pipeline(
 }
 
 impl World {
-    /// `levels`: mip levels of the resolved state (the net's pyramid); `weight_count`:
-    /// floats in the weights buffer.
+    /// `spec`: the net's layout (rule.rs specialization: taps, levels = mip levels of
+    /// the resolved state, layers, units); `weight_count`: floats in the weights buffer.
     pub fn new(
         r: &mut Resources<'_>,
         shaders: &Path,
         size: vk::Extent2D,
         output_format: vk::Format,
         swapchains: [&[vk::Image]; EYES],
-        levels: u32,
+        spec: [i32; 7],
         weight_count: usize,
     ) -> Result<Self> {
+        let levels = spec[1] as u32;
         use vk::ImageUsageFlags as Usage;
         let d = &r.gpu.device;
         let stages = vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT;
@@ -404,7 +414,7 @@ impl World {
             false,
         )?;
         let passes = [scene_pass, splat_pass, resolve_pass, net_pass, display_pass];
-        let mut pipelines = Self::pipelines(&r.gpu.device, shaders, passes, layout)?
+        let mut pipelines = Self::pipelines(&r.gpu.device, shaders, passes, layout, &spec)?
             .into_iter()
             .map(|p| r.keep(p, Resource::Pipeline));
         let [scene, splat, resolve, net, display] = std::array::from_fn(|_| pipelines.next().unwrap());
@@ -554,6 +564,7 @@ impl World {
             mid_images,
             cert_images,
             levels,
+            spec,
             weights,
             weight_count,
             dump,
@@ -583,13 +594,14 @@ impl World {
         shaders: &Path,
         [scene, splat, resolve, net, display]: [vk::RenderPass; 5],
         layout: vk::PipelineLayout,
+        spec: &[i32],
     ) -> Result<Vec<vk::Pipeline>> {
         Ok(vec![
-            pipeline(d, shaders, ("scene.vert.spv", "scene.frag.spv"), scene, layout, 1, false, true, false)?,
-            pipeline(d, shaders, ("splat.vert.spv", "splat.frag.spv"), splat, layout, ACCS, true, false, true)?,
-            pipeline(d, shaders, ("fullscreen.vert.spv", "resolve.frag.spv"), resolve, layout, ACCS, false, false, false)?,
-            pipeline(d, shaders, ("fullscreen.vert.spv", "net.frag.spv"), net, layout, STATES, false, false, false)?,
-            pipeline(d, shaders, ("fullscreen.vert.spv", "display.frag.spv"), display, layout, 1, false, false, false)?,
+            pipeline(d, shaders, ("scene.vert.spv", "scene.frag.spv"), scene, layout, 1, false, true, false, &[])?,
+            pipeline(d, shaders, ("splat.vert.spv", "splat.frag.spv"), splat, layout, ACCS, true, false, true, &[])?,
+            pipeline(d, shaders, ("fullscreen.vert.spv", "resolve.frag.spv"), resolve, layout, ACCS, false, false, false, &[])?,
+            pipeline(d, shaders, ("fullscreen.vert.spv", "net.frag.spv"), net, layout, STATES, false, false, false, spec)?,
+            pipeline(d, shaders, ("fullscreen.vert.spv", "display.frag.spv"), display, layout, 1, false, false, false, &[])?,
         ])
     }
 
@@ -599,7 +611,7 @@ impl World {
     /// Old pipelines are only destroyed at exit (they stay in `Resources`).
     pub fn reload(&mut self, r: &mut Resources<'_>, shaders: &Path) -> Result<()> {
         let passes = [self.scene_pass, self.splat_pass, self.resolve_pass, self.net_pass, self.display_pass];
-        let new = Self::pipelines(&r.gpu.device, shaders, passes, self.layout)?;
+        let new = Self::pipelines(&r.gpu.device, shaders, passes, self.layout, &self.spec)?;
         let mut new = new.into_iter().map(|p| r.keep(p, Resource::Pipeline));
         [self.scene, self.splat, self.resolve, self.net, self.display] =
             std::array::from_fn(|_| new.next().unwrap());

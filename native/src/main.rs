@@ -268,7 +268,7 @@ fn run(shaders: &Path) -> Result<()> {
         size,
         format,
         [&images[0], &images[1]],
-        rule.levels(),
+        rule.specialization(),
         rule.len(),
     )?;
     world.mode = match env::var("VIEW").as_deref() {
