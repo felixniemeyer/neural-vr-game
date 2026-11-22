@@ -5,7 +5,17 @@
   "archived": false,
   "color": "#662d43",
   "tags": [],
-  "supportingConnections": [],
+  "supportingConnections": [
+    {
+      "ideaId": "7ffd71cd-aeab-4193-a177-abddfaaebf1a",
+      "relativePosition": [
+        -2.85,
+        2.44
+      ],
+      "weight": 1,
+      "hypothesis": "Grant money is one way to get training infrastructure (GPU time)."
+    }
+  ],
   "supportedIdeas": [
     "ea8719aa-4554-4122-a393-61d4f3e657b0"
   ],
@@ -16,9 +26,9 @@
     "date": 1795191348821
   },
   "intrinsicValue": 0,
+  "cost": 2,
   "selfWeight": 1,
   "duration": 1,
   "costVariance": 0,
-  "valueVariance": 0,
-  "cost": 2
+  "valueVariance": 0
 }

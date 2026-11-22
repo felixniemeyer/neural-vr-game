@@ -1,0 +1,29 @@
+{
+  "id": "7ffd71cd-aeab-4193-a177-abddfaaebf1a",
+  "text": "Apply for XR development funding (Medienboard Berlin-Brandenburg New Media, FFF Bayern XR) for Sunk City",
+  "description": "RESEARCHED: Medienboard's first 2026 New Media session funded 19 games/XR/series projects with ~EUR 2 M (medienboard.de); FFF Bayern XR development funding covers up to 80% of costs, up to EUR 30k per project (fff-bayern.de). Sunk City fits \"innovative XR\": a VR world drawn live by a 5k-parameter neural net on a standalone headset, no polygons shown. Draft pitch (one paragraph): \"Sunk City is a VR flight through a city that is not rendered but remembered: every frame, a tiny neural network trained on animated film reprojects and repaints the previous image, while simple blocks rise and sink as you swing between them. It runs standalone on the Steam Frame at 90 Hz. Funding would pay for GPU training time, a sound designer and a 3-month production of a 15-minute experience for festivals (DOK Neuland, Ars Electronica).\" Needed from Felix: applicant status (resident/company in Berlin-Brandenburg or Bavaria?), budget split, timeline.",
+  "archived": false,
+  "color": "#65662d",
+  "tags": [
+    "hypothesis",
+    "major-hypothesis-loop",
+    "funding"
+  ],
+  "supportingConnections": [],
+  "supportedIdeas": [
+    "cef4ba30-abf6-4a9e-a9f9-0a3adac6a801",
+    "eb5bdfa5-df6c-447b-9b94-e93b9e0bc7ec"
+  ],
+  "committedIn": [],
+  "status": {
+    "state": "unclear",
+    "comment": "Decision for Felix: apply? Where are you eligible (Berlin-Brandenburg via Medienboard, Bavaria via FFF, or neither)? If yes, I expand the draft pitch in the description into the fund's form (concept, schedule, budget) once you give eligibility, budget size and timeline.",
+    "date": 1795381304124
+  },
+  "intrinsicValue": 0,
+  "cost": 3,
+  "selfWeight": 1,
+  "duration": 1,
+  "costVariance": 0,
+  "valueVariance": 0
+}
