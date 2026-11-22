@@ -346,7 +346,7 @@ fn run(shaders: &Path) -> Result<()> {
         .fader("depth", 0., 1., initial("depth", 0.1))
         .fader("identity", 0., 1., initial("identity", 0.1))
         .fader("wild", 0., 1., initial("wild", 0.))
-        .fader("rate", 0., 2., initial("rate", 1.))
+        .fader("rate", 0., 4., initial("rate", 1.))
         .fader_with("blocks", 4., 64., initial("blocks", 24.), 0)
         .fader_with("cell", 1., 10., initial("cell", 4.), 1)
         .fader_with("height", 1., 25., initial("height", 7.), 1)

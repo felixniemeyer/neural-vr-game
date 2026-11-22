@@ -10,7 +10,7 @@
 //            (rgb, (inv - inv_self) * near), (h), bilinear from the hole-aware
 //            pyramid, 0 where it is empty; extra (certainty, valid, 1, 0)
 //   layers   1x1 "convolutions" from the weights buffer, relu between them
-//   update   d = max_change * tanh(out) * rate:
+//   update   d = max_change * tanh(out) * rate * min(dt * training fps, 1):
 //            rgb += d.rgb, inv *= exp(d.w), h += d_h; certainty decays toward 0.03 / 1
 //
 // Weights (rule.rs): per layer W [outputs][inputs] row-major, then the bias, as vec4s.
@@ -121,8 +121,10 @@ void main() {
     if (LAYERS > 2) dense(OFF2, UNITS1, UNITS2);
     if (LAYERS > 3) dense(OFF3, UNITS2, UNITS3);
 
-    // Residual update (outputs: d rgb, d log inv, d h).
-    float change = u.net.w * u.netRun.x;
+    // Residual update (outputs: d rgb, d log inv, d h). Training stepped once per video
+    // frame (u.netRun.y fps); per second the net changes as much as it did there.
+    float perSecond = u.netRun.y > 0.0 ? min(u.step.x * u.netRun.y, 1.0) : 1.0;
+    float change = u.net.w * u.netRun.x * perSecond;
     vec4 d0 = change * tanh(hidden[0]);
     vec4 d1 = change * tanh(hidden[1]);
     stateA = vec4(clamp(A.rgb + d0.rgb, 0.0, 1.5), inv * exp(d0.w));

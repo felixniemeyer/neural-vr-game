@@ -33,6 +33,10 @@ const ACCS: usize = 4;
 /// prev state, accumulators, resolved state, certainty, new state, scene (per eye)
 const SAMPLED_BINDINGS: u32 = (EYES * (STATES + ACCS + STATES + 1 + STATES + 1)) as u32;
 const WEIGHTS_BINDING: u32 = SAMPLED_BINDINGS + 1;
+/// Video frame rate of the training footage (train/frames.sh FPS): the net's update
+/// is scaled so it changes as much per second as it did per training step there. A
+/// dump frame runs one plain training step (for train/parity.py).
+const TRAINED_FPS: f32 = 10.;
 /// GPU timestamps per frame: start, after scene, splat, resolve, net, display.
 pub const STAMPS: u32 = 6;
 
@@ -651,7 +655,7 @@ impl World {
             ],
             step: [dt, 0., 0., 0.],
             net: rule.net,
-            net_run: [settings.rate, 0., 0., 0.],
+            net_run: [settings.rate, if self.dumping { 0. } else { TRAINED_FPS }, 0., 0.],
             net_layers: rule.layers,
             net_taps: rule.taps,
             city: [settings.cell, settings.height, settings.radius, settings.blocks as f32],

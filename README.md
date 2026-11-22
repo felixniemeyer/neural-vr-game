@@ -69,7 +69,7 @@ Live faders (av-controls panel `sunk-city`). Without a broker these defaults app
 | Fader      | Default | Meaning |
 |------------|---------|---------|
 | `color`, `depth`, `identity` | 0.2, 0.1, 0.1 | How strongly the rendered blocks set colour, depth (+ velocity) and the hidden state (from the block id) per frame |
-| `wild`, `rate` | 0, 1 | Trained → randomly morphing weights (the distortion knob); scale of the net's update per frame (1 = as trained, at 10 fps) |
+| `wild`, `rate` | 0, 1 | Trained → randomly morphing weights (the distortion knob); speed of the net's changes (1 = per second as in training, whose steps were 10 fps video frames) |
 | `blocks`   | 24      | Blocks per side around the player |
 | `cell`, `height` | 4, 7 | Grid cell size and maximum block height (m) |
 | `radius`   | 20      | Gaussian falloff (m): blocks rise as you approach and sink as you leave |
