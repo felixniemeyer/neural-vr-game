@@ -35,6 +35,8 @@ const SCENES: usize = 2;
 /// prev state, accumulators, resolved state, certainty, new state, scene (per eye)
 const SAMPLED_BINDINGS: u32 = (EYES * (STATES + ACCS + STATES + 1 + STATES + SCENES)) as u32;
 const WEIGHTS_BINDING: u32 = SAMPLED_BINDINGS + 1;
+/// How fast the display exposure follows its measurement (1/s).
+const EXPOSURE_RATE: f32 = 1.5;
 /// GPU timestamps per frame: start, after scene, splat, resolve, net, display.
 pub const STAMPS: u32 = 6;
 
@@ -140,6 +142,8 @@ pub struct World {
     pub capture: bool,
     /// Display exposure per channel (r, g, b): black point, white point, gamma.
     tone: [[f32; 3]; 3],
+    /// The exposure the last measurement asks for; `tone` glides toward it every frame.
+    tone_goal: [[f32; 3]; 3],
     previous: Option<([EyeCamera; EYES], f32)>,
     parity: usize,
     frame: u32,
@@ -581,6 +585,7 @@ impl World {
             readback,
             capture: false,
             tone: [[0., 1., 1.]; 3],
+            tone_goal: [[0., 1., 1.]; 3],
             previous: None,
             parity: 0,
             frame: 0,
@@ -641,6 +646,13 @@ impl World {
         }
         let (previous, last_time) = self.previous.replace((cameras, time)).unwrap_or((cameras, time));
         let dt = (time - last_time).clamp(0., 0.1);
+        // Exposure glides toward the last measurement every frame (no steps when measured).
+        let follow = 1. - (-EXPOSURE_RATE * dt).exp();
+        for (tone, goal) in self.tone.iter_mut().zip(self.tone_goal) {
+            for i in 0..3 {
+                tone[i] += (goal[i] - tone[i]) * follow;
+            }
+        }
         let uniforms = Uniforms {
             view_proj: cameras.map(|c| c.view_proj.to_cols_array()),
             prev_inv_view_proj: previous.map(|c| c.view_proj.inverse().to_cols_array()),
@@ -848,11 +860,10 @@ impl World {
             let at80 = ((p80 - low) / (high - low)).clamp(1e-3, 0.999);
             [low, high, (mid.clamp(0.01, 0.99).ln() / at80.ln()).clamp(0.25, 10.)]
         });
-        for (c, tone) in self.tone.iter_mut().enumerate() {
+        for (c, goal) in self.tone_goal.iter_mut().enumerate() {
             for i in 0..3 {
                 let mean = (target[0][i] + target[1][i] + target[2][i]) / 3.;
-                let goal = target[c][i] + (mean - target[c][i]) * tint;
-                tone[i] += (goal - tone[i]) * 0.15;
+                goal[i] = target[c][i] + (mean - target[c][i]) * tint;
             }
         }
     }
