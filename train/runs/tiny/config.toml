@@ -1,0 +1,34 @@
+[data]
+name = ""
+infer = 256
+size = 128
+minutes = 15.0
+chunk = 20.0
+fov = 60.0
+ratio = 8.0
+depth_size = 252
+flow_iters = 12
+still = 1.0
+moving = 0.3
+cut = 0.12
+seed = 0
+
+[net]
+levels = 5
+points = 3
+hidden = [16]
+hidden_state = 4
+near = 10.0
+max_change = 0.5
+
+[train]
+crop = 32
+steps = 8
+batch = 16
+lr = 0.002
+iters = 20000
+observe = 0.3
+hole_weight = 4.0
+edge_weight = 1.0
+preview = 250
+threads = 0

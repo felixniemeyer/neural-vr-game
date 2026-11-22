@@ -1,0 +1,23 @@
+[project]
+name = "sunk-city-train"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "av>=19.0.2",
+    "numpy>=2.5.5",
+    "pillow>=13.0.0",
+    "torch>=2.15.0",
+    "torchvision>=0.29.2",
+    "transformers>=5.24.0",
+]
+
+# CPU-only torch for the laptop; on a CUDA machine drop the source (or point it at a
+# CUDA index) and `uv sync` again.
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+torchvision = { index = "pytorch-cpu" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true

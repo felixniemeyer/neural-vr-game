@@ -1,0 +1,178 @@
+"""Torch copy of the runtime loop: splat -> resolve -> net. The shaders implement the
+same math (see native/shaders); export() writes what they load.
+
+State [B, C, H, W], channels:
+  0:3  rgb
+  3    inverse depth (1/m), 0 = no data (hole)
+  4:7  velocity (m per frame, current camera coords: x right, y up, z ahead)
+  7    certainty
+  8:   hidden state (net.hidden_state channels)
+
+Net input per pixel, as vec4s (all mat4-friendly):
+  self      (rgb, inv * near), (h)            exact, native resolution
+  level L   points at radius 2^L px, angle L * 60 deg + k * 120 deg (+ the mip centre
+            for points = 4), read bilinearly from mip level L of the hole-aware
+            pyramid: (rgb, (inv - inv_self) * near), (h); 0 where the pyramid is empty
+  extra     (certainty, valid, 1, 0)
+Output (4 + hidden_state): d rgb, d log inv, d h; residual update, tanh-bounded.
+Holes are first filled from the coarsest-needed pyramid level (push-pull).
+"""
+import json, math
+from pathlib import Path
+
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+RGB, INV, VEL, CERT, HID = slice(0, 3), 3, slice(4, 7), 7, slice(8, None)
+
+
+def tap_offsets(levels, points):
+    """[(level, dx, dy)] in pixels of level 0; y down (image rows)."""
+    taps = []
+    for level in range(levels):
+        radius = 2.0 ** level
+        for k in range(3):
+            angle = math.radians(90 + 60 * level + 120 * k)
+            taps.append((level, radius * math.cos(angle), -radius * math.sin(angle)))
+        if points == 4 and level > 0:
+            taps.append((level, 0.0, 0.0))
+    return taps
+
+
+def pyramid(state, levels):
+    """Hole-aware mips: average of valid pixels only. Returns [(values, coverage)]."""
+    valid = (state[:, INV:INV + 1] > 0).float()
+    level = (state * valid, valid)
+    out = []
+    for _ in range(levels):
+        out.append(level)
+        level = (F.avg_pool2d(level[0], 2), F.avg_pool2d(level[1], 2))
+    return out
+
+
+def read(level, grid):
+    """Bilinear read of a mip (premultiplied values, coverage) at a grid; normalised."""
+    v = F.grid_sample(level[0], grid, mode="bilinear", padding_mode="border", align_corners=False)
+    c = F.grid_sample(level[1], grid, mode="bilinear", padding_mode="border", align_corners=False)
+    return v / c.clamp_min(1e-4), (c > 1e-3).float()
+
+
+class Net(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        n = config.net
+        assert n.hidden_state % 4 == 0 and all(h % 4 == 0 for h in n.hidden)
+        self.near, self.levels, self.max_change = n.near, n.levels, n.max_change
+        self.taps = tap_offsets(n.levels, n.points)
+        self.channels = 8 + n.hidden_state
+        self.inputs = 4 * (2 * (1 + len(self.taps)) + 1)
+        self.outputs = 4 + n.hidden_state
+        sizes = [self.inputs] + list(n.hidden) + [self.outputs]
+        self.layers = nn.ModuleList(nn.Conv2d(a, b, 1) for a, b in zip(sizes[:-1], sizes[1:]))
+        with torch.no_grad():
+            self.layers[-1].weight.mul_(0.1)
+            self.layers[-1].bias.zero_()
+        self.grids = {}
+
+    def grid(self, h, w, dx, dy, device):
+        key = (h, w, dx, dy)
+        if key not in self.grids:
+            y, x = torch.meshgrid(torch.arange(h, device=device) + 0.5, torch.arange(w, device=device) + 0.5, indexing="ij")
+            self.grids[key] = torch.stack([(x + dx) / w * 2 - 1, (y + dy) / h * 2 - 1], -1)[None]
+        return self.grids[key]
+
+    def forward(self, state):
+        b, _, h, w = state.shape
+        mips = pyramid(state, self.levels)
+        valid = (state[:, INV:INV + 1] > 0).float()
+
+        # Push-pull hole fill: the finest pyramid level that has data here.
+        filled = state
+        need = 1 - valid
+        for level in mips[1:]:
+            value, covered = read(level, self.grid(h, w, 0, 0, state.device).expand(b, -1, -1, -1))
+            take = need * covered
+            filled = filled * (1 - take) + value * take
+            need = need * (1 - covered)
+        filled = filled.clone()
+        filled[:, CERT:CERT + 1] = state[:, CERT:CERT + 1] * valid
+
+        inv_self = filled[:, INV:INV + 1]
+        features = [filled[:, RGB], inv_self * self.near, filled[:, HID]]
+        for level, dx, dy in self.taps:
+            grid = self.grid(h, w, dx, dy, state.device).expand(b, -1, -1, -1)
+            value, covered = read(mips[level], grid)
+            features += [value[:, RGB] * covered, (value[:, INV:INV + 1] - inv_self) * self.near * covered,
+                         value[:, HID] * covered]
+        one = torch.ones_like(valid)
+        features += [filled[:, CERT:CERT + 1], valid, one, 0 * one]
+        x = torch.cat(features, 1)
+
+        for layer in self.layers[:-1]:
+            x = F.relu(layer(x))
+        delta = self.max_change * torch.tanh(self.layers[-1](x))
+
+        out = filled.clone()
+        out[:, RGB] = (filled[:, RGB] + delta[:, 0:3]).clamp(0, 1.5)
+        out[:, INV:INV + 1] = inv_self * torch.exp(delta[:, 3:4])
+        out[:, HID] = (filled[:, HID] + delta[:, 4:]).clamp(-4, 4)
+        cert = filled[:, CERT:CERT + 1]
+        out[:, CERT:CERT + 1] = cert * 0.995 + (1 - cert) * 0.03
+        return out
+
+    def export(self, folder: Path, config):
+        """net.json (layout) + weights.bin (float32: per layer W [out][in] row-major, then b)."""
+        folder.mkdir(parents=True, exist_ok=True)
+        blobs = []
+        for layer in self.layers:
+            blobs += [layer.weight[:, :, 0, 0].detach().float().numpy().ravel(), layer.bias.detach().float().numpy()]
+        np.concatenate(blobs).astype("<f4").tofile(folder / "weights.bin")
+        (folder / "net.json").write_text(json.dumps({
+            "inputs": self.inputs, "outputs": self.outputs,
+            "layers": [[l.in_channels, l.out_channels] for l in self.layers],
+            "taps": [list(t) for t in self.taps], "levels": self.levels,
+            "hidden_state": config.net.hidden_state, "near": self.near, "max_change": self.max_change,
+        }, indent=1))
+
+
+def splat(state, r, t, rays, origin, focal, full):
+    """2x2 tent splat of a state (camera c) into camera c' with p' = R (p + v) + t.
+
+    rays: [B, H, W, 3] of the crop's pixels (full-frame rays); origin [B, 2]: crop corner
+    in the full frame (size `full`); points landing outside the crop are lost. Returns the resolved state
+    and the hole mask.
+    """
+    b, c, h, w = state.shape
+    inv = state[:, INV]
+    alive = (inv > 0).float()
+    p = rays / inv.clamp_min(1e-6)[..., None]  # [B, H, W, 3]
+    p = p + state[:, VEL].permute(0, 2, 3, 1)
+    q = torch.einsum("bij,bhwj->bhwi", r, p) + t[:, None, None]
+    z = q[..., 2]
+    alive = alive * (z > 1e-3).float()
+    zs = z.clamp_min(1e-3)
+    cx = focal * q[..., 0] / zs + full / 2 - 0.5 - origin[:, 0, None, None]
+    cy = -focal * q[..., 1] / zs + full / 2 - 0.5 - origin[:, 1, None, None]
+
+    values = state.clone()
+    values[:, INV] = 1 / zs
+    values[:, VEL] = torch.einsum("bij,bjhw->bihw", r, state[:, VEL])
+    values = torch.cat([values, torch.ones_like(inv)[:, None]], 1).flatten(2)  # + weight channel
+    acc = torch.zeros(b, c + 1, h * w)
+    x0, y0 = cx.floor(), cy.floor()
+    for ox in (0, 1):
+        for oy in (0, 1):
+            x, y = x0 + ox, y0 + oy
+            weight = (1 - (cx - x).abs()) * (1 - (cy - y).abs()) * alive
+            inside = (x >= 0) & (x < w) & (y >= 0) & (y < h)
+            index = (y.clamp(0, h - 1) * w + x.clamp(0, w - 1)).long().flatten(1)
+            wv = (weight * inside).flatten(1)[:, None]
+            acc.scatter_add_(2, index[:, None].expand(-1, c + 1, -1), values * wv)
+    acc = acc.view(b, c + 1, h, w)
+    weight = acc[:, -1:]
+    hole = (weight < 0.01).float()
+    out = acc[:, :-1] / weight.clamp_min(0.01) * (1 - hole)
+    out[:, CERT:CERT + 1] = acc[:, CERT:CERT + 1].clamp(0, 1) * (1 - hole)  # partial coverage lowers it
+    return out, hole

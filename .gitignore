@@ -1,3 +1,12 @@
 /build/
 /native/target/
 /native/.cargo/
+
+# training data and outputs
+/train/.venv/
+/train/videos/
+/train/data/
+/train/out/
+__pycache__/
+/train/runs/*/*
+!/train/runs/*/config.toml
