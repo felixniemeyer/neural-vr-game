@@ -1,21 +1,19 @@
-//! Per-eye neural-world state: reprojection splat, resolve + CA, display.
+//! Per-eye neural-world state: reprojection splat, resolve, tiny net, display.
 //!
-//! Frame order per eye: scene (skyscraper G-buffer) -> splat -> resolve + CA
-//! (composites the scene before the CA step) -> display.
+//! Frame order per eye: scene (skyscraper G-buffer) -> splat -> resolve (normalise,
+//! composite the scene) -> net -> display.
 //!
 //! State per eye and parity (ping-pong), all RGBA16F:
-//!   A = (r, g, b, inverse depth)
-//!   B = (world velocity xyz, certainty)
-//!   C = (h0, h1, h2, h3), D = (h4, h5, h6, spare): hidden state; with one hidden
-//!   image (3 channels) only C = (h0, h1, h2, 0) exists
-//! Splat accumulation per eye, RGBA16F with additive blending (at most 4 targets,
-//! the portable Vulkan minimum):
-//!   acc0 = (rgb*w, w), acc1 = (invDepth, velocity)*w,
-//!   acc2 = (certainty, h0, h1, h2)*w, acc3 = (h3, h4, h5, h6)*w (2 hidden images)
+//!   A = (r, g, b, certainty)
+//!   B = (world velocity xyz, spare; in the resolved state: building 0/1)
+//!   C = (h0, h1, h2, inverse depth; 0 = no data)
+//! Splat accumulation per eye, RGBA16F with additive blending:
+//!   acc0 = (rgb, 1)*w, acc1 = (velocity, certainty)*w, acc2 = (h0, h1, h2, inv)*w
+//! Resolved state per eye (resolve output, net input): same layout as the state.
 //! Scene G-buffer per eye: (sun shade, inverse distance, vertical velocity, id).
 
 use crate::gpu::{image_range, Resource, Resources, Shader};
-use crate::rule::{RuleFrame, READOUT_VEC4S, RULE_VEC4S};
+use crate::rule::{RuleFrame, TAPS, W1, W2};
 use anyhow::Result;
 use ash::{vk, Device};
 use glam::{Mat4, Vec3};
@@ -24,17 +22,19 @@ use std::{mem::size_of, path::Path};
 pub const EYES: usize = 2;
 const STATE: vk::Format = vk::Format::R16G16B16A16_SFLOAT;
 const DEPTH: vk::Format = vk::Format::D32_SFLOAT;
-/// Maximum state images per eye (A, B, C, D); accumulators match the state images.
-const STATES: usize = 4;
-/// prev state (2 eyes x 4), accumulators (2 x 4), new state (2 x 4), scene (2)
-const SAMPLED_BINDINGS: u32 = (EYES * (3 * STATES + 1)) as u32;
+/// State images per eye (A, B, C); accumulators and resolved state match them.
+const STATES: usize = 3;
+/// prev state, accumulators, resolved state, new state (2 eyes x 3 each), scene (2)
+const SAMPLED_BINDINGS: u32 = (EYES * (4 * STATES + 1)) as u32;
+/// GPU timestamps per frame: start, after scene, splat, resolve, net, display.
+pub const STAMPS: u32 = 6;
 
 /// Live settings (av-controls faders).
 #[derive(Clone, Copy)]
 pub struct Settings {
-    /// Active perception rings (1..4) and the fraction of taps per ring.
-    pub rings: usize,
-    pub taps: f32,
+    /// Outermost spiral tap radius (px) and the update-rate floor on certain pixels.
+    pub reach: f32,
+    pub alive: f32,
     /// Scene alpha for colour, for the building identity (hidden), for depth + velocity.
     pub color: f32,
     pub identity: f32,
@@ -62,17 +62,16 @@ struct Uniforms {
     prev_eye: [[f32; 4]; EYES],
     info: [f32; 4],
     step: [f32; 4],
-    rule: [[f32; 4]; RULE_VEC4S],
-    rule_b: [[f32; 4]; RULE_VEC4S],
-    readout: [[f32; 4]; READOUT_VEC4S],
+    taps: [[f32; 4]; TAPS / 2],
+    w1: [[f32; 16]; W1],
+    w2: [[f32; 16]; W2],
     nca: [f32; 4],
-    lookup: [f32; 4],
     city: [f32; 4],
     mixing: [f32; 4],
     player: [f32; 4],
     tone: [[f32; 4]; 3],
 }
-const _: () = assert!(size_of::<Uniforms>() == 480 + (2 * RULE_VEC4S + READOUT_VEC4S + 8) * 16);
+const _: () = assert!(size_of::<Uniforms>() == 480 + (TAPS / 2 + 4 * (W1 + W2) + 1 + 6) * 16);
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -101,23 +100,24 @@ pub struct EyeCamera {
 
 pub struct World {
     size: vk::Extent2D,
-    /// Hidden images (1 or 2); state images per eye = 2 + hidden_images.
-    hidden_images: usize,
     scene_pass: vk::RenderPass,
     splat_pass: vk::RenderPass,
-    ca_pass: vk::RenderPass,
+    resolve_pass: vk::RenderPass,
+    net_pass: vk::RenderPass,
     display_pass: vk::RenderPass,
     scene: vk::Pipeline,
     splat: vk::Pipeline,
-    ca: vk::Pipeline,
+    resolve: vk::Pipeline,
+    net: vk::Pipeline,
     display: vk::Pipeline,
     layout: vk::PipelineLayout,
     sets: [vk::DescriptorSet; 2],
     state_images: Vec<vk::Image>,
     scene_targets: [vk::Framebuffer; EYES],
     acc_targets: [vk::Framebuffer; EYES],
-    /// ca_targets[eye][parity] writes state[eye][1 - parity].
-    ca_targets: [[vk::Framebuffer; 2]; EYES],
+    resolve_targets: [vk::Framebuffer; EYES],
+    /// net_targets[eye][parity] writes state[eye][1 - parity].
+    net_targets: [[vk::Framebuffer; 2]; EYES],
     outputs: [Vec<vk::Framebuffer>; EYES],
     mapped: *mut Uniforms,
     /// Host-visible copy of the left eye's state A (RGBA16F), filled on request.
@@ -219,6 +219,7 @@ fn pipeline(
     targets: usize,
     additive: bool,
     depth_test: bool,
+    points: bool,
 ) -> Result<vk::Pipeline> {
     let vertex = Shader::load(d, dir, vert)?;
     let fragment = Shader::load(d, dir, frag)?;
@@ -228,7 +229,7 @@ fn pipeline(
     ];
     let input = vk::PipelineVertexInputStateCreateInfo::default();
     let assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
-        .topology(vk::PrimitiveTopology::TRIANGLE_LIST);
+        .topology(if points { vk::PrimitiveTopology::POINT_LIST } else { vk::PrimitiveTopology::TRIANGLE_LIST });
     let viewport = vk::PipelineViewportStateCreateInfo::default()
         .viewport_count(1)
         .scissor_count(1);
@@ -278,9 +279,7 @@ impl World {
         size: vk::Extent2D,
         output_format: vk::Format,
         swapchains: [&[vk::Image]; EYES],
-        hidden_images: usize,
     ) -> Result<Self> {
-        let images = 2 + hidden_images;
         use vk::ImageUsageFlags as Usage;
         let d = &r.gpu.device;
         let stages = vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT;
@@ -357,8 +356,10 @@ impl World {
         let read_layout = vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
         let clear = vk::AttachmentLoadOp::CLEAR;
         let scene_pass = render_pass(r, &[STATE], true, clear, read_layout, true)?;
-        let splat_pass = render_pass(r, &vec![STATE; images], false, clear, read_layout, true)?;
-        let ca_pass = render_pass(r, &vec![STATE; images], false, vk::AttachmentLoadOp::DONT_CARE, read_layout, true)?;
+        let splat_pass = render_pass(r, &[STATE; STATES], false, clear, read_layout, true)?;
+        let dont_care = vk::AttachmentLoadOp::DONT_CARE;
+        let resolve_pass = render_pass(r, &[STATE; STATES], false, dont_care, read_layout, true)?;
+        let net_pass = render_pass(r, &[STATE; STATES], false, dont_care, read_layout, true)?;
         let display_pass = render_pass(
             r,
             &[output_format],
@@ -367,50 +368,44 @@ impl World {
             vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
             false,
         )?;
-        let mut pipelines = Self::pipelines(&r.gpu.device, shaders, [scene_pass, splat_pass, ca_pass, display_pass], layout, images)?
+        let passes = [scene_pass, splat_pass, resolve_pass, net_pass, display_pass];
+        let mut pipelines = Self::pipelines(&r.gpu.device, shaders, passes, layout)?
             .into_iter()
             .map(|p| r.keep(p, Resource::Pipeline));
-        let [scene, splat, ca, display] = std::array::from_fn(|_| pipelines.next().unwrap());
+        let [scene, splat, resolve, net, display] = std::array::from_fn(|_| pipelines.next().unwrap());
 
-        // state[eye][parity] = (A, B, C, D); absent images (1 hidden image) are
-        // bound as their predecessor in the descriptor set and never read.
+        // state[eye][parity] = (A, B, C)
         let state_usage = Usage::COLOR_ATTACHMENT | Usage::SAMPLED | Usage::TRANSFER_DST | Usage::TRANSFER_SRC;
+        let target_usage = Usage::COLOR_ATTACHMENT | Usage::SAMPLED;
         let mut state_images = Vec::new();
         let mut state = [[[vk::ImageView::null(); STATES]; 2]; EYES];
         for eye in &mut state {
             for parity in eye.iter_mut() {
-                for i in 0..STATES {
-                    parity[i] = if i < images {
-                        let (image, view) = r.image(size, STATE, state_usage)?;
-                        state_images.push(image);
-                        view
-                    } else {
-                        parity[i - 1]
-                    };
+                for view in parity.iter_mut() {
+                    let (image, v) = r.image(size, STATE, state_usage)?;
+                    state_images.push(image);
+                    *view = v;
                 }
             }
         }
         let mut acc = [[vk::ImageView::null(); STATES]; EYES];
-        for eye in &mut acc {
-            for i in 0..STATES {
-                eye[i] = if i < images {
-                    r.image(size, STATE, Usage::COLOR_ATTACHMENT | Usage::SAMPLED)?.1
-                } else {
-                    eye[i - 1]
-                };
-            }
+        let mut mid = [[vk::ImageView::null(); STATES]; EYES];
+        for view in acc.iter_mut().chain(mid.iter_mut()).flatten() {
+            *view = r.image(size, STATE, target_usage)?.1;
         }
         let mut gbuffer = [vk::ImageView::null(); EYES];
         let mut scene_targets = [vk::Framebuffer::null(); EYES];
         let mut acc_targets = [vk::Framebuffer::null(); EYES];
-        let mut ca_targets = [[vk::Framebuffer::null(); 2]; EYES];
+        let mut resolve_targets = [vk::Framebuffer::null(); EYES];
+        let mut net_targets = [[vk::Framebuffer::null(); 2]; EYES];
         for eye in 0..EYES {
-            gbuffer[eye] = r.image(size, STATE, Usage::COLOR_ATTACHMENT | Usage::SAMPLED)?.1;
+            gbuffer[eye] = r.image(size, STATE, target_usage)?.1;
             let depth = r.image(size, DEPTH, Usage::DEPTH_STENCIL_ATTACHMENT)?.1;
             scene_targets[eye] = r.framebuffer(scene_pass, size, &[gbuffer[eye], depth])?;
-            acc_targets[eye] = r.framebuffer(splat_pass, size, &acc[eye][..images])?;
+            acc_targets[eye] = r.framebuffer(splat_pass, size, &acc[eye])?;
+            resolve_targets[eye] = r.framebuffer(resolve_pass, size, &mid[eye])?;
             for parity in 0..2 {
-                ca_targets[eye][parity] = r.framebuffer(ca_pass, size, &state[eye][1 - parity][..images])?;
+                net_targets[eye][parity] = r.framebuffer(net_pass, size, &state[eye][1 - parity])?;
             }
         }
         let mut outputs: [Vec<vk::Framebuffer>; EYES] = Default::default();
@@ -440,11 +435,12 @@ impl World {
             let uniform = [vk::DescriptorBufferInfo::default()
                 .buffer(uniforms)
                 .range(size_of::<Uniforms>() as u64)];
-            // Bindings 1.. : prev state of both eyes, accumulators of both eyes, new state
-            // of both eyes, scene G-buffer of both eyes.
+            // Bindings 1.. : prev state, accumulators, resolved state, new state (each of
+            // both eyes), scene G-buffer of both eyes.
             let views: Vec<_> = (0..EYES)
                 .flat_map(|e| state[e][parity])
-                .chain((0..EYES).flat_map(|e| acc[e]))
+                .chain(acc.into_iter().flatten())
+                .chain(mid.into_iter().flatten())
                 .chain((0..EYES).flat_map(|e| state[e][next]))
                 .chain(gbuffer)
                 .collect();
@@ -474,21 +470,23 @@ impl World {
 
         Ok(Self {
             size,
-            hidden_images,
             scene_pass,
             scene,
             scene_targets,
             splat_pass,
-            ca_pass,
+            resolve_pass,
+            net_pass,
             display_pass,
             splat,
-            ca,
+            resolve,
+            net,
             display,
             layout,
             sets: [allocated[0], allocated[1]],
             state_images,
             acc_targets,
-            ca_targets,
+            resolve_targets,
+            net_targets,
             outputs,
             mapped,
             readback,
@@ -505,19 +503,19 @@ impl World {
         self.size
     }
 
-    /// The four pipelines (scene, splat, CA, display) from the SPIR-V in `shaders`.
+    /// The pipelines (scene, splat, resolve, net, display) from the SPIR-V in `shaders`.
     fn pipelines(
         d: &Device,
         shaders: &Path,
-        [scene, splat, ca, display]: [vk::RenderPass; 4],
+        [scene, splat, resolve, net, display]: [vk::RenderPass; 5],
         layout: vk::PipelineLayout,
-        images: usize,
     ) -> Result<Vec<vk::Pipeline>> {
         Ok(vec![
-            pipeline(d, shaders, ("scene.vert.spv", "scene.frag.spv"), scene, layout, 1, false, true)?,
-            pipeline(d, shaders, ("splat.vert.spv", "splat.frag.spv"), splat, layout, images, true, false)?,
-            pipeline(d, shaders, ("fullscreen.vert.spv", "ca.frag.spv"), ca, layout, images, false, false)?,
-            pipeline(d, shaders, ("fullscreen.vert.spv", "display.frag.spv"), display, layout, 1, false, false)?,
+            pipeline(d, shaders, ("scene.vert.spv", "scene.frag.spv"), scene, layout, 1, false, true, false)?,
+            pipeline(d, shaders, ("splat.vert.spv", "splat.frag.spv"), splat, layout, STATES, true, false, true)?,
+            pipeline(d, shaders, ("fullscreen.vert.spv", "resolve.frag.spv"), resolve, layout, STATES, false, false, false)?,
+            pipeline(d, shaders, ("fullscreen.vert.spv", "net.frag.spv"), net, layout, STATES, false, false, false)?,
+            pipeline(d, shaders, ("fullscreen.vert.spv", "display.frag.spv"), display, layout, 1, false, false, false)?,
         ])
     }
 
@@ -526,18 +524,21 @@ impl World {
     /// (a partial success leaks the new ones until exit, like replaced ones).
     /// Old pipelines are only destroyed at exit (they stay in `Resources`).
     pub fn reload(&mut self, r: &mut Resources<'_>, shaders: &Path) -> Result<()> {
-        let passes = [self.scene_pass, self.splat_pass, self.ca_pass, self.display_pass];
-        let new = Self::pipelines(&r.gpu.device, shaders, passes, self.layout, 2 + self.hidden_images)?;
+        let passes = [self.scene_pass, self.splat_pass, self.resolve_pass, self.net_pass, self.display_pass];
+        let new = Self::pipelines(&r.gpu.device, shaders, passes, self.layout)?;
         let mut new = new.into_iter().map(|p| r.keep(p, Resource::Pipeline));
-        [self.scene, self.splat, self.ca, self.display] = std::array::from_fn(|_| new.next().unwrap());
+        [self.scene, self.splat, self.resolve, self.net, self.display] =
+            std::array::from_fn(|_| new.next().unwrap());
         Ok(())
     }
 
-    /// Record one frame for both eyes: splat, resolve + CA, display.
+    /// Record one frame for both eyes: scene, splat, resolve, net, display. Writes
+    /// timestamps 1..STAMPS-1 into `queries` after each stage (0 is the caller's).
     pub fn draw(
         &mut self,
         d: &Device,
         cmd: vk::CommandBuffer,
+        queries: vk::QueryPool,
         cameras: [EyeCamera; EYES],
         images: [usize; EYES],
         time: f32,
@@ -562,11 +563,10 @@ impl World {
                 (self.frame % 65536) as f32,
             ],
             step: [dt, settings.near, settings.far, 0.],
-            rule: rule.rule,
-            rule_b: rule.rule_b,
-            readout: rule.readout,
+            taps: rule.taps,
+            w1: rule.w1,
+            w2: rule.w2,
             nca: rule.params,
-            lookup: [settings.rings as f32, settings.taps, self.hidden_images as f32, settings.seeds],
             city: [settings.cell, settings.height, settings.radius, settings.blocks as f32],
             mixing: [settings.color, settings.identity, settings.depth, settings.noise],
             player: {
@@ -621,7 +621,10 @@ impl World {
                 };
                 d.cmd_push_constants(cmd, self.layout, stages, 0, &p.bytes());
             };
-            // Scene first: rendered before the reprojection, composited by the CA.
+            let stamp = |index: u32| {
+                d.cmd_write_timestamp(cmd, vk::PipelineStageFlags::BOTTOM_OF_PIPE, queries, index)
+            };
+            // Scene first: rendered before the reprojection, composited by resolve.
             for eye in 0..EYES {
                 begin(self.scene_pass, self.scene_targets[eye]);
                 d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.scene);
@@ -629,22 +632,30 @@ impl World {
                 d.cmd_draw(cmd, 30, settings.blocks * settings.blocks, 0, 0);
                 d.cmd_end_render_pass(cmd);
             }
+            stamp(1);
             for eye in 0..EYES {
                 begin(self.splat_pass, self.acc_targets[eye]);
                 d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.splat);
                 // Own previous state, then the other eye's (cross-eye splat).
                 for source in [eye, 1 - eye] {
                     push(eye, source, 0);
-                    d.cmd_draw(cmd, 6, pixels, 0, 0);
+                    d.cmd_draw(cmd, pixels, 1, 0, 0);
                 }
                 d.cmd_end_render_pass(cmd);
             }
-            for eye in 0..EYES {
-                begin(self.ca_pass, self.ca_targets[eye][self.parity]);
-                d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.ca);
-                push(eye, eye, 0);
-                d.cmd_draw(cmd, 3, 1, 0, 0);
-                d.cmd_end_render_pass(cmd);
+            stamp(2);
+            for (pass, pipeline, targets, index) in [
+                (self.resolve_pass, self.resolve, self.resolve_targets, 3),
+                (self.net_pass, self.net, self.net_targets.map(|t| t[self.parity]), 4),
+            ] {
+                for eye in 0..EYES {
+                    begin(pass, targets[eye]);
+                    d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipeline);
+                    push(eye, eye, 0);
+                    d.cmd_draw(cmd, 3, 1, 0, 0);
+                    d.cmd_end_render_pass(cmd);
+                }
+                stamp(index);
             }
             for eye in 0..EYES {
                 begin(self.display_pass, self.outputs[eye][images[eye]]);
@@ -653,10 +664,11 @@ impl World {
                 d.cmd_draw(cmd, 3, 1, 0, 0);
                 d.cmd_end_render_pass(cmd);
             }
+            stamp(5);
         }
         if self.capture {
             // The new state A of the left eye: state[0][1 - parity], first image.
-            let image = self.state_images[(1 - self.parity) * (2 + self.hidden_images)];
+            let image = self.state_images[(1 - self.parity) * STATES];
             copy_to_buffer(d, cmd, image, self.size, self.readback.0);
         }
         self.parity = 1 - self.parity;

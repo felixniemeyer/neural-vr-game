@@ -10,7 +10,7 @@
 #
 #   BROKER_PORT=8090  CONTROLLER_PORT=4173  HEADSET=qwerty|simulated (auto-rotating)
 #   MONADO_WORKSPACE (sway): where Monado's windows go, default: the current workspace
-#   plus the app's variables: EYE_SIZE=256 VIEW=... HIDDEN=... MOVE=4 ...
+#   plus the app's variables: EYE_SIZE=256 VIEW=... MOVE=4 ...
 set -euo pipefail
 root=$(cd -- "$(dirname -- "$0")" && pwd)
 out=$root/build/native
@@ -18,7 +18,7 @@ logs=$root/build/dev
 mkdir -p "$logs"
 broker_port=${BROKER_PORT:-8090}
 controller_port=${CONTROLLER_PORT:-4173}
-export EYE_SIZE=${EYE_SIZE:-384}
+export EYE_SIZE=${EYE_SIZE:-1024} #384
 export MOVE=${MOVE:-4} # qwerty WASD is slow at city scale
 headset=${HEADSET:-qwerty}
 # sway: put Monado's windows (compositor + debug GUI) on this workspace.

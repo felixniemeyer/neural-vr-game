@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build and run against a local Monado (start monado-service first).
-#   EYE_SIZE=256 (default)   VIEW=rgb|certainty|depth|velocity|hidden|hidden2|scene   MOVE=1
-#   HIDDEN=3|7   OVERSCAN=1.15   CONTROLS=wss://localhost:8080   SNAPSHOT=file.ppm   VALIDATE=1
+#   EYE_SIZE=256 (default)   VIEW=rgb|certainty|depth|velocity|hidden|scene   MOVE=1
+#   OVERSCAN=1.15   CONTROLS=wss://localhost:8080   SNAPSHOT=file.ppm   VALIDATE=1
 set -euo pipefail
 root=$(cd -- "$(dirname -- "$0")" && pwd)
 native/build.sh "$root/build/native" >/dev/null

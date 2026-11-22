@@ -63,7 +63,11 @@ fn init_gpu(instance: &xr::Instance, system: xr::SystemId) -> Result<Gpu> {
             let queues = [vk::DeviceQueueCreateInfo::default()
                 .queue_family_index(family)
                 .queue_priorities(&[1.])];
-            let info = vk::DeviceCreateInfo::default().queue_create_infos(&queues);
+            // largePoints: the splat draws each previous pixel as a 2x2 point sprite.
+            let features = vk::PhysicalDeviceFeatures::default().large_points(true);
+            let info = vk::DeviceCreateInfo::default()
+                .queue_create_infos(&queues)
+                .enabled_features(&features);
             let raw = instance
                 .create_vulkan_device(
                     system,
@@ -248,15 +252,12 @@ fn run(shaders: &Path) -> Result<()> {
 
     // These resources are dropped before the OpenXR images and session.
     let mut resources = Resources::new(&gpu);
-    // HIDDEN=3 (one hidden image, default) or 7 (two hidden images).
-    let hidden_images = if env::var("HIDDEN").is_ok_and(|v| v == "7") { 2 } else { 1 };
-    let mut world = World::new(&mut resources, shaders, size, format, [&images[0], &images[1]], hidden_images)?;
+    let mut world = World::new(&mut resources, shaders, size, format, [&images[0], &images[1]])?;
     world.mode = match env::var("VIEW").as_deref() {
         Ok("certainty") => 1,
         Ok("depth") => 2,
         Ok("velocity") => 3,
         Ok("hidden") => 4,
-        Ok("hidden2") => 5,
         Ok("scene") => 6,
         _ => 0,
     };
@@ -283,7 +284,7 @@ fn run(shaders: &Path) -> Result<()> {
             d.create_query_pool(
                 &vk::QueryPoolCreateInfo::default()
                     .query_type(vk::QueryType::TIMESTAMP)
-                    .query_count(2),
+                    .query_count(world::STAMPS),
                 None,
             )?
         },
@@ -308,7 +309,7 @@ fn run(shaders: &Path) -> Result<()> {
     let mut events = xr::EventDataBuffer::new();
     let mut running = false;
     let mut frames = 0u64;
-    let mut gpu_ms = 0.;
+    let mut gpu_ms = [0f64; world::STAMPS as usize - 1];
     let mut start = None;
     let rule = rule::Rule::random();
     // Live settings from the av-controls broker (CONTROLS, default wss://localhost:8080);
@@ -319,8 +320,8 @@ fn run(shaders: &Path) -> Result<()> {
         .fader("identity", 0., 1., 0.1)
         .fader("noise", 0., 4., 1.)
         .fader("seeds", 0., 4., 1.)
-        .fader_with("rings", 1., 4., 4., 0)
-        .fader("taps", 0.1, 1., 1.)
+        .fader_with("reach", 2., 48., 16., 0)
+        .fader("alive", 0., 1., 0.3)
         .fader_with("blocks", 4., 64., 24., 0)
         .fader_with("cell", 1., 10., 4., 1)
         .fader_with("height", 1., 25., 7., 1)
@@ -409,8 +410,8 @@ fn run(shaders: &Path) -> Result<()> {
         let origin = Vec3::new(0., controls.get("altitude"), 0.);
         let cameras = [camera(&views[0], head, origin), camera(&views[1], head, origin)];
         let settings = Settings {
-            rings: controls.get("rings").round().clamp(1., 4.) as usize,
-            taps: controls.get("taps"),
+            reach: controls.get("reach"),
+            alive: controls.get("alive"),
             color: controls.get("color"),
             identity: controls.get("identity"),
             depth: controls.get("depth"),
@@ -431,13 +432,12 @@ fn run(shaders: &Path) -> Result<()> {
         unsafe {
             d.reset_command_buffer(cmd, vk::CommandBufferResetFlags::empty())?;
             d.begin_command_buffer(cmd, &vk::CommandBufferBeginInfo::default())?;
-            d.cmd_reset_query_pool(cmd, queries, 0, 2);
+            d.cmd_reset_query_pool(cmd, queries, 0, world::STAMPS);
             d.cmd_write_timestamp(cmd, vk::PipelineStageFlags::TOP_OF_PIPE, queries, 0);
-            let frame_rule = rule.at(seconds, hidden_images, settings.rings);
+            let frame_rule = rule.at(seconds, settings.reach, settings.alive, settings.seeds);
             // Every 8th frame: read back the left eye for the automatic exposure.
             world.capture = frames % 8 == 0;
-            world.draw(d, cmd, cameras, indices, seconds, &frame_rule, settings);
-            d.cmd_write_timestamp(cmd, vk::PipelineStageFlags::BOTTOM_OF_PIPE, queries, 1);
+            world.draw(d, cmd, queries, cameras, indices, seconds, &frame_rule, settings);
             d.end_command_buffer(cmd)?;
             d.reset_fences(&[fence])?;
             let commands = [cmd];
@@ -447,12 +447,14 @@ fn run(shaders: &Path) -> Result<()> {
                 fence,
             )?;
             d.wait_for_fences(&[fence], true, u64::MAX)?;
-            let mut stamps = [0u64; 2];
+            let mut stamps = [0u64; world::STAMPS as usize];
             if d
                 .get_query_pool_results(queries, 0, &mut stamps, vk::QueryResultFlags::TYPE_64)
                 .is_ok()
             {
-                gpu_ms += stamps[1].wrapping_sub(stamps[0]) as f64 * tick_ns / 1e6;
+                for (ms, pair) in gpu_ms.iter_mut().zip(stamps.windows(2)) {
+                    *ms += pair[1].wrapping_sub(pair[0]) as f64 * tick_ns / 1e6;
+                }
             }
         }
         if world.capture {
@@ -498,14 +500,15 @@ fn run(shaders: &Path) -> Result<()> {
         if frames % 120 == 0 {
             let forward = quaternion(views[0].pose.orientation) * Vec3::NEG_Z;
             let [r, g, b] = world.tone().map(|[k, w, y]| format!("{k:.2}..{w:.2}^{y:.2}"));
+            let [scene, splat, resolve, net, display] = gpu_ms.map(|ms| ms / 120.);
             println!(
-                "{frames} frames, GPU {:.3} ms/frame (both eyes), looking ({:.2}, {:.2}, {:.2}), exposure r {r} g {g} b {b}",
-                gpu_ms / 120.,
+                "{frames} frames, GPU {:.3} ms/frame (both eyes: scene {scene:.2} splat {splat:.2} resolve {resolve:.2} net {net:.2} display {display:.2}), looking ({:.2}, {:.2}, {:.2}), exposure r {r} g {g} b {b}",
+                scene + splat + resolve + net + display,
                 forward.x,
                 forward.y,
                 forward.z
             );
-            gpu_ms = 0.;
+            gpu_ms = [0.; world::STAMPS as usize - 1];
         }
     }
 }
