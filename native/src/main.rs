@@ -1,3 +1,4 @@
+mod city;
 mod gpu;
 mod rule;
 mod world;
@@ -163,6 +164,137 @@ fn camera(view: &xr::View, head: Vec3, origin: Vec3) -> EyeCamera {
     }
 }
 
+/// The controllers: trigger (zip), aim pose and haptics per hand.
+struct Hands {
+    set: xr::ActionSet,
+    paths: [xr::Path; 2],
+    zip: xr::Action<bool>,
+    buzz: xr::Action<xr::Haptic>,
+    aims: [xr::Space; 2],
+}
+
+/// One hand this frame: trigger held, and its aim ray in tracking space.
+struct Held {
+    pressed: bool,
+    ray: Option<(Vec3, Vec3)>,
+}
+
+impl Hands {
+    fn new(instance: &xr::Instance, session: &xr::Session<xr::Vulkan>) -> Result<Self> {
+        let set = instance.create_action_set("sunk", "Sunk City", 0)?;
+        let paths = [instance.string_to_path("/user/hand/left")?, instance.string_to_path("/user/hand/right")?];
+        let zip = set.create_action::<bool>("zip", "Zip toward a block", &paths)?;
+        let aim = set.create_action::<xr::Posef>("aim", "Aim", &paths)?;
+        let buzz = set.create_action::<xr::Haptic>("buzz", "Hit", &paths)?;
+        // The runtime picks a matching profile (or remaps one, as SteamVR does).
+        for (profile, trigger) in [
+            ("khr/simple_controller", "select/click"),
+            ("valve/index_controller", "trigger/click"),
+            ("oculus/touch_controller", "trigger/value"),
+        ] {
+            let mut bindings = Vec::new();
+            for hand in ["left", "right"] {
+                let path = |p: &str| instance.string_to_path(&format!("/user/hand/{hand}/{p}"));
+                bindings.push(xr::Binding::new(&zip, path(&format!("input/{trigger}"))?));
+                bindings.push(xr::Binding::new(&aim, path("input/aim/pose")?));
+                bindings.push(xr::Binding::new(&buzz, path("output/haptic")?));
+            }
+            let profile = instance.string_to_path(&format!("/interaction_profiles/{profile}"))?;
+            if let Err(error) = instance.suggest_interaction_profile_bindings(profile, &bindings) {
+                println!("Controller bindings for {profile:?} not accepted: {error}");
+            }
+        }
+        session.attach_action_sets(&[&set])?;
+        let aims = [
+            aim.create_space(session.clone(), paths[0], xr::Posef::IDENTITY)?,
+            aim.create_space(session.clone(), paths[1], xr::Posef::IDENTITY)?,
+        ];
+        Ok(Self { set, paths, zip, buzz, aims })
+    }
+
+    fn sync(&self, session: &xr::Session<xr::Vulkan>, space: &xr::Space, time: xr::Time) -> Result<[Held; 2]> {
+        session.sync_actions(&[xr::ActiveActionSet::new(&self.set)])?;
+        let mut held = [0, 1].map(|_| Held { pressed: false, ray: None });
+        for (i, out) in held.iter_mut().enumerate() {
+            out.pressed = self.zip.state(session, self.paths[i])?.current_state;
+            let location = self.aims[i].locate(space, time)?;
+            let valid = xr::SpaceLocationFlags::POSITION_VALID | xr::SpaceLocationFlags::ORIENTATION_VALID;
+            if location.location_flags.contains(valid) {
+                let pose = location.pose;
+                out.ray = Some((vector(pose.position), quaternion(pose.orientation) * Vec3::NEG_Z));
+            }
+        }
+        Ok(held)
+    }
+
+    fn buzz(&self, session: &xr::Session<xr::Vulkan>, hand: usize) {
+        let pulse = xr::HapticVibration::new()
+            .amplitude(0.6)
+            .frequency(xr::FREQUENCY_UNSPECIFIED)
+            .duration(xr::Duration::from_nanos(40_000_000));
+        let _ = self.buzz.apply_feedback(session, self.paths[hand], &pulse);
+    }
+}
+
+/// Zip toward blocks: holding a trigger anchors the controller's ray on a block and
+/// accelerates the player toward it; drag damps the velocity, so releasing glides to a
+/// stop. `position` is the world origin of the tracking space (camera() `origin`).
+#[derive(Default)]
+struct Zip {
+    position: Vec3,
+    velocity: Vec3,
+    anchors: [Option<Vec3>; 2],
+    was_pressed: [bool; 2],
+    altitude: Option<f32>,
+    last: Option<f32>,
+}
+
+impl Zip {
+    /// `settings`: altitude (m; its changes move the player up and down), pull (m/s²), drag (1/s).
+    #[allow(clippy::too_many_arguments)]
+    fn update(
+        &mut self,
+        held: &[Held; 2],
+        hands: &Hands,
+        session: &xr::Session<xr::Vulkan>,
+        seconds: f32,
+        head: Vec3,
+        eye: Vec3,
+        city: &city::City,
+        [altitude, pull, drag]: [f32; 3],
+    ) {
+        self.position.y += altitude - self.altitude.replace(altitude).unwrap_or(0.);
+        let dt = (seconds - self.last.replace(seconds).unwrap_or(seconds)).clamp(0., 0.1);
+        for (i, hand) in held.iter().enumerate() {
+            if hand.pressed && !self.was_pressed[i] {
+                self.anchors[i] = hand.ray.and_then(|(from, dir)| city.hit(from - head + self.position, dir, 150.));
+                if let Some(anchor) = self.anchors[i] {
+                    println!("Zip ({}): anchored {:.1} m away", ["left", "right"][i], anchor.distance(self.position + eye));
+                    hands.buzz(session, i);
+                }
+            }
+            if !hand.pressed {
+                self.anchors[i] = None;
+            }
+            self.was_pressed[i] = hand.pressed;
+        }
+        let player = self.position + eye;
+        for anchor in self.anchors.iter().flatten() {
+            let to = *anchor - player;
+            let distance = to.length();
+            // Fade out over the last 1.5 m, so the pull does not end in the wall.
+            self.velocity += to / distance.max(1e-3) * pull * (distance / 1.5).min(1.) * dt;
+        }
+        self.velocity *= (-drag * dt).exp();
+        self.position += self.velocity * dt;
+        let floor = 1. - eye.y;
+        if self.position.y < floor {
+            self.position.y = floor;
+            self.velocity.y = self.velocity.y.max(0.);
+        }
+    }
+}
+
 fn run(shaders: &Path) -> Result<()> {
     // OPENXR_LOADER overrides; on the Steam Frame SteamVR ships its own loader.
     let frame_loader = Path::new("/opt/steamvr/bin/linuxarm64/libopenxr_loader.so");
@@ -206,6 +338,7 @@ fn run(shaders: &Path) -> Result<()> {
     };
     let space =
         session.create_reference_space(xr::ReferenceSpaceType::LOCAL, xr::Posef::IDENTITY)?;
+    let hands = Hands::new(&instance, &session)?;
 
     let formats = session.enumerate_swapchain_formats()?;
     let format = [
@@ -329,6 +462,7 @@ fn run(shaders: &Path) -> Result<()> {
     let mut frames = 0u64;
     let mut gpu_ms = [0f64; world::STAMPS as usize - 1];
     let mut start = None;
+    let mut zip = Zip::default();
     // Live settings from the av-controls broker (CONTROLS, default wss://localhost:8080);
     // without a broker the defaults below stay.
     // FADERS="wild=0.5,color=0.3": other initial fader values (e.g. without a broker).
@@ -352,6 +486,8 @@ fn run(shaders: &Path) -> Result<()> {
         .fader_with("height", 1., 25., initial("height", 7.), 1)
         .fader_with("radius", 3., 100., initial("radius", 20.), 1)
         .fader_with("altitude", 0., 25., initial("altitude", 7.5), 1)
+        .fader_with("pull", 0., 60., initial("pull", 25.), 1)
+        .fader_with("drag", 0., 6., initial("drag", 2.5), 2)
         .fader("mid", 0., 1., initial("mid", 0.5))
         .fader_with("clip", 0., 0.2, initial("clip", 0.03), 3)
         .fader_with("black", 0., 0.3, initial("black", 0.05), 3)
@@ -434,7 +570,22 @@ fn run(shaders: &Path) -> Result<()> {
         let seconds = (time - *start.get_or_insert(time)).as_nanos() as f32 / 1e9;
         // Only the head centre is scaled; the stereo eye offset stays real.
         let head = (vector(views[0].pose.position) + vector(views[1].pose.position)) * 0.5 * (1. - stride);
-        let origin = Vec3::new(0., controls.get("altitude"), 0.);
+        // The tracked eye centre that remains after the head scaling (MOVE).
+        let eye = (vector(views[0].pose.position) + vector(views[1].pose.position)) * 0.5 - head;
+        let city = city::City {
+            cell: controls.get("cell"),
+            height: controls.get("height"),
+            radius: controls.get("radius"),
+            blocks: controls.get("blocks").round().max(1.) as u32,
+            player: glam::Vec2::new(zip.position.x + eye.x, zip.position.z + eye.z),
+        };
+        let held = hands.sync(&session, &space, time)?;
+        zip.update(&held, &hands, &session, seconds, head, eye, &city, [
+            controls.get("altitude"),
+            controls.get("pull"),
+            controls.get("drag"),
+        ]);
+        let origin = zip.position;
         let cameras = [camera(&views[0], head, origin), camera(&views[1], head, origin)];
         let settings = Settings {
             wild: controls.get("wild"),

@@ -64,6 +64,10 @@ Environment variables (on the Frame, set them in `native/frame/start.sh`):
 | `OVERSCAN` | 1.15    | Field-of-view margin for the compositor's reprojection |
 | `VALIDATE` | unset   | 1 = Vulkan validation layer |
 
+Controllers: point at a block and hold the trigger to zip toward it (it buzzes when it
+hits); release to glide to a stop. Both hands work at once. Bindings are suggested for the
+simple, Index and Touch profiles (Monado's qwerty device emulates simple controllers).
+
 Live faders (av-controls panel `sunk-city`). Without a broker these defaults apply:
 
 | Fader      | Default | Meaning |
@@ -73,7 +77,8 @@ Live faders (av-controls panel `sunk-city`). Without a broker these defaults app
 | `blocks`   | 24      | Blocks per side around the player |
 | `cell`, `height` | 4, 7 | Grid cell size and maximum block height (m) |
 | `radius`   | 20      | Gaussian falloff (m): blocks rise as you approach and sink as you leave |
-| `altitude` | 7.5     | Player height (m) |
+| `altitude` | 7.5     | Player height (m); changing it moves you up or down |
+| `pull`, `drag` | 25, 2.5 | Zip: acceleration toward the anchored block (m/s²) and velocity damping (1/s); top speed ≈ pull / drag |
 | `mid`, `clip`, `black`, `tint` | 0.5, 0.03, 0.05, 0.3 | Display auto-exposure, per channel: 80th percentile → `mid`, brightest `clip` fraction clips, darkest `black` fraction is 0; `tint` pulls the channels' mappings together (keeps some colour cast) |
 
 ## Layout
