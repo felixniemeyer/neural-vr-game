@@ -50,6 +50,17 @@ them, each shader's statistics (`stats ...`: registers, instructions) at start a
 For a command-line alternative to the Devkit Client there is
 [sdev](https://github.com/neguse/sdev) (unofficial). This is untested on a real Frame so far.
 
+## Windows PC VR (e.g. Oculus Rift), untested
+
+```sh
+rustup target add x86_64-pc-windows-gnu
+NET=nice-net native/build-windows.sh   # → build/windows/sunk-city/ (+ .zip), NET packs a trained net
+```
+
+On the PC: put `openxr_loader.dll` (x64, from a [Khronos OpenXR SDK release](https://github.com/KhronosGroup/OpenXR-SDK-Source/releases))
+next to `sunk-city.exe`, set the Meta/Oculus app as the active OpenXR runtime and run
+`start.bat`; the log goes to `sunk-city.log`. Needs a GPU with Vulkan and `shaderFloat16`.
+
 ## Settings
 
 Environment variables (on the Frame, set them in `native/frame/start.sh`):
