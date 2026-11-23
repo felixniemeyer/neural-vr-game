@@ -357,6 +357,8 @@ def rollout(net, data, batch, observe, record=False, start=None, dropout=0.0):
             step_loss = step_loss + cfg.train.stereo * eyes.disagreement(pred, near)
         loss = loss + step_loss
         total_known = total_known + batch["mask"][:, k + 1].amax((1, 2)).mean()  # steps on a real frame
+        if k == 0:
+            first = pred[:n]
         if record:
             frames.append((resolved[:n], hole[:n], pred[:n], truth[:n]))
         alpha = observe * torch.rand(len(pred), 1, 1, 1) * observed
@@ -364,6 +366,22 @@ def rollout(net, data, batch, observe, record=False, start=None, dropout=0.0):
         for channels in (RGB, slice(INV, INV + 1), VEL):
             state[:, channels] = pred[:, channels] * (1 - alpha) + truth[:, channels] * alpha
         state[:, CERT:CERT + 1] = pred[:, CERT:CERT + 1] * (1 - alpha) + alpha
+    if cfg.train.loop and steps > 1:
+        # Loop closure (f194df6e): camera k -> k+1 is p' = R_k p + t_k; compose steps 1..K-1
+        # (camera 1 -> K), invert, and splat the last prediction (left eye) back into camera
+        # 1 without motion (dt 0). Where both are covered and inside the crop, it must match.
+        rot = torch.eye(3).expand(n, 3, 3)
+        move = torch.zeros(n, 3)
+        for k in range(1, steps):
+            rk, tk = batch["R"][:, k], batch["t"][:, k]
+            rot, move = rk @ rot, torch.einsum("bij,bj->bi", rk, move) + tk
+        back_r = rot.transpose(1, 2)
+        back_t = -torch.einsum("bij,bj->bi", back_r, move)
+        warped, gone = splat(pred[:n], back_r, back_t, batch["rays"], batch["origin"], data.focal, cfg.data.size)
+        both = (1 - gone) * (first[:, INV:INV + 1] > 0).float() * batch["inner"]
+        diff = torch.cat([(warped[:, RGB] - first[:, RGB]).abs(),
+                          (warped[:, INV:INV + 1] - first[:, INV:INV + 1]).abs() * near], 1)
+        loss = loss + cfg.train.loop * (diff * both).mean() * total_known.clamp_min(1)
     return loss / total_known.clamp_min(1), frames, state
 
 
