@@ -15,13 +15,13 @@
   "committedIn": [],
   "status": {
     "state": "open",
-    "comment": "",
+    "comment": "Prepared 2026-11-23 (not started). Today the only geometry is box blocks drawn by scene.vert (30 vertices per instance, a rise gaussian, city.rs mirrors them for raycast/collision); scene.frag shades them and resolve blends them gently into the net's state. Cheapest route that fits this pipeline (no raymarcher needed): turn each block into a hexagonal prism with stacked rings (e.g. 6 sides x 8 segments, 6*8*6 + top = ~300 vertices per instance) and rotate each ring about the block axis by twist * height (per-block random twist sign/amount from the cell hash); taper the top into a point. The net then treats them like blocks. Collision/raycast in city.rs: use the prism's circumscribed cylinder (radius = half the cell footprint), same rise. Refraction (the idea's other half) needs a raymarched or screen-space pass and is a separate step. Open for Felix: crystals instead of the blocks, or mixed in (a fraction of cells, e.g. by hash), and should the night world keep lit windows on them?",
     "date": 1795166007349
   },
   "intrinsicValue": 0,
+  "cost": 5,
   "selfWeight": 1,
   "duration": 1,
   "costVariance": 0,
-  "valueVariance": 0,
-  "cost": 5
+  "valueVariance": 0
 }
