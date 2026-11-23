@@ -347,6 +347,12 @@ def rollout(net, data, batch, observe, record=False, start=None, dropout=0.0):
             step_loss = step_loss + cfg.train.texture * ((energy(image) - energy(target)).abs() * window).mean()
         if cfg.train.corridor:
             step_loss = step_loss + cfg.train.corridor * corridor(pred[:, RGB], truth[:, RGB], known)
+        if cfg.train.semigroup:
+            # Step-size consistency (ac841219: a 10 Hz periphery steps 100 ms at once): one
+            # step of tau should match two of tau / 2 on the same view, no truth needed.
+            halves = net(net(resolved, tau / 2), tau / 2)
+            both = [torch.cat([p[:, RGB], p[:, INV:INV + 1] * near], 1) for p in (pred, halves)]
+            step_loss = step_loss + cfg.train.semigroup * (both[0] - both[1]).abs().mean()
         if eyes.stereo:
             step_loss = step_loss + cfg.train.stereo * eyes.disagreement(pred, near)
         loss = loss + step_loss

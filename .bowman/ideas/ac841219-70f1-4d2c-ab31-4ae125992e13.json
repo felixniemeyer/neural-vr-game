@@ -11,9 +11,9 @@
   ],
   "committedIn": [],
   "status": {
-    "state": "open",
-    "comment": "Groundwork: eye gaze is now read (XR_EXT_eye_gaze_interaction) and available per eye as u.gaze (centred view coords) in all shaders; the focus fader uses it. Multi-resolution layers themselves not started.",
-    "date": 1795225101725
+    "state": "partially",
+    "comment": "Groundwork: eye gaze is read (XR_EXT_eye_gaze_interaction), u.gaze per eye in all shaders; the focus fader uses it. 2026-11-23: train.semigroup loss added (one step of tau vs two of tau/2, no truth). Measured on nice-net, random state, tau = 2.4 (100 ms at rate 24): the semigroup gap is 0.0014 vs a mean rgb step of 0.029 (~5%), so a 100 ms periphery step is already roughly consistent with small steps; the loss is a safeguard, not urgent. Multi-resolution layers in the app not started.",
+    "date": 1795466855503
   },
   "intrinsicValue": 0,
   "cost": 5,

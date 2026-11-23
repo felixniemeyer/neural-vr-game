@@ -62,6 +62,7 @@ class Train:
     edge_weight: float = 1.0    # loss on image gradients
     texture: float = 0.0        # loss on local edge energy (8x8 windows, position-free)
     corridor: float = 0.0       # loss when mean luminance leaves truth +-0.05 or contrast drops below 0.8x truth's
+    semigroup: float = 0.0      # weight of |net(x, tau) - net(net(x, tau/2), tau/2)|: big steps agree with small ones
     dropout: float = 0.0        # max fraction of the resolved state knocked out per step (blobs), to regenerate
     preview: int = 250          # write preview + export every n iterations
     threads: int = 0            # torch threads, 0 = all
