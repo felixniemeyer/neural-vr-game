@@ -443,7 +443,7 @@ def main():
         # Fresh optimiser and schedule, the weights of an export (same layout).
         source = (project / config.train.init).resolve()
         missing, _ = net.load_state_dict(load_export(source).state_dict(), strict=False)
-        assert all(k.startswith("down.") for k in missing), missing  # new learned downsampling starts at zero
+        assert all(k.startswith(("down.", "copy_head.")) for k in missing), missing  # new parts start at zero
         print(f"starting from {source}")
     print(f"net: {net.inputs} inputs, layers {[l.out_channels for l in net.layers]}, "
           f"{sum(p.numel() for p in net.parameters())} weights, {len(net.taps) + 1} taps")

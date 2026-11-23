@@ -92,6 +92,7 @@ class Net(nn.Module):
         self.near, self.levels, self.max_change, self.rate = n.near, n.levels, n.max_change, n.rate
         self.background = n.background
         self.gate = n.gate
+        self.copy = n.copy
         self.tau_input = True
         self.taps = tap_offsets(n.levels, n.points)
         self.channels = 8 + n.hidden_state
@@ -103,6 +104,14 @@ class Net(nn.Module):
         child = 4 + 1 + n.hidden_state
         self.down = nn.ModuleList(nn.Conv2d(4 * child, n.hidden_state, 1) for _ in range(n.levels - 1)) \
             if n.down else None
+        # Infilling vectors (net.copy px): a zero-initialised head predicts, for hole pixels,
+        # where to copy the filled state from (offset within +-copy px) instead of keeping
+        # push-pull's blur. Starts as the plain net.
+        self.copy_head = nn.Conv2d(sizes[-2], 2, 1) if n.copy else None
+        if self.copy_head is not None:
+            with torch.no_grad():
+                self.copy_head.weight.zero_()
+                self.copy_head.bias.zero_()
         if self.down is not None:
             with torch.no_grad():
                 for conv in self.down:
@@ -157,6 +166,16 @@ class Net(nn.Module):
 
         for layer in self.layers[:-1]:
             x = F.relu(layer(x))
+        if self.copy_head is not None:
+            offset = self.copy * torch.tanh(self.copy_head(x)).permute(0, 2, 3, 1)  # [B, H, W, 2] px
+            scale = torch.tensor([2.0 / w, 2.0 / h], device=state.device)
+            grid = self.grid(h, w, 0, 0, state.device).expand(b, -1, -1, -1) + offset * scale
+            copied = F.grid_sample(filled, grid, mode="bilinear", padding_mode="border", align_corners=False)
+            hole = 1 - valid
+            filled = filled.clone()
+            for channels in (RGB, slice(INV, INV + 1), HID):
+                filled[:, channels] = filled[:, channels] * valid + copied[:, channels] * hole
+            inv_self = filled[:, INV:INV + 1]
         delta = self.max_change * tau * torch.tanh(self.layers[-1](x))
         if self.gate:  # net.gate: confident (well-observed) pixels change less
             delta = delta * (1 - self.gate * filled[:, CERT:CERT + 1].clamp(0, 1))
@@ -171,10 +190,10 @@ class Net(nn.Module):
 
     def export(self, folder: Path, config, max_tau=1.0):
         """net.json (layout) + weights.bin (float32: per layer W [out][in] row-major, then b;
-        then the same for each learned downsampling conv, if any, level 1 first)."""
+        then the same for each learned downsampling conv, if any, level 1 first, then the copy head)."""
         folder.mkdir(parents=True, exist_ok=True)
         blobs = []
-        for layer in list(self.layers) + list(self.down or []):
+        for layer in list(self.layers) + list(self.down or []) + ([self.copy_head] if self.copy_head is not None else []):
             blobs += [layer.weight[:, :, 0, 0].detach().float().numpy().ravel(), layer.bias.detach().float().numpy()]
         np.concatenate(blobs).astype("<f4").tofile(folder / "weights.bin")
         (folder / "net.json").write_text(json.dumps({
@@ -182,7 +201,7 @@ class Net(nn.Module):
             "layers": [[l.in_channels, l.out_channels] for l in self.layers],
             "taps": [list(t) for t in self.taps], "levels": self.levels,
             "hidden_state": config.net.hidden_state, "near": self.near, "max_change": self.max_change,
-            "rate": self.rate, "max_tau": max_tau, "background": self.background, "gate": self.gate,
+            "rate": self.rate, "max_tau": max_tau, "background": self.background, "gate": self.gate, "copy": self.copy,
             "down": [[c.in_channels, c.out_channels] for c in self.down] if self.down is not None else [],
         }, indent=1))
 
@@ -254,13 +273,14 @@ def load_export(folder: Path) -> Net:
     config.net.down = bool(spec.get("down"))
     config.net.background = spec.get("background", 0.0)
     config.net.gate = spec.get("gate", 0.0)
+    config.net.copy = spec.get("copy", 0.0)
     net = Net(config)
     net.tau_input = "rate" in spec
     assert [list(t) for t in net.taps] == [list(t) for t in spec["taps"]], "tap layout differs"
     flat = torch.tensor(np.fromfile(Path(folder) / "weights.bin", dtype="<f4"))
     at = 0
     with torch.no_grad():
-        for layer in list(net.layers) + list(net.down or []):
+        for layer in list(net.layers) + list(net.down or []) + ([net.copy_head] if net.copy_head is not None else []):
             n = layer.weight.numel()
             layer.weight.copy_(flat[at:at + n].view_as(layer.weight))
             at += n

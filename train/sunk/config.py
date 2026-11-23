@@ -41,6 +41,7 @@ class Net:
     rate: float = 24.0          # net ticks per second: a step of dt seconds is tau = dt * rate ticks
     background: float = 0.0     # push-pull fill weights valid pixels by (min inv / inv)^background: holes fill from the far side
     gate: float = 0.0           # the update is scaled by 1 - gate * certainty: well-observed pixels drift less
+    copy: float = 0.0           # infilling vectors: holes copy the filled state from a predicted offset (<= copy px); 0 = off
     down: bool = False          # learned downsampling: coarse levels' hidden channels get a 1x1 conv over 2x2 children
 
 
