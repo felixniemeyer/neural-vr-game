@@ -15,13 +15,13 @@
   "committedIn": [],
   "status": {
     "state": "partially",
-    "comment": "Hole-aware mip pyramid (GPU blits of premultiplied resolved state) with push-pull fill of holes, then the trained per-pixel net reads triangle taps on 5 mip levels. Implemented in torch + net.frag, parity-checked (commit e6df8e5). No per-level learned conv yet.",
+    "comment": "Hole-aware mip pyramid with push-pull fill + per-pixel net reading triangle taps on 5 levels (torch + net.frag, parity e6df8e5). 2026-11-23: learned downsampling in torch (net.down, a124954): per level a zero-initialised 1x1 conv over the 2x2 children (rgb, inv*near, hidden, coverage) added to the averaged hidden channels. A/B from nice-net, 500 its, same config otherwise (runs/down vs runs/nodrop; down was resumed once from its it-250 checkpoint after an earlyoom kill): 96-frame val 0.1476 vs 0.1560 (-5%); evaluate.py 64x96: all pixels net vs push-pull -14.0% vs -18.9%, holes +11.8% vs +12.1%. So: less drift over long rollouts, no gain on holes. Not in the runtime yet (needs a per-level pass instead of the C-image blits in world.rs build_mips; net.json 'down' + weights appended). Next: a longer run (2000 its) before porting.",
     "date": 1795321974944
   },
   "intrinsicValue": 0,
+  "cost": 3,
   "selfWeight": 1,
   "duration": 1,
   "costVariance": 0,
-  "valueVariance": 0,
-  "cost": 3
+  "valueVariance": 0
 }
