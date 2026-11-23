@@ -47,15 +47,19 @@ def tap_offsets(levels, points):
     return taps
 
 
-def pyramid(state, levels, down=None, near=1.0):
+def pyramid(state, levels, down=None, near=1.0, weight=None):
     """Hole-aware mips: average of valid pixels only. Returns [(values, coverage)].
 
     down: optional learned downsampling, one 1x1 conv per level 1.. over the 2x2 children
     (pixel-unshuffled; per child rgb, inv * near, hidden, coverage, normalised). Its output
     is added to the averaged hidden channels, so the coarse levels carry learned features
     (partial-conv style: empty children contribute zeros, their coverage says so).
+    weight: optional per-pixel weight [B, 1, H, W] of valid pixels (coverage becomes a sum
+    of weights, so only use it where values are read normalised, as the fill does).
     """
     valid = (state[:, INV:INV + 1] > 0).float()
+    if weight is not None:
+        valid = valid * weight
     level = (state * valid, valid)
     out = []
     for index in range(levels):
@@ -86,6 +90,7 @@ class Net(nn.Module):
         n = config.net
         assert n.hidden_state % 4 == 0 and all(h % 4 == 0 for h in n.hidden)
         self.near, self.levels, self.max_change, self.rate = n.near, n.levels, n.max_change, n.rate
+        self.background = n.background
         self.tau_input = True
         self.taps = tap_offsets(n.levels, n.points)
         self.channels = 8 + n.hidden_state
@@ -121,10 +126,16 @@ class Net(nn.Module):
         mips = pyramid(state, self.levels, self.down, self.near)
         valid = (state[:, INV:INV + 1] > 0).float()
 
-        # Push-pull hole fill: the finest pyramid level that has data here.
+        # Push-pull hole fill: the finest pyramid level that has data here. With
+        # net.background > 0 the fill prefers far pixels (disocclusions reveal background):
+        # weight (inv * near)^-background (read normalised, so the scale does not matter).
+        fill_mips = mips
+        if self.background > 0:
+            far = (state[:, INV:INV + 1] * self.near).clamp_min(1e-3) ** -self.background
+            fill_mips = pyramid(state, self.levels, weight=far)
         filled = state
         need = 1 - valid
-        for level in mips[1:]:
+        for level in fill_mips[1:]:
             value, covered = read(level, self.grid(h, w, 0, 0, state.device).expand(b, -1, -1, -1))
             take = need * covered
             filled = filled * (1 - take) + value * take
@@ -168,7 +179,7 @@ class Net(nn.Module):
             "layers": [[l.in_channels, l.out_channels] for l in self.layers],
             "taps": [list(t) for t in self.taps], "levels": self.levels,
             "hidden_state": config.net.hidden_state, "near": self.near, "max_change": self.max_change,
-            "rate": self.rate, "max_tau": max_tau,
+            "rate": self.rate, "max_tau": max_tau, "background": self.background,
             "down": [[c.in_channels, c.out_channels] for c in self.down] if self.down is not None else [],
         }, indent=1))
 
@@ -238,6 +249,7 @@ def load_export(folder: Path) -> Net:
     config.net.max_change = spec["max_change"]
     config.net.rate = spec.get("rate", 10.0)  # older nets: one tick per 10 fps video frame
     config.net.down = bool(spec.get("down"))
+    config.net.background = spec.get("background", 0.0)
     net = Net(config)
     net.tau_input = "rate" in spec
     assert [list(t) for t in net.taps] == [list(t) for t in spec["taps"]], "tap layout differs"

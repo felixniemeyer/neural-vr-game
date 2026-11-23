@@ -11,9 +11,9 @@
   ],
   "committedIn": [],
   "status": {
-    "state": "open",
-    "comment": "",
-    "date": 1795466553012
+    "state": "partially",
+    "comment": "Read (abstracts; the full PDFs exceed the fetch limit): Kanchana et al. WACV 2022 (2110.08805) fill holes with an infilling VECTOR (copy offset to a non-disoccluded pixel), inputs: temporal prior of past infilling directions + normalised depth; they argue it beats intensity infilling. PatchEX: patch-based inpainting + shadow prediction in parallel sub-frames, 6x faster than ExtraNet; no detail on colour vs offset. Two cheap experiments for train/ (A/B vs nodrop on eval96 holes): (1) background-biased push-pull: in pyramid(), weight each pixel by far-ness (e.g. (inv_min/inv)^k) so holes fill from the background side; no extra net cost. (2) the net outputs 2 extra channels = a copy offset for hole pixels, the hole takes the resolved state read at pixel + offset (infilling vector). Next: run (1) after runs/down finishes (one training at a time fits in RAM).",
+    "date": 1795466646733
   },
   "intrinsicValue": 0,
   "cost": 2,
