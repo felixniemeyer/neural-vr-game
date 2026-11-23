@@ -64,6 +64,7 @@ class Train:
     edge_weight: float = 1.0    # loss on image gradients
     texture: float = 0.0        # loss on local edge energy (8x8 windows, position-free)
     corridor: float = 0.0       # loss when mean luminance leaves truth +-0.05 or contrast drops below 0.8x truth's
+    spectrum: float = 0.0       # radially averaged log power spectrum of luminance vs truth's (position-free, against blur)
     loop: float = 0.0           # loop closure: the last step's prediction warped back to step 1's camera must match step 1's
     semigroup: float = 0.0      # weight of |net(x, tau) - net(net(x, tau/2), tau/2)|: big steps agree with small ones
     dropout: float = 0.0        # max fraction of the resolved state knocked out per step (blobs), to regenerate

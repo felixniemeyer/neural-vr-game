@@ -296,6 +296,23 @@ def corridor(pred, truth, known, slack=0.05, contrast=0.8):
     return (F.relu((mp - mt).abs() - slack) + F.relu(contrast * st - sp)).mean()
 
 
+def spectrum(x, known, bands=8):
+    """Radially averaged log power spectrum of luminance [B, bands] (train.spectrum),
+    unknown pixels set to the known mean so the mask edge adds little power."""
+    y = x.mean(1, keepdim=True)
+    mean = (y * known).sum((2, 3), keepdim=True) / known.sum((2, 3), keepdim=True).clamp_min(1)
+    y = (y - mean) * known
+    power = torch.fft.rfft2(y[:, 0]).abs() ** 2
+    h, w = y.shape[2:]
+    fy = torch.fft.fftfreq(h).abs()[:, None]
+    fx = torch.fft.rfftfreq(w)[None, :]
+    radius = (fx ** 2 + fy ** 2).sqrt() / 0.5 * bands  # 0 .. ~bands * sqrt(2)
+    band = radius.clamp(max=bands - 1).long()
+    out = torch.zeros(len(y), bands).index_add_(1, band.flatten(), power.flatten(1))
+    count = torch.zeros(bands).index_add_(0, band.flatten(), torch.ones(band.numel()))
+    return torch.log(out / count.clamp_min(1) + 1e-6)
+
+
 def knock_out(resolved, hole, most):
     """Dropout (train.dropout): blobs of about 8 px (smooth noise, thresholded) covering
     up to `most` of each sample become holes (all channels 0, as the splat leaves them),
@@ -345,6 +362,10 @@ def rollout(net, data, batch, observe, record=False, start=None, dropout=0.0):
                 return F.avg_pool2d(g, 8, stride=4)
             window = F.avg_pool2d(known[..., :-1, :-1], 8, stride=4) > 0.99
             step_loss = step_loss + cfg.train.texture * ((energy(image) - energy(target)).abs() * window).mean()
+        if cfg.train.spectrum:
+            full = (known.amin((2, 3)) > 0).float()[:, 0]  # only samples whose crop is fully known
+            gap = (spectrum(image[:, RGB], known) - spectrum(target[:, RGB], known)).abs().mean(1)
+            step_loss = step_loss + cfg.train.spectrum * (gap * full).mean()
         if cfg.train.corridor:
             step_loss = step_loss + cfg.train.corridor * corridor(pred[:, RGB], truth[:, RGB], known)
         if cfg.train.semigroup:
