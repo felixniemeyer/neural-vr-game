@@ -22,9 +22,9 @@
   ],
   "committedIn": [],
   "status": {
-    "state": "partially",
-    "comment": "A/B, 500 its each from nice-net (runs/nodrop vs runs/drop30, dropout 0.3). Validation of drop30 also had dropout holes (bug, fixed: dropout now only in training rollouts), so compare against each run's own push-pull: nodrop short 0.0769 vs pp 0.0777 (-1%), 96 frames 0.1560 vs 0.1349 (+16% worse); drop30 short 0.0913 vs pp 0.0982 (-7%: it learned to regenerate knocked-out blobs), 96 frames 0.1800 vs 0.1677 (+7% worse). Suggestive, not conclusive. Clean comparison queued: evaluate.py both nets at 96 steps without dropout, after deep24 finishes (memory: one job at a time) -> runs/<r>/eval96.txt.",
-    "date": 1795380103192
+    "state": "implemented",
+    "comment": "train.dropout implemented (119fc0f, training rollouts only since d9807ed); border regeneration via head-turn augmentation (ddb3c27f). Clean result, evaluate.py 64 rollouts x 96 frames without dropout (runs/*/eval96.txt): nodrop: net vs push-pull -18.9% all pixels, +12.1% holes; drop30: -21.0% all, +11.2% holes. Dropout 0.3 gives no gain on holes and is slightly worse overall; keep train.dropout = 0 by default.",
+    "date": 1795467723786
   },
   "intrinsicValue": 0,
   "cost": 1,

@@ -30,7 +30,8 @@
         -1.08,
         -3.59
       ],
-      "weight": 9.444444444444445
+      "weight": 9.444444444444445,
+      "reflection": "Did not hold: extra interior holes (dropout 0.3, 500 its from nice-net) did not improve 96-frame hole filling (+11.2% vs push-pull, against +12.1% without dropout) and cost 2% on all pixels."
     },
     {
       "ideaId": "c5bf4b6f-75ac-467e-a4a1-acbbbe41e5a8",
