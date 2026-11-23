@@ -46,6 +46,8 @@ class Net:
 @dataclass
 class Train:
     crop: int = 32              # training crop (px at data.size); the net is per pixel
+    margin: int = 0             # state margin around the crop (px each side, like the app's OVERSCAN): it is
+                                # simulated and observed, but losses and evaluation count only the crop
     steps: int = 8              # net steps per iteration (BPTT)
     strides: list = field(default_factory=lambda: [1.0])  # video frames per net step, drawn per sample
     horizon: int = 8            # video frames a sample follows its clip, continuing from its own state

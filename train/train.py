@@ -110,7 +110,7 @@ class Footage:
         while True:
             c, t0 = self.starts[rng.integers(len(self.starts))]
             if self.usable(c, t0, frames):
-                ox, oy = rng.integers(self.config.data.size - cfg.crop + 1, size=2)
+                ox, oy = rng.integers(self.config.data.size - cfg.crop - 2 * cfg.margin + 1, size=2)
                 baseline = cfg.baseline * rng.random() if cfg.stereo else 0.0
                 return (c, t0, ox, oy, stride, baseline)
 
@@ -129,9 +129,13 @@ class Footage:
         unchanged), unknown outside the real frame (mask).
         """
         cfg = self.config
-        k, crop, size, near = steps or cfg.train.steps, cfg.train.crop, cfg.data.size, cfg.net.near
+        k, size, near = steps or cfg.train.steps, cfg.data.size, cfg.net.near
+        margin = cfg.train.margin
+        crop = cfg.train.crop + 2 * margin  # the simulated state; losses see the inner crop
         picks = picks or [self.pick(rng, k) for _ in range(n)]
-        out = {key: [] for key in ("rgb", "inv", "vel", "R", "t", "rays", "origin", "mask", "dt", "baseline")}
+        out = {key: [] for key in ("rgb", "inv", "vel", "R", "t", "rays", "origin", "mask", "dt", "baseline", "inner")}
+        inner = torch.zeros(1, crop, crop)
+        inner[:, margin:crop - margin, margin:crop - margin] = 1
         radial = self.rays.norm(dim=-1)
         for c, t0, ox, oy, stride, baseline in picks:
             chunk, fps = self.chunks[c], self.chunks[c]["fps"]
@@ -164,7 +168,7 @@ class Footage:
                 steps_t = [roots[j // n_sub][1] for j in range(k)]
                 lands = [j // n_sub if j % n_sub == 0 else None for j in range(k + 1)]
 
-            angle = np.arctan(cfg.train.turn * crop * rng.random() / self.focal)
+            angle = np.arctan(cfg.train.turn * cfg.train.crop * rng.random() / self.focal)
             axis = rng.normal(size=2)
             axis = torch.tensor([*axis / np.linalg.norm(axis), 0.0], dtype=torch.float32)
             turns = torch.stack([rotation(axis, angle * np.sin(np.pi * j / k)) for j in range(k + 1)])
@@ -195,6 +199,7 @@ class Footage:
             out["mask"].append(mask)
             out["dt"].append(torch.tensor(float(stride) / fps))
             out["baseline"].append(torch.tensor(float(baseline)))
+            out["inner"].append(inner)
         return {key: torch.stack(v) for key, v in out.items()}
 
 
@@ -322,7 +327,8 @@ def rollout(net, data, batch, observe, record=False, start=None, dropout=0.0):
         if dropout:  # training only (train.dropout); validation sees the real holes
             resolved, hole = knock_out(resolved, hole, dropout)
         pred = net(resolved, tau)
-        truth, known = eyes.truth(k + 1, net.channels)
+        truth, observed = eyes.truth(k + 1, net.channels)
+        known = observed * eyes.both(batch["inner"])  # losses: the crop without the margin
         weight = (1 + cfg.train.hole_weight * hole) * known
         image = torch.cat([pred[:, RGB], pred[:, INV:INV + 1] * near], 1)
         target = torch.cat([truth[:, RGB], truth[:, INV:INV + 1] * near], 1)
@@ -347,7 +353,7 @@ def rollout(net, data, batch, observe, record=False, start=None, dropout=0.0):
         total_known = total_known + batch["mask"][:, k + 1].amax((1, 2)).mean()  # steps on a real frame
         if record:
             frames.append((resolved[:n], hole[:n], pred[:n], truth[:n]))
-        alpha = observe * torch.rand(len(pred), 1, 1, 1) * known
+        alpha = observe * torch.rand(len(pred), 1, 1, 1) * observed
         state = pred.clone()
         for channels in (RGB, slice(INV, INV + 1), VEL):
             state[:, channels] = pred[:, channels] * (1 - alpha) + truth[:, channels] * alpha

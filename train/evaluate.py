@@ -38,7 +38,7 @@ def run(change):
                                    data.focal, config.data.size, batch["dt"])
             state = net(resolved, batch["dt"] * net.rate)
             truth = truth_state(batch, k + 1, net.channels)
-            known = batch["mask"][:, k + 1, None]
+            known = batch["mask"][:, k + 1, None] * batch["inner"]
             error = torch.cat([(state[:, RGB] - truth[:, RGB]).abs(),
                                (state[:, INV:INV + 1] - truth[:, INV:INV + 1]).abs() * near], 1).mean(1, keepdim=True)
             totals[k] = [(error * known).sum() / known.sum(),
