@@ -9,7 +9,17 @@
     "major-hypothesis-loop",
     "funding"
   ],
-  "supportingConnections": [],
+  "supportingConnections": [
+    {
+      "ideaId": "c0469046-f50d-49fb-8f3c-8f157e9ae965",
+      "relativePosition": [
+        3.09,
+        -2.13
+      ],
+      "weight": 1,
+      "hypothesis": "A public demo with numbers strengthens a grant pitch more than a description alone."
+    }
+  ],
   "supportedIdeas": [
     "cef4ba30-abf6-4a9e-a9f9-0a3adac6a801",
     "eb5bdfa5-df6c-447b-9b94-e93b9e0bc7ec"

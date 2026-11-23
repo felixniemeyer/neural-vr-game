@@ -1,0 +1,28 @@
+{
+  "id": "c0469046-f50d-49fb-8f3c-8f157e9ae965",
+  "text": "Publish a short demo + write-up: a ~5k-weight world renderer at 90 Hz stereo on a mobile GPU, as the opposite end of 5B-parameter world models",
+  "description": "RESEARCHED (2026-11-23): real-time world models are scaling up, not down: Matrix-Game 3.0 does 40 fps at 720p with 5B params; LingBot-World-Infinity 720p/60 fps distilled; ABot-World-0 16 fps on an RTX 5090 (huggingface.co/papers/2606.30292). Money: Reactor raised $59M (Lightspeed, May 2026) for a real-time world-model developer platform (hpcwire.com/aiwire/2026/05/29/reactor-emerges-from-stealth-with-59m-to-build-the-platform-for-real-time-ai-worlds/); Overworld $4.5M pre-seed for local-first diffusion world models (Jan 2026). Also: \"From Pixels to States: Rethinking Interactive World Models as Game Engines\" (huggingface.co/papers/2607.14076), close to our explicit-state design. OBSERVED: ours is ~5k weights, 6.3 ms for 2x512^2 on a Vega iGPU, stereo, head-locked by reprojection. Step: 60-90 s screen capture (day/night, swing, time-stop) + a one-page write-up (architecture diagram, numbers, eval96 vs push-pull), posted where world-model and XR people read (X/Bluesky, r/vrdev, a short arXiv/blog). Needs Felix to record in the headset and to choose where to post.",
+  "archived": false,
+  "color": "#2d6647",
+  "tags": [
+    "hypothesis",
+    "major-hypothesis-loop"
+  ],
+  "supportingConnections": [],
+  "supportedIdeas": [
+    "cef4ba30-abf6-4a9e-a9f9-0a3adac6a801",
+    "7ffd71cd-aeab-4193-a177-abddfaaebf1a"
+  ],
+  "committedIn": [],
+  "status": {
+    "state": "open",
+    "comment": "",
+    "date": 1795466895036
+  },
+  "intrinsicValue": 0,
+  "cost": 2,
+  "selfWeight": 1,
+  "duration": 1,
+  "costVariance": 0,
+  "valueVariance": 0
+}
