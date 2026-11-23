@@ -15,9 +15,9 @@
   ],
   "committedIn": [],
   "status": {
-    "state": "open",
-    "comment": "",
-    "date": 1795466895036
+    "state": "human-dependent",
+    "comment": "Prepared: docs/demo-writeup.md (draft post, numbers from the repo; placeholders for the repo link, what to ask for, and the best eval run). Human steps: (1) record 60-90 s in the headset (day/night fader, swing, time-stop); (2) decide whether to post and where (X/Bluesky, r/vrdev, blog), and what to ask for (GPU time, collaborators, funding); (3) fill the placeholders.",
+    "date": 1795466930108
   },
   "intrinsicValue": 0,
   "cost": 2,
