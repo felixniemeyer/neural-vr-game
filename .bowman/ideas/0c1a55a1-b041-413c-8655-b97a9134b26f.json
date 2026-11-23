@@ -14,9 +14,9 @@
   ],
   "committedIn": [],
   "status": {
-    "state": "open",
-    "comment": "Prepared 2026-11-23 (not started). Today the only geometry is box blocks drawn by scene.vert (30 vertices per instance, a rise gaussian, city.rs mirrors them for raycast/collision); scene.frag shades them and resolve blends them gently into the net's state. Cheapest route that fits this pipeline (no raymarcher needed): turn each block into a hexagonal prism with stacked rings (e.g. 6 sides x 8 segments, 6*8*6 + top = ~300 vertices per instance) and rotate each ring about the block axis by twist * height (per-block random twist sign/amount from the cell hash); taper the top into a point. The net then treats them like blocks. Collision/raycast in city.rs: use the prism's circumscribed cylinder (radius = half the cell footprint), same rise. Refraction (the idea's other half) needs a raymarched or screen-space pass and is a separate step. Open for Felix: crystals instead of the blocks, or mixed in (a fraction of cells, e.g. by hash), and should the night world keep lit windows on them?",
-    "date": 1795166007349
+    "state": "partially",
+    "comment": "First step in code: fader `crystals` (city tab, 0..1, default 0) = fraction of cells (by cell hash) drawn as twisted hexagonal prisms in scene.vert: 6 sides x 6 rings, per-cell twist up to +-3 rad over the height, taper to 0.65, six-sided tip over the top 20%, flat facet normals; scene instance now draws 234 vertices (boxes use the first 30). Collision/raycast still use the cell's box (contains the crystal). Verified: glslangValidator compiles scene.vert, cargo check passes. NOT yet seen: needs a look in dev.sh (set crystals to 0.3-1). Refraction not started. Open for Felix: replace the blocks or mix (the fader answers it live), keep night windows on crystals?",
+    "date": 1795467044650
   },
   "intrinsicValue": 0,
   "cost": 5,

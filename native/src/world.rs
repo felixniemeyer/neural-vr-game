@@ -26,6 +26,8 @@ pub const EYES: usize = 2;
 const STATE: vk::Format = vk::Format::R16G16B16A16_SFLOAT;
 const SINGLE: vk::Format = vk::Format::R16_SFLOAT;
 const DEPTH: vk::Format = vk::Format::D32_SFLOAT;
+/// Vertices per scene instance: a crystal (scene.vert: 6 sides x 6 rings x 6 + 6 x 3 tip).
+const SCENE_VERTICES: u32 = 6 * 6 * 6 + 18;
 /// State images per eye (A, B, C); the resolved state matches them.
 const STATES: usize = 3;
 /// Splat accumulators per eye (the three state images + the weight).
@@ -70,6 +72,8 @@ pub struct Settings {
     pub blocks: u32,
     pub cell: f32,
     pub height: f32,
+    /// Fraction of cells drawn as twisted crystals (scene.vert).
+    pub crystals: f32,
 }
 
 #[repr(C, align(16))]
@@ -733,7 +737,7 @@ impl World {
             net_run: rule.run,
             net_layers: rule.layers,
             net_taps: rule.taps,
-            city: [settings.cell, settings.height, 0., settings.blocks as f32],
+            city: [settings.cell, settings.height, settings.crystals, settings.blocks as f32],
             // Per-second rates as this frame's blend weights (frame-rate independent).
             mixing: [1. - (-settings.color * dt).exp(), if settings.sky > 0. { 1. / settings.sky.max(1.) } else { 0. }, 1. - (-settings.depth * dt).exp(), settings.focus],
             player: {
@@ -812,7 +816,7 @@ impl World {
                 d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.scene);
                 push(eye, eye, 0);
                 // The blocks, and one more instance: the ground plate.
-                d.cmd_draw(cmd, 30, settings.blocks * settings.blocks + 1, 0, 0);
+                d.cmd_draw(cmd, SCENE_VERTICES, settings.blocks * settings.blocks + 1, 0, 0);
                 d.cmd_end_render_pass(cmd);
             }
             stamp(1);

@@ -36,6 +36,40 @@ float rise(vec2 center, vec2 player) {
     return max(g - edge, 0.0) / (1.0 - edge);
 }
 
+// A twisted crystal in its cell: a hexagonal prism of RINGS segments whose rings turn
+// about the axis with height (per cell: direction and amount) and taper, closed by a
+// six-sided tip. Flat-shaded facets; normals are the facets' mid directions (the twist's
+// tilt ignored). city.rs still collides with the cell's box, which contains it.
+const int RINGS = 6;
+void crystal(ivec2 cell, vec2 center, float radius, float height) {
+    float twist = (hash(vec3(cell, 21.3)) - 0.5) * 6.0; // radians over the full height
+    float body = 0.8;                                    // the tip takes the rest
+    int v = gl_VertexIndex;
+    int side, ring;
+    float s, k;                                          // side corner (0/1), ring height (0/1)
+    if (v < 6 * RINGS * 6) {
+        side = v / (RINGS * 6);
+        ring = (v / 6) % RINGS;
+        int q = quad[v % 6];                             // 0..3: (0,0) (0,1) (1,1) (1,0)
+        s = float(q >= 2);
+        k = float(q == 1 || q == 2);
+    } else {
+        int t = v - 6 * RINGS * 6;
+        side = t / 3;
+        ring = RINGS;
+        int q = t % 3;                                   // base corner, base corner, apex
+        s = float(q == 1);
+        k = float(q == 2);
+    }
+    float h0 = float(ring) / float(RINGS) * body;
+    float h = ring < RINGS ? h0 + k * body / float(RINGS) : body + k * (1.0 - body);
+    float taper = ring < RINGS ? 1.0 - 0.35 * h / body : 0.65 * (1.0 - k);
+    float angle = 1.0471976 * (float(side) + s) + twist * h;
+    float mid = 1.0471976 * (float(side) + 0.5) + twist * (ring < RINGS ? h0 + 0.5 * body / float(RINGS) : body);
+    vWorld = vec3(center.x + cos(angle) * radius * taper, h * height, center.y + sin(angle) * radius * taper);
+    vNormal = normalize(vec3(cos(mid), ring < RINGS ? 0.15 : 0.8, sin(mid)));
+}
+
 void main() {
     int n = int(u.city.w);
     float cellSize = u.city.x;
@@ -61,12 +95,17 @@ void main() {
         float previous = base * rise(center, u.player.zw);
         if (height < 1e-3) return;
         float inset = cellSize * (0.12 + 0.12 * hash(vec3(cell, 9.1))); // half street width
+        if (hash(vec3(cell, 13.7)) < u.city.z) {
+            crystal(cell, center, cellSize * 0.5 - inset, height);
+        } else {
+        if (gl_VertexIndex >= 30) return;
         int face = gl_VertexIndex / 6;
         vec3 corner = corners[face * 4 + quad[gl_VertexIndex % 6]];
         vec2 low = vec2(cell) * cellSize + inset;
         vec2 span = vec2(cellSize - 2.0 * inset);
         vWorld = vec3(low.x + corner.x * span.x, corner.y * height, low.y + corner.z * span.y);
         vNormal = normals[face];
+        }
         vRise = (height - previous) / max(u.step.x, 1e-3) / height;
         float id = hash(vec3(cell, 5.3));
         vec3 own = 0.6 + 0.4 * cos(6.28318 * (3.0 * id + vec3(0.0, 0.33, 0.67)));

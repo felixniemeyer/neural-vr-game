@@ -13,7 +13,7 @@ layout(set = 0, binding = 0) uniform Frame {
     vec4 netRun;     // tau input (1, 0 for nets trained before it), 0, 0, 0
     vec4 netLayers[4]; // per layer: inputs, outputs, offset into weights (vec4s), 0
     vec4 netTaps[32];  // per tap: mip level, dx, dy (px, y down), 0
-    vec4 city;       // cell size m, max height m, 0, blocks per side
+    vec4 city;       // cell size m, max height m, crystal fraction, blocks per side
     vec4 mixing;     // this frame's blend toward the scene: colour, sky inverse depth, depth + velocity + certainty, focus
     vec4 player;     // ground position x, z now (xy) and in the previous frame (zw)
     vec4 tone[3];    // display exposure per channel: pow(max(rgb * tone[0] + tone[1], 0), tone[2])

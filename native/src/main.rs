@@ -743,6 +743,8 @@ fn run(shaders: &Path) -> Result<()> {
         .fader_with("blocks", 4., 64., initial("blocks", 24.), 0)
         .fader_with("cell", 1., 10., initial("cell", 4.), 1)
         .fader_with("height", 1., 25., initial("height", 7.), 1)
+        // Twisted crystals: the fraction of cells whose block is a twisted hexagonal prism.
+        .fader_with("crystals", 0., 1., initial("crystals", 0.), 2)
         .section("motion")
         .switch("auto", initial("auto", 0.) > 0.5)
         .fader_with("speed", 0., 15., initial("speed", 3.), 1)
@@ -877,6 +879,7 @@ fn run(shaders: &Path) -> Result<()> {
             blocks: controls.get("blocks").round().max(1.) as u32,
             cell: controls.get("cell"),
             height: controls.get("height"),
+            crystals: controls.get("crystals"),
         };
         let mut indices = [0; EYES];
         for (swapchain, index) in swapchains.iter_mut().zip(&mut indices) {
