@@ -11,9 +11,9 @@
   ],
   "committedIn": [],
   "status": {
-    "state": "open",
-    "comment": "Checked locally: Mesa 26.2.4 RADV on Renoir (Vega, gfx90c) exposes neither cooperative matrix nor cooperative vector (vulkaninfo); shaderFloat16 = true, so fp16 is the right path here. Still to check: Turnip on the Frame's Adreno 750 (run vulkaninfo on the device).",
-    "date": 1795379739208
+    "state": "human-dependent",
+    "comment": "Local: Mesa 26.2.4 RADV on Renoir exposes neither cooperative matrix nor vector; shaderFloat16 = true, fp16 path is right here. Research 2026-11-23: Mesa release notes 25.2-26.1 list VK_KHR_cooperative_matrix for RADV (RDNA3+), NVK (Turing+), ANV; none for Turnip. Vulkan 1.4.359 (Aug 2026) added VK_EXT_cooperative_matrix_maintenance1 with Qualcomm among contributors, so Adreno support may come via Qualcomm's proprietary driver first. Human step (needs the Steam Frame): run `vulkaninfo | grep -i -E 'cooperative|float16'` on the Frame (or from adb/ssh shell on it) and paste the output. If neither extension is listed, cancel this idea; fp16 stays. Sources: docs.mesa3d.org/relnotes/25.2.0, 26.1.0; phoronix.com/news/Vulkan-1.4.359",
+    "date": 1795466819503
   },
   "intrinsicValue": 0,
   "cost": 3,
