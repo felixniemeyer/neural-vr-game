@@ -13,7 +13,7 @@
 //            pyramid, 0 where it is empty; extra (certainty, valid, 1, tau)
 //   layers   1x1 "convolutions" from the weights buffer, relu between them; float16
 //            (packed math: per input one fma for 4 outputs)
-//   update   d = max_change * tau * tanh(out) (an Euler step of tau ticks):
+//   update   d = max_change * tau * (1 - gate * certainty) * tanh(out) (an Euler step of tau ticks):
 //            rgb += d.rgb, inv *= exp(d.w), h += d_h; certainty decays by 0.965 per tick
 //
 // tau = u.step.y: the net runs at its own rate (main.rs); on the frames in between
@@ -151,7 +151,8 @@ void main() {
     if (LAYERS > 3) dense(OFF3, UNITS2, UNITS3);
 
     // Residual update (outputs: d rgb, d log inv, d h), tau ticks.
-    float change = u.net.w * tau;
+    // Certainty gate (model.py net.gate): well-observed pixels change less.
+    float change = u.net.w * tau * (1.0 - u.netRun.y * clamp(certainty, 0.0, 1.0));
     vec4 d0 = change * tanh(vec4(hidden[0]));
     vec4 d1 = change * tanh(vec4(hidden[1]));
     stateA = vec4(clamp(A.rgb + d0.rgb, 0.0, 1.5), inv * exp(d0.w));

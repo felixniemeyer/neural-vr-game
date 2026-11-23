@@ -10,7 +10,7 @@ layout(set = 0, binding = 0) uniform Frame {
     vec4 step; // dt seconds, tau (net ticks this frame, 0 = fill only), day phase (0..1, 0.25 noon; < 0 = fixed sun), 0
     // Net (see net.frag; layout from the trained net.json, rule.rs):
     vec4 net;        // taps, layers, near (m; depth scale the net was trained with), max change
-    vec4 netRun;     // tau input (1, 0 for nets trained before it), 0, 0, 0
+    vec4 netRun;     // tau input (1, 0 for nets trained before it), certainty gate, 0, 0
     vec4 netLayers[4]; // per layer: inputs, outputs, offset into weights (vec4s), 0
     vec4 netTaps[32];  // per tap: mip level, dx, dy (px, y down), 0
     vec4 city;       // cell size m, max height m, crystal fraction, blocks per side

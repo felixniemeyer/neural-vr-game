@@ -11,9 +11,9 @@
   ],
   "committedIn": [],
   "status": {
-    "state": "open",
-    "comment": "",
-    "date": 1795469179325
+    "state": "implemented",
+    "comment": "Zero-shot (no retraining), the nodrop export with gate = 1, evaluate.py 64 x 96 free-running frames: all pixels net vs push-pull -0.7% (was -18.9%), holes +12.2% (was +12.1%); mean L1 all 0.0769 vs 0.0907. Runtime: fader `gate` (net tab, default 1) -> netRun.y, net.frag scales the change by 1 - gate * certainty, as model.py. Parity (app WEIGHTS=nice-net, gate 1, DUMP, train/parity.py): PASS 0.042% against torch with gate 1, FAIL 26.8% against gate 0, so the shader applies exactly the torch gate. Next: train with net.gate = 1 so the net learns under the gate.",
+    "date": 1795471250280
   },
   "intrinsicValue": 0,
   "cost": 1,

@@ -178,7 +178,8 @@
         -1.87
       ],
       "weight": 1,
-      "hypothesis": "Gating the update by certainty removes most of the all-pixel deficit vs push-pull over 96 frames (-19% -> within -5%) while keeping the +12% on holes. Refuted if all-pixel error stays >10% worse or holes lose their gain."
+      "hypothesis": "Gating the update by certainty removes most of the all-pixel deficit vs push-pull over 96 frames (-19% -> within -5%) while keeping the +12% on holes. Refuted if all-pixel error stays >10% worse or holes lose their gain.",
+      "reflection": "Held, zero-shot: the all-pixel deficit vs push-pull over 96 frames went from -18.9% to -0.7% while holes kept +12.2%."
     }
   ],
   "supportedIdeas": [

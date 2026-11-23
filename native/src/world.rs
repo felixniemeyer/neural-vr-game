@@ -55,6 +55,8 @@ pub const STAMPS: u32 = 6;
 pub struct Settings {
     /// Trained -> random weights (0..1); net ticks this frame (0 = fill holes only).
     pub wild: f32,
+    /// Certainty gate of the net's update (net.frag, netRun.y).
+    pub gate: f32,
     pub tau: f32,
     /// How fast the state blends toward the scene (per second): colour, and depth with
     /// velocity and certainty.
@@ -734,7 +736,7 @@ impl World {
             ],
             step: [dt, settings.tau, settings.day.unwrap_or(-1.), 0.],
             net: rule.net,
-            net_run: rule.run,
+            net_run: [rule.run[0], settings.gate, 0., 0.],
             net_layers: rule.layers,
             net_taps: rule.taps,
             city: [settings.cell, settings.height, settings.crystals, settings.blocks as f32],

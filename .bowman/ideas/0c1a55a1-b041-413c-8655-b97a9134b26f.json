@@ -15,7 +15,7 @@
   "committedIn": [],
   "status": {
     "state": "partially",
-    "comment": "First step in code (commit 'Twisted crystals (0c1a55a1)'): fader `crystals` (city tab, 0..1, default 0) = fraction of cells (by cell hash) drawn as twisted hexagonal prisms in scene.vert: 6 sides x 6 rings, per-cell twist up to +-3 rad over the height, taper to 0.65, six-sided tip over the top 20%, flat facet normals; 234 vertices per instance (boxes use the first 30). Collision/raycast keep the cell's box (contains the crystal). Verified: compiles (glslangValidator, cargo check); a numpy port of the vertex math plotted for twist -3/0/3 gives closed, twisted, tapered prisms with a tip. Not yet seen in the app with the net (needs dev.sh, crystals 0.3-1). Refraction not started. Open for Felix: replace or mix (the fader answers it live), keep night windows on crystals?",
+    "comment": "Fader `crystals` (city tab, 0..1, default 0) = fraction of cells drawn as twisted hexagonal prisms in scene.vert (6 sides x 6 rings, per-cell twist up to +-3 rad, taper 0.65, tip over the top 20%, flat facets; 234 vertices per instance). Collision/raycast keep the cell's box. Verified: compiles; geometry plotted offline; seen in the app (Monado simulated headset, nice-net, crystals = 1, EYE_SIZE 256, SNAPSHOT): coloured twisted faceted crystals with tips under the net, scene pass 0.72 ms for both eyes. They read stubby at the defaults (cell 4 m, height 7 m): footprint nearly the cell width. Open for Felix: slimmer/taller (radius factor, extra height; taller than the block would need city.rs collision to follow), replace or mix with blocks, night windows on crystals? Refraction not started.",
     "date": 1795467044650
   },
   "intrinsicValue": 0,

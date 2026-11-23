@@ -726,6 +726,9 @@ fn run(shaders: &Path) -> Result<()> {
     let controls = av_controls::Panel::new("sunk-city")
         .section("net")
         .fader("wild", 0., 1., initial("wild", 0.))
+        // Certainty gate: the net's change per pixel times 1 - gate * certainty, so
+        // well-observed pixels drift less (train net.gate; 1 = full gate).
+        .fader_with("gate", 0., 1., initial("gate", 1.), 2)
         .fader("timescale", 0., 4., initial("timescale", 1.))
         .fader_with("netfps", 5., 90., initial("netfps", 24.), 0)
         // How much of the scene's colour and depth goes into the state per frame (at
@@ -868,6 +871,7 @@ fn run(shaders: &Path) -> Result<()> {
         let dumping = dump.is_some() && frames == dump_frame;
         let settings = Settings {
             wild: controls.get("wild"),
+            gate: controls.get("gate"),
             tau: clock.tick(seconds, controls.get("timescale") * stopped, controls.get("netfps"), &rule, dumping),
             color: per_second(controls.get("color")),
             depth: per_second(controls.get("depth")),
