@@ -12,7 +12,7 @@
   "committedIn": [],
   "status": {
     "state": "implemented",
-    "comment": "Zero-shot (no retraining), the nodrop export with gate = 1, evaluate.py 64 x 96 free-running frames: all pixels net vs push-pull -0.7% (was -18.9%), holes +12.2% (was +12.1%); mean L1 all 0.0769 vs 0.0907. Runtime: fader `gate` (net tab, default 1) -> netRun.y, net.frag scales the change by 1 - gate * certainty, as model.py. Parity (app WEIGHTS=nice-net, gate 1, DUMP, train/parity.py): PASS 0.042% against torch with gate 1, FAIL 26.8% against gate 0, so the shader applies exactly the torch gate. Next: train with net.gate = 1 so the net learns under the gate.",
+    "comment": "Zero-shot on the nodrop export, gate = 1 (evaluate.py 64 x 96): all pixels vs push-pull -18.9% -> -0.7%, holes +12.1% -> +12.2%. App: fader `gate` (default 1) -> netRun.y, net.frag as model.py; parity PASS 0.042% with gate, FAIL 26.8% without (3e5a978). Trained under the gate: runs/combo (gate 1 + net.down + margin 8, 1000 its from nice-net): all pixels -0.3% vs push-pull (margin-only run: -14.5%), holes +2.7% (+2.8%). So drift is solved; the net now equals push-pull on known pixels and adds only a little on holes; its value has to come from structure/style next (e.g. texture/corridor losses, stylised footage).",
     "date": 1795471250280
   },
   "intrinsicValue": 0,
