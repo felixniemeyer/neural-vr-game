@@ -12,7 +12,7 @@
   "committedIn": [],
   "status": {
     "state": "partially",
-    "comment": "Read (abstracts; the full PDFs exceed the fetch limit): Kanchana et al. WACV 2022 (2110.08805) fill holes with an infilling VECTOR (copy offset to a non-disoccluded pixel), inputs: temporal prior of past infilling directions + normalised depth; they argue it beats intensity infilling. PatchEX: patch-based inpainting + shadow prediction in parallel sub-frames, 6x faster than ExtraNet; no detail on colour vs offset. Two cheap experiments for train/ (A/B vs nodrop on eval96 holes): (1) background-biased push-pull: in pyramid(), weight each pixel by far-ness (e.g. (inv_min/inv)^k) so holes fill from the background side; no extra net cost. (2) the net outputs 2 extra channels = a copy offset for hole pixels, the hole takes the resolved state read at pixel + offset (infilling vector). Next: run (1) after runs/down finishes (one training at a time fits in RAM).",
+    "comment": "Research (abstracts): infilling vectors (Kanchana et al. WACV 2022, 2110.08805) copy holes from a predicted offset instead of predicting colour; PatchEX: parallel patch inpainting + shadow nets. Experiment 1 done, REFUTED: background-biased push-pull (net.background = 2, e62dfa7), A/B 500 its from nice-net vs nodrop, evaluate.py 64x96 mean L1: push-pull holes 0.1841 vs 0.1837, net holes 0.1615 vs 0.1616, all pixels 0.0903 vs 0.0907: no effect (push-pull takes the finest level with data, so near and far rarely share a cell). Remaining: experiment 2, the net outputs a copy offset for hole pixels (infilling vector).",
     "date": 1795466646733
   },
   "intrinsicValue": 0,
