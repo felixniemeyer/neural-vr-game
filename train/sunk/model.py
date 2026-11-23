@@ -91,6 +91,7 @@ class Net(nn.Module):
         assert n.hidden_state % 4 == 0 and all(h % 4 == 0 for h in n.hidden)
         self.near, self.levels, self.max_change, self.rate = n.near, n.levels, n.max_change, n.rate
         self.background = n.background
+        self.gate = n.gate
         self.tau_input = True
         self.taps = tap_offsets(n.levels, n.points)
         self.channels = 8 + n.hidden_state
@@ -157,6 +158,8 @@ class Net(nn.Module):
         for layer in self.layers[:-1]:
             x = F.relu(layer(x))
         delta = self.max_change * tau * torch.tanh(self.layers[-1](x))
+        if self.gate:  # net.gate: confident (well-observed) pixels change less
+            delta = delta * (1 - self.gate * filled[:, CERT:CERT + 1].clamp(0, 1))
 
         out = filled.clone()
         out[:, RGB] = (filled[:, RGB] + delta[:, 0:3]).clamp(0, 1.5)
@@ -179,7 +182,7 @@ class Net(nn.Module):
             "layers": [[l.in_channels, l.out_channels] for l in self.layers],
             "taps": [list(t) for t in self.taps], "levels": self.levels,
             "hidden_state": config.net.hidden_state, "near": self.near, "max_change": self.max_change,
-            "rate": self.rate, "max_tau": max_tau, "background": self.background,
+            "rate": self.rate, "max_tau": max_tau, "background": self.background, "gate": self.gate,
             "down": [[c.in_channels, c.out_channels] for c in self.down] if self.down is not None else [],
         }, indent=1))
 
@@ -250,6 +253,7 @@ def load_export(folder: Path) -> Net:
     config.net.rate = spec.get("rate", 10.0)  # older nets: one tick per 10 fps video frame
     config.net.down = bool(spec.get("down"))
     config.net.background = spec.get("background", 0.0)
+    config.net.gate = spec.get("gate", 0.0)
     net = Net(config)
     net.tau_input = "rate" in spec
     assert [list(t) for t in net.taps] == [list(t) for t in spec["taps"]], "tap layout differs"

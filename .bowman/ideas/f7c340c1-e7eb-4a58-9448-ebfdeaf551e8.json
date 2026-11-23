@@ -1,0 +1,24 @@
+{
+  "id": "f7c340c1-e7eb-4a58-9448-ebfdeaf551e8",
+  "text": "Certainty-gated update: scale the net's change per pixel by (1 - certainty) so well-observed pixels stop drifting",
+  "description": "OBSERVED 2026-11-23 across nodrop/down/background (evaluate.py, 64 x 96 free-running frames): the net is 14-19% WORSE than plain push-pull on all pixels (mean L1 0.087-0.091 vs 0.076) while 12% better on holes. Its residual update erodes pixels that were already right. Test: option net.gate: delta *= (1 - gate * certainty) (certainty is already an input and decays per tick), so confident pixels change less and stale or new ones are re-imagined; zero-shot eval on the nodrop export first, then a 500-it A/B.",
+  "archived": false,
+  "color": "#30715b",
+  "tags": [],
+  "supportingConnections": [],
+  "supportedIdeas": [
+    "ea8719aa-4554-4122-a393-61d4f3e657b0"
+  ],
+  "committedIn": [],
+  "status": {
+    "state": "open",
+    "comment": "",
+    "date": 1795469179325
+  },
+  "intrinsicValue": 0,
+  "cost": 1,
+  "selfWeight": 1,
+  "duration": 1,
+  "costVariance": 0,
+  "valueVariance": 0
+}
