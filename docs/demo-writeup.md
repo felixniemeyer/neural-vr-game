@@ -19,9 +19,13 @@ How it works:
 - **Trained on ordinary video**: depth (Depth Anything V2) and flow (RAFT) give the state,
   and the net learns to continue free-running rollouts.
 
+- **Certainty gate.** Each pixel's update is scaled by (1 − certainty), so well-observed
+  pixels hold still and new or stale ones are re-imagined. Without it the net slowly eroded
+  correct pixels (18.9% worse than plain push-pull over 96 frames); with it, 0.7%.
+
 Numbers: net 6.3 ms for 2×512² in fp16 on a Vega iGPU (700 MHz); over 96 free-running frames
-the net beats a plain push-pull fill on disoccluded pixels by about 12% [update with the
-current best run].
+the net beats a plain push-pull fill on disoccluded pixels by about 12% while matching it on
+the rest [update with the current best run].
 
 Toys in the demo: a day/night fader (at night the blocks become another world), swinging on
 ropes between blocks, and a time-stop on the grip that freezes the net's world while you
