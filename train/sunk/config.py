@@ -39,6 +39,7 @@ class Net:
     near: float = 10.0          # depth range (m): the footage's near .. near * data.ratio
     max_change: float = 0.5     # tanh-bounded update per tick
     rate: float = 24.0          # net ticks per second: a step of dt seconds is tau = dt * rate ticks
+    down: bool = False          # learned downsampling: coarse levels' hidden channels get a 1x1 conv over 2x2 children
 
 
 @dataclass

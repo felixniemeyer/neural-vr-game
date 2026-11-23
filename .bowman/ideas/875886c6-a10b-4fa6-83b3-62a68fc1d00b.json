@@ -1,0 +1,24 @@
+{
+  "id": "875886c6-a10b-4fa6-83b3-62a68fc1d00b",
+  "text": "Benchmark against neural frame extrapolation work (GFFE, PatchEX): borrow their disocclusion inpainting tricks",
+  "description": "Research find (2026-11-23). GFFE (G-buffer-free frame extrapolation, ACM TOG 2024, Intel/UCSB; stereo follow-up 2025) extrapolates frames with no added latency and handles disocclusions with heuristics plus a small net. PatchEX (arXiv 2407.17501) splits extrapolation into inpainting and shadow sub-tasks, each a small net run per patch in parallel, aimed at VR. Amulet (arXiv 2608.10423): sparse layered scene representation for extrapolation. Task: read how they fill disocclusions (background-only fill from depth? learned infilling vectors like arXiv 2110.08805, which predicts where to copy from instead of colour) and test the most promising trick in train/ against nice-net on eval96 holes. Sources: https://sites.cs.ucsb.edu/~lingqi/publications/paper_gffe.pdf, https://arxiv.org/abs/2407.17501, https://arxiv.org/pdf/2110.08805",
+  "archived": false,
+  "color": "#2c615e",
+  "tags": [],
+  "supportingConnections": [],
+  "supportedIdeas": [
+    "ea8719aa-4554-4122-a393-61d4f3e657b0"
+  ],
+  "committedIn": [],
+  "status": {
+    "state": "open",
+    "comment": "",
+    "date": 1795466553012
+  },
+  "intrinsicValue": 0,
+  "cost": 2,
+  "selfWeight": 1,
+  "duration": 1,
+  "costVariance": 0,
+  "valueVariance": 0
+}

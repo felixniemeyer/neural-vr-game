@@ -152,6 +152,24 @@
         1.84
       ],
       "weight": 8
+    },
+    {
+      "ideaId": "b2a10f3d-6737-4c36-b4a5-7ac812eeba70",
+      "relativePosition": [
+        -2.98,
+        2.28
+      ],
+      "weight": 1,
+      "hypothesis": "Holding the learned state on a coarse grid (e.g. 1/4 res) and decoding per pixel with a tiny implicit MLP cuts the net's cost per eye by several x at equal 96-frame val, which is what Steam Frame resolution (2160^2 per eye) needs."
+    },
+    {
+      "ideaId": "875886c6-a10b-4fa6-83b3-62a68fc1d00b",
+      "relativePosition": [
+        -2.21,
+        3.03
+      ],
+      "weight": 1,
+      "hypothesis": "Predicting where to copy a hole from (infilling vectors toward the background side) instead of a colour beats push-pull on eval96 holes by more than the current +12%, because disocclusions reveal background that sits right next to them."
     }
   ],
   "supportedIdeas": [

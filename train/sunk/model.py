@@ -47,14 +47,29 @@ def tap_offsets(levels, points):
     return taps
 
 
-def pyramid(state, levels):
-    """Hole-aware mips: average of valid pixels only. Returns [(values, coverage)]."""
+def pyramid(state, levels, down=None, near=1.0):
+    """Hole-aware mips: average of valid pixels only. Returns [(values, coverage)].
+
+    down: optional learned downsampling, one 1x1 conv per level 1.. over the 2x2 children
+    (pixel-unshuffled; per child rgb, inv * near, hidden, coverage, normalised). Its output
+    is added to the averaged hidden channels, so the coarse levels carry learned features
+    (partial-conv style: empty children contribute zeros, their coverage says so).
+    """
     valid = (state[:, INV:INV + 1] > 0).float()
     level = (state * valid, valid)
     out = []
-    for _ in range(levels):
+    for index in range(levels):
         out.append(level)
-        level = (F.avg_pool2d(level[0], 2), F.avg_pool2d(level[1], 2))
+        if index == levels - 1:
+            break
+        values, cover = F.avg_pool2d(level[0], 2), F.avg_pool2d(level[1], 2)
+        if down is not None:
+            v = level[0] / level[1].clamp_min(1e-4)
+            child = torch.cat([v[:, RGB], v[:, INV:INV + 1] * near, v[:, HID], (level[1] > 1e-3).float()], 1)
+            extra = down[index](F.pixel_unshuffle(child, 2))
+            values = values.clone()
+            values[:, HID] = values[:, HID] + extra * cover
+        level = (values, cover)
     return out
 
 
@@ -78,6 +93,15 @@ class Net(nn.Module):
         self.outputs = 4 + n.hidden_state
         sizes = [self.inputs] + list(n.hidden) + [self.outputs]
         self.layers = nn.ModuleList(nn.Conv2d(a, b, 1) for a, b in zip(sizes[:-1], sizes[1:]))
+        # Learned downsampling (net.down): starts at zero = the plain averaged pyramid.
+        child = 4 + 1 + n.hidden_state
+        self.down = nn.ModuleList(nn.Conv2d(4 * child, n.hidden_state, 1) for _ in range(n.levels - 1)) \
+            if n.down else None
+        if self.down is not None:
+            with torch.no_grad():
+                for conv in self.down:
+                    conv.weight.zero_()
+                    conv.bias.zero_()
         with torch.no_grad():
             self.layers[-1].weight.mul_(0.1)
             self.layers[-1].bias.zero_()
@@ -94,7 +118,7 @@ class Net(nn.Module):
         """tau: ticks this step covers, a number or [B] (per sample)."""
         b, _, h, w = state.shape
         tau = torch.as_tensor(tau, dtype=state.dtype).reshape(-1, 1, 1, 1).expand(b, 1, 1, 1)
-        mips = pyramid(state, self.levels)
+        mips = pyramid(state, self.levels, self.down, self.near)
         valid = (state[:, INV:INV + 1] > 0).float()
 
         # Push-pull hole fill: the finest pyramid level that has data here.
@@ -132,10 +156,11 @@ class Net(nn.Module):
         return out
 
     def export(self, folder: Path, config, max_tau=1.0):
-        """net.json (layout) + weights.bin (float32: per layer W [out][in] row-major, then b)."""
+        """net.json (layout) + weights.bin (float32: per layer W [out][in] row-major, then b;
+        then the same for each learned downsampling conv, if any, level 1 first)."""
         folder.mkdir(parents=True, exist_ok=True)
         blobs = []
-        for layer in self.layers:
+        for layer in list(self.layers) + list(self.down or []):
             blobs += [layer.weight[:, :, 0, 0].detach().float().numpy().ravel(), layer.bias.detach().float().numpy()]
         np.concatenate(blobs).astype("<f4").tofile(folder / "weights.bin")
         (folder / "net.json").write_text(json.dumps({
@@ -144,6 +169,7 @@ class Net(nn.Module):
             "taps": [list(t) for t in self.taps], "levels": self.levels,
             "hidden_state": config.net.hidden_state, "near": self.near, "max_change": self.max_change,
             "rate": self.rate, "max_tau": max_tau,
+            "down": [[c.in_channels, c.out_channels] for c in self.down] if self.down is not None else [],
         }, indent=1))
 
 
@@ -211,13 +237,14 @@ def load_export(folder: Path) -> Net:
     config.net.near = spec["near"]
     config.net.max_change = spec["max_change"]
     config.net.rate = spec.get("rate", 10.0)  # older nets: one tick per 10 fps video frame
+    config.net.down = bool(spec.get("down"))
     net = Net(config)
     net.tau_input = "rate" in spec
     assert [list(t) for t in net.taps] == [list(t) for t in spec["taps"]], "tap layout differs"
     flat = torch.tensor(np.fromfile(Path(folder) / "weights.bin", dtype="<f4"))
     at = 0
     with torch.no_grad():
-        for layer in net.layers:
+        for layer in list(net.layers) + list(net.down or []):
             n = layer.weight.numel()
             layer.weight.copy_(flat[at:at + n].view_as(layer.weight))
             at += n

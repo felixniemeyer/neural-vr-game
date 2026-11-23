@@ -430,7 +430,8 @@ def main():
     elif config.train.init:
         # Fresh optimiser and schedule, the weights of an export (same layout).
         source = (project / config.train.init).resolve()
-        net.load_state_dict(load_export(source).state_dict())
+        missing, _ = net.load_state_dict(load_export(source).state_dict(), strict=False)
+        assert all(k.startswith("down.") for k in missing), missing  # new learned downsampling starts at zero
         print(f"starting from {source}")
     print(f"net: {net.inputs} inputs, layers {[l.out_channels for l in net.layers]}, "
           f"{sum(p.numel() for p in net.parameters())} weights, {len(net.taps) + 1} taps")

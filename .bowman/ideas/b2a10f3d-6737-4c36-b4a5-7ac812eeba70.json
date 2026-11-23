@@ -1,0 +1,24 @@
+{
+  "id": "b2a10f3d-6737-4c36-b4a5-7ac812eeba70",
+  "text": "Coarse-grid NCA state + tiny implicit decoder to full res (\"NCA: From Cells to Pixels\", arXiv 2506.22899)",
+  "description": "Research find (2026-11-23): Pajouheshgar et al. (EPFL, arXiv 2506.22899, rev. Jan 2026) run the NCA on a coarse cell grid and decode each output pixel with a tiny shared implicit MLP (local pixel coords + nearby cell states), so NCAs scale to high resolution at little extra cost. For us: keep the persistent learned state at a coarse pyramid level (reprojected like now) and decode to 2160^2 per eye per pixel; fits the low-rate periphery (ac841219) and the learned pyramid (9439aaf2). Source: https://arxiv.org/abs/2506.22899",
+  "archived": false,
+  "color": "#356b65",
+  "tags": [],
+  "supportingConnections": [],
+  "supportedIdeas": [
+    "ea8719aa-4554-4122-a393-61d4f3e657b0"
+  ],
+  "committedIn": [],
+  "status": {
+    "state": "open",
+    "comment": "",
+    "date": 1795466545447
+  },
+  "intrinsicValue": 0,
+  "cost": 5,
+  "selfWeight": 1,
+  "duration": 1,
+  "costVariance": 0,
+  "valueVariance": 0
+}
