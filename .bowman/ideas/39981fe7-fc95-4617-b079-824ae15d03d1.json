@@ -14,7 +14,7 @@
   "committedIn": [],
   "status": {
     "state": "human-dependent",
-    "comment": "First version (experiments): `day` fader (seconds per planet day, 0 = fixed sun); day phase in u.step.z; scene.frag circles the sun and blends to a night world (complementary dim colours, warm lit windows on walls, cool moon) by smoothstep of the sun's height; the net takes it on through the colour blend. Builds and runs (14.6 ms/frame). Not verified visually by me. Human step: set day ~60 and color ~0.03 (faster uptake), watch a full cycle: does night read as a different world? Next: the sun phase as a net input (train on day/night footage) so the net itself changes style.",
+    "comment": "First version: `day` fader (seconds per planet day), day phase in u.step.z, scene.frag circles the sun and blends to a night world (complementary dim colours, warm lit windows, cool moon). Seen 2026-11-24 (Monado simulated headset, nice-net, day 20, color 0.03, EYE_SIZE 256, snapshot near midnight): the city goes dim with hue-shifted blue/violet blocks and a cool bright ground, so night reads as a different palette; the lit windows are NOT visible at this resolution/uptake (windows ~0.8 m, blended in at 3% per frame and smoothed by the net). Human step: in the headset at 512 px, day ~60, color ~0.03: does night feel like another world? If windows should show, I can make them larger (fewer, brighter) or blend night features in faster.",
     "date": 1795381065400
   },
   "intrinsicValue": 0,
