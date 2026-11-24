@@ -43,8 +43,13 @@ follow=0
 if [[ -z ${WEIGHTS:-} ]]; then follow=1
 elif [[ $WEIGHTS == random ]]; then unset WEIGHTS
 fi
-latest_net() { # newest train/runs/*/net (by weights.bin), empty if none
-    ls -t "$root"/train/runs/*/net/weights.bin 2>/dev/null | head -1 | xargs -r dirname
+latest_net() { # newest train/runs/*/net (by weights.bin) the app can run, empty if none
+    local file
+    for file in $(ls -t "$root"/train/runs/*/net/weights.bin 2>/dev/null); do
+        # torch-only experiments (net.cnn) export weights the app cannot run
+        grep -qE '"cnn": \[[^]]' "${file%/*}/net.json" 2>/dev/null && continue
+        dirname "$file"; return
+    done
 }
 pick_net() { # sets WEIGHTS to the newest export when following; returns 1 if unchanged
     [[ $follow == 1 ]] || return 1
