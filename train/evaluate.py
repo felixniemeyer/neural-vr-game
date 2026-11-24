@@ -3,6 +3,8 @@
 Free-running rollouts (no blend toward the real frames) on fixed samples; mean L1 of
 colour and depth per step, over all known pixels and over pixels that were holes
 before the net ran. Lower than "push-pull" = the net adds something.
+L1 rewards blur, so also: sharpness (mean |image gradient| relative to the truth's) and
+contrast (luminance std relative to the truth's), 1 = like the footage, < 1 = washed out.
 """
 import sys
 
@@ -27,11 +29,19 @@ one = Fraction(1)  # whole video frames, one eye
 batch = data.batch(samples, g, steps=steps, picks=[(*data.pick(g, steps, one)[:4], one, 0.0) for _ in range(samples)])
 
 
+def grad(x):
+    return ((x[..., 1:, :-1] - x[..., :-1, :-1]).abs() + (x[..., :-1, 1:] - x[..., :-1, :-1]).abs()).mean((1, 2, 3))
+
+
+def ratio(a, b):
+    return (a / b.clamp_min(1e-4)).mean().item()
+
+
 def run(change):
     net.max_change = change
     near = config.net.near
     state = truth_state(batch, 0, net.channels)
-    totals = np.zeros((steps, 2))
+    totals = np.zeros((steps, 4))
     with torch.no_grad():
         for k in range(steps):
             resolved, hole = splat(state, batch["R"][:, k], batch["t"][:, k], batch["rays"], batch["origin"],
@@ -42,14 +52,18 @@ def run(change):
             error = torch.cat([(state[:, RGB] - truth[:, RGB]).abs(),
                                (state[:, INV:INV + 1] - truth[:, INV:INV + 1]).abs() * near], 1).mean(1, keepdim=True)
             totals[k] = [(error * known).sum() / known.sum(),
-                         (error * known * hole).sum() / (known * hole).sum().clamp_min(1)]
+                         (error * known * hole).sum() / (known * hole).sum().clamp_min(1),
+                         ratio(grad(state[:, RGB].clamp(0, 1)), grad(truth[:, RGB])),
+                         ratio(state[:, RGB].clamp(0, 1).mean(1).flatten(1).std(1), truth[:, RGB].mean(1).flatten(1).std(1))]
     return totals
 
 
 trained, base = run(net.max_change), run(0.0)
 print(f"{project}: {samples} free-running rollouts of {steps} steps")
-print("step   all: net / push-pull    holes: net / push-pull")
+print("step   all: net / push-pull    holes: net / push-pull    sharpness: net / pp    contrast: net / pp")
 for k in range(steps):
-    print(f"{k + 1:4}   {trained[k, 0]:.4f} / {base[k, 0]:.4f}      {trained[k, 1]:.4f} / {base[k, 1]:.4f}")
+    print(f"{k + 1:4}   {trained[k, 0]:.4f} / {base[k, 0]:.4f}      {trained[k, 1]:.4f} / {base[k, 1]:.4f}"
+          f"         {trained[k, 2]:.2f} / {base[k, 2]:.2f}          {trained[k, 3]:.2f} / {base[k, 3]:.2f}")
 gain = 1 - trained.mean(0) / base.mean(0)
-print(f"net vs push-pull: {gain[0]:+.1%} all pixels, {gain[1]:+.1%} holes (positive = better)")
+print(f"net vs push-pull: {gain[0]:+.1%} all pixels, {gain[1]:+.1%} holes (positive = better); "
+      f"mean sharpness {trained[:, 2].mean():.2f} vs {base[:, 2].mean():.2f}, contrast {trained[:, 3].mean():.2f} vs {base[:, 3].mean():.2f} (1 = like the footage)")
