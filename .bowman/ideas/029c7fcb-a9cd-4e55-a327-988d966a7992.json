@@ -15,14 +15,14 @@
   ],
   "committedIn": [],
   "status": {
-    "state": "partially",
-    "comment": "train.corridor (train.py corridor()): per sample, zero loss while the prediction's mean luminance stays within truth +-0.05 and its luminance std >= 0.8x truth's, linear outside. Unit check: same frame 0, slightly darker 0, fog (flat) 0.13, 0.2 darker 0.15. Targets are the real frame's stats (not slow-adapting targets yet). Pending: A/B training run (after the dropout A/B frees the CPU).",
-    "date": 1795380493494
+    "state": "failed",
+    "comment": "A/B 2026-11-24, 500 its from nice-net, both with net.gate = 1 (runs/gate vs runs/gatecorr, train.corridor = 1.0), evaluate.py 64 x 96 mean L1: all pixels 0.1008 vs 0.0786 (push-pull 0.0763), i.e. -32.2% vs -3.0% against push-pull; holes 0.1639 vs 0.1624. The corridor loss (contrast >= 0.8x truth, luminance within +-0.05) makes the net push contrast and drift away from the frames. Keep train.corridor = 0. A slow-adapting variant (targets not from the current frame) is untested; not worth it before the net adds structure at all.",
+    "date": 1795479537182
   },
   "intrinsicValue": 0,
+  "cost": 1,
   "selfWeight": 1,
   "duration": 1,
   "costVariance": 0,
-  "valueVariance": 0,
-  "cost": 1
+  "valueVariance": 0
 }
