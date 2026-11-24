@@ -1,0 +1,28 @@
+{
+  "id": "554013a4-b754-434e-af63-c0717be7cb19",
+  "text": "Hyperparameter search with Optuna, scored for the art track",
+  "description": "train/search.py: one trial at a time (memory), each a short training run from the base's init with sampled loss weights and settings (lr, texture, style, edge, hole weight, observe, steps), scored by evaluate.py on 48 free-running steps: L1 relative to push-pull plus |log sharpness| and |log contrast| vs the footage. --arch also samples the layout (hidden width 4-32, mip levels 2-5) from scratch, which doubles as the lower-bounds sweep. Resumable sqlite study per base in runs/search/. Next: multi-objective (Pareto of look vs ms), pruning by intermediate validation, a human-in-the-loop rating from the pattern gallery as the score.",
+  "archived": false,
+  "color": "#7b4fa0",
+  "tags": [
+    "training",
+    "tooling",
+    "search"
+  ],
+  "supportingConnections": [],
+  "supportedIdeas": [
+    "003b71b2-fdb8-4e45-b46d-fd1b01cab5a2"
+  ],
+  "committedIn": [],
+  "status": {
+    "state": "partially",
+    "comment": "search.py + train.style committed (4d5417d); queued after the cnn run: evaluate cnn and nodrop on 48 steps, then 12 trials x 250 its from nice-net.",
+    "date": 1795556798483
+  },
+  "intrinsicValue": 0,
+  "cost": 4,
+  "selfWeight": 1,
+  "duration": 3,
+  "costVariance": 0,
+  "valueVariance": 0
+}

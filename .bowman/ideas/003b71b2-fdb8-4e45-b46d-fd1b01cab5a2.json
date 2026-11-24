@@ -44,6 +44,16 @@
       "ideaId": "4d4de87c-460d-474e-99c9-a17b2fc37333",
       "weight": 1,
       "hypothesis": "Most of the per-ms gain at high resolution comes from decoupling the net's resolution from the display's"
+    },
+    {
+      "ideaId": "554013a4-b754-434e-af63-c0717be7cb19",
+      "weight": 1,
+      "hypothesis": "Automatic search finds better nets per hour of laptop time than hand-made A/Bs"
+    },
+    {
+      "ideaId": "cd0c1f17-489f-42f6-826a-bbf3f0a53885",
+      "weight": 1,
+      "hypothesis": "Writing big ideas down keeps the research loop fed"
     }
   ],
   "supportedIdeas": [

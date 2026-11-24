@@ -17,7 +17,7 @@
   "status": {
     "state": "partially",
     "date": 1795556642980,
-    "comment": "Round 1 (2026-11-24): NCA lower bounds and multi-scale: muNCA (68-few hundred params), DyNCA (multi-scale perception, style+flow losses), Cells-to-Pixels (coarse NCA + decoder). Written into Lower bounds, CNN pyramid, Train for hallucination; new idea: coarse net, fine decoder. Round 2: soft bodies (XPBD, shape matching) and Particle Life; found and fixed the unwelded triangle soup in swarm.rs (9e338fa); new idea: particle life between creatures."
+    "comment": "Round 1 (2026-11-24): NCA lower bounds and multi-scale: muNCA (68-few hundred params), DyNCA (multi-scale perception, style+flow losses), Cells-to-Pixels (coarse NCA + decoder). Written into Lower bounds, CNN pyramid, Train for hallucination; new idea: coarse net, fine decoder. Round 2: soft bodies (XPBD, shape matching) and Particle Life; found and fixed the unwelded triangle soup in swarm.rs (9e338fa); new idea: particle life between creatures. Round 3: DyNCA's style loss as train.style (random conv bank Grams) and an Optuna search (search.py), both committed 4d5417d."
   },
   "intrinsicValue": 0,
   "cost": 2,

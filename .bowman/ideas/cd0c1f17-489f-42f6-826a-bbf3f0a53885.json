@@ -1,0 +1,26 @@
+{
+  "id": "cd0c1f17-489f-42f6-826a-bbf3f0a53885",
+  "text": "Big ideas parking lot: things too large for now, worth a research round each",
+  "description": "Collected while exploring (2026-11-24): differentiable rendering of the splat loop end to end on GPU (train in the app itself, on the scene); self-play training without video (the net hallucinates, a critic rates); a human rating loop in the headset (look at a patch, a button says 'more of this'); evolutionary search over random-weight nets (wild fader) keeping the ones people like; distillation from a big world model into the 5k net; audio-reactive rules; multiplayer where each player's state seeds the other's.",
+  "archived": false,
+  "color": "#7b4fa0",
+  "tags": [
+    "ideation"
+  ],
+  "supportingConnections": [],
+  "supportedIdeas": [
+    "003b71b2-fdb8-4e45-b46d-fd1b01cab5a2"
+  ],
+  "committedIn": [],
+  "status": {
+    "state": "open",
+    "comment": "",
+    "date": 1795556798483
+  },
+  "intrinsicValue": 0,
+  "cost": 1,
+  "selfWeight": 1,
+  "duration": 3,
+  "costVariance": 0,
+  "valueVariance": 0
+}
