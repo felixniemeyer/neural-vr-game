@@ -12,4 +12,5 @@ glam = "0.30"
 half = "2.7.1"
 openxr = "0.19"
 rand = "0.9"
+serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"

@@ -37,6 +37,8 @@ const SCENES: usize = 2;
 /// prev state, accumulators, resolved state, certainty, new state, scene (per eye)
 const SAMPLED_BINDINGS: u32 = (EYES * (STATES + ACCS + STATES + 1 + STATES + SCENES)) as u32;
 const WEIGHTS_BINDING: u32 = SAMPLED_BINDINGS + 1;
+/// The creatures' vertices (creatures.rs Vertex, std430), read by creatures.vert.
+const CREATURES_BINDING: u32 = WEIGHTS_BINDING + 1;
 /// The weights uniform buffer (state.glsl Weights, rule::pack): float16, 64 KiB, the
 /// smallest guaranteed maxUniformBufferRange on mobile GPUs. Uniform (not storage) so the
 /// weights are read through the constant path (AMD scalar cache, Adreno constant RAM).
@@ -76,6 +78,10 @@ pub struct Settings {
     pub height: f32,
     /// Fraction of cells drawn as twisted crystals (scene.vert).
     pub crystals: f32,
+    /// Draw the blocks (the ground plate stays).
+    pub city: bool,
+    /// Particle size of the creature bodies (m).
+    pub dot: f32,
 }
 
 #[repr(C, align(16))]
@@ -133,6 +139,10 @@ pub struct World {
     net_pass: vk::RenderPass,
     display_pass: vk::RenderPass,
     scene: vk::Pipeline,
+    /// Particle bodies (swarm.rs; creatures.vert/frag, points) in the scene pass.
+    creatures: vk::Pipeline,
+    creature_vertices: *mut crate::creatures::Vertex,
+    creature_count: u32,
     /// splat[target][source] (state.glsl TARGET, SOURCE).
     splat: [[vk::Pipeline; EYES]; EYES],
     /// The fullscreen passes per eye (state.glsl TARGET).
@@ -349,7 +359,7 @@ impl World {
         let d = &r.gpu.device;
         let stages = vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT;
 
-        let bindings: Vec<_> = (0..=WEIGHTS_BINDING)
+        let bindings: Vec<_> = (0..=CREATURES_BINDING)
             .map(|i| {
                 vk::DescriptorSetLayoutBinding::default()
                     .binding(i)
@@ -358,6 +368,7 @@ impl World {
                     .descriptor_type(match i {
                         0 => vk::DescriptorType::UNIFORM_BUFFER,
                         WEIGHTS_BINDING => vk::DescriptorType::UNIFORM_BUFFER,
+                        CREATURES_BINDING => vk::DescriptorType::STORAGE_BUFFER,
                         _ => vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
                     })
             })
@@ -395,6 +406,9 @@ impl World {
                 .descriptor_count(2 * SAMPLED_BINDINGS),
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::UNIFORM_BUFFER)
+                .descriptor_count(2),
+            vk::DescriptorPoolSize::default()
+                .ty(vk::DescriptorType::STORAGE_BUFFER)
                 .descriptor_count(2),
         ];
         let pool = r.keep(
@@ -460,6 +474,7 @@ impl World {
             .map(|p| r.keep(p, Resource::Pipeline));
         let mut next = || pipelines.next().unwrap();
         let scene = next();
+        let creatures = next();
         let splat = std::array::from_fn(|_| [next(), next()]);
         let [resolve, net, display] = std::array::from_fn(|_| [next(), next()]);
 
@@ -543,6 +558,10 @@ impl World {
         anyhow::ensure!(weight_count <= WEIGHT_HALVES, "the net has {weight_count} weights, at most {WEIGHT_HALVES} fit");
         let (weight_buffer, weights) =
             r.buffer(&vec![0u16; WEIGHT_HALVES], vk::BufferUsageFlags::UNIFORM_BUFFER)?;
+        let (creature_buffer, creature_vertices) = r.buffer(
+            &vec![crate::creatures::Vertex::default(); crate::creatures::MAX_VERTICES],
+            vk::BufferUsageFlags::STORAGE_BUFFER,
+        )?;
         let d = &r.gpu.device;
         let layouts = [set_layout; 2];
         let allocated = unsafe {
@@ -596,6 +615,14 @@ impl World {
                     .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                     .buffer_info(&storage),
             );
+            let creature_info = [vk::DescriptorBufferInfo::default().buffer(creature_buffer).range(vk::WHOLE_SIZE)];
+            writes.push(
+                vk::WriteDescriptorSet::default()
+                    .dst_set(set)
+                    .dst_binding(CREATURES_BINDING)
+                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                    .buffer_info(&creature_info),
+            );
             unsafe { d.update_descriptor_sets(&writes, &[]) };
         }
 
@@ -603,6 +630,9 @@ impl World {
             size,
             scene_pass,
             scene,
+            creatures,
+            creature_vertices,
+            creature_count: 0,
             scene_targets,
             splat_pass,
             resolve_pass,
@@ -642,6 +672,14 @@ impl World {
         })
     }
 
+    /// This frame's creature triangles (world space), drawn in the scene pass. Call before
+    /// `draw`, after the previous frame's commands finished (the buffer is not doubled).
+    pub fn upload_creatures(&mut self, vertices: &[crate::creatures::Vertex]) {
+        let count = vertices.len().min(crate::creatures::MAX_VERTICES);
+        unsafe { self.creature_vertices.copy_from_nonoverlapping(vertices.as_ptr(), count) };
+        self.creature_count = count as u32;
+    }
+
     pub fn size(&self) -> vk::Extent2D {
         self.size
     }
@@ -658,7 +696,10 @@ impl World {
         spec: &[i32],
     ) -> Result<Vec<vk::Pipeline>> {
         let with = |extra: &[i32]| -> Vec<i32> { spec.iter().chain(extra).copied().collect() };
-        [pipeline(d, shaders, ("scene.vert.spv", "scene.frag.spv"), scene, layout, SCENES, false, true, false, &[])]
+        [
+            pipeline(d, shaders, ("scene.vert.spv", "scene.frag.spv"), scene, layout, SCENES, false, true, false, &[]),
+            pipeline(d, shaders, ("creatures.vert.spv", "creatures.frag.spv"), scene, layout, SCENES, false, true, true, &[]),
+        ]
         .into_iter()
         .chain((0..EYES as i32 * EYES as i32).map(|i| {
             let spec = with(&[i / EYES as i32, i % EYES as i32]);
@@ -691,6 +732,7 @@ impl World {
         let mut new = new.into_iter().map(|p| r.keep(p, Resource::Pipeline));
         let mut next = || new.next().unwrap();
         self.scene = next();
+        self.creatures = next();
         self.splat = std::array::from_fn(|_| [next(), next()]);
         [self.resolve, self.net, self.display] = std::array::from_fn(|_| [next(), next()]);
         Ok(())
@@ -818,7 +860,17 @@ impl World {
                 d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.scene);
                 push(eye, eye, 0);
                 // The blocks, and one more instance: the ground plate.
-                d.cmd_draw(cmd, SCENE_VERTICES, settings.blocks * settings.blocks + 1, 0, 0);
+                let blocks = settings.blocks * settings.blocks;
+                if settings.city {
+                    d.cmd_draw(cmd, SCENE_VERTICES, blocks + 1, 0, 0);
+                } else {
+                    d.cmd_draw(cmd, SCENE_VERTICES, 1, 0, blocks);
+                }
+                if self.creature_count > 0 {
+                    d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.creatures);
+                    push(eye, eye, (settings.dot * 1000.).round() as i32);
+                    d.cmd_draw(cmd, self.creature_count, 1, 0, 0);
+                }
                 d.cmd_end_render_pass(cmd);
             }
             stamp(1);

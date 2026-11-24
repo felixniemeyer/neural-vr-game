@@ -1,3 +1,5 @@
+mod creatures;
+mod swarm;
 mod city;
 mod gpu;
 mod swing;
@@ -706,6 +708,7 @@ fn run(shaders: &Path) -> Result<()> {
     let mut start = None;
     // ZIP_ANYWHERE=0: zip only toward blocks the ray hits (default 1: also into the air).
     let mut clock = NetClock::default();
+    let mut swarm = swarm::Swarm::new()?;
     // Grip: personal time-stop, and the previous frame's time for its dt.
     let (mut time_stop, mut last_seconds) = (timestop::TimeStop::default(), None::<f32>);
     // The image's geometry around the player, from the last frame (for the brake).
@@ -742,12 +745,25 @@ fn run(shaders: &Path) -> Result<()> {
         .fader_with("focus", 0., 20., initial("focus", 0.), 1)
         // The planet spins fast: seconds per day (0 = fixed sun); night is another world.
         .fader_with("day", 0., 300., initial("day", 0.), 0)
+        // Scenes, one tab each, switched on and off independently.
         .section("city")
+        .switch("city", initial("city", 1.) > 0.5)
         .fader_with("blocks", 4., 64., initial("blocks", 24.), 0)
         .fader_with("cell", 1., 10., initial("cell", 4.), 1)
         .fader_with("height", 1., 25., initial("height", 7.), 1)
         // Twisted crystals: the fraction of cells whose block is a twisted hexagonal prism.
         .fader_with("crystals", 0., 1., initial("crystals", 0.), 2)
+        // Sea creatures (David's Aquarium) as particle soft bodies (swarm.rs).
+        .section("creatures")
+        .switch("creatures", initial("creatures", 0.) > 0.5)
+        .fader_with("count", 1., 100., initial("count", 8.), 0)
+        .fader_with("scale", 0.1, 4., initial("scale", 1.), 2)
+        .fader_with("hold", 0., 40., initial("hold", 4.), 1)
+        .fader_with("link", 0., 400., initial("link", 120.), 0)
+        .fader_with("damp", 0., 10., initial("damp", 1.5), 2)
+        .fader_with("flow", 0., 20., initial("flow", 2.), 1)
+        .fader_with("swirl", 0.5, 30., initial("swirl", 6.), 1)
+        .fader_with("dot", 0.01, 0.5, initial("dot", 0.08), 2)
         .section("motion")
         .switch("auto", initial("auto", 0.) > 0.5)
         .fader_with("speed", 0., 15., initial("speed", 3.), 1)
@@ -884,7 +900,25 @@ fn run(shaders: &Path) -> Result<()> {
             cell: controls.get("cell"),
             height: controls.get("height"),
             crystals: controls.get("crystals"),
+            city: controls.on("city"),
+            dot: controls.get("dot"),
         };
+        if controls.on("creatures") {
+            let params = swarm::Params {
+                count: controls.get("count").round().max(1.) as usize,
+                scale: controls.get("scale"),
+                hold: controls.get("hold"),
+                link: controls.get("link"),
+                drag: controls.get("damp"),
+                flow: controls.get("flow"),
+                swirl: controls.get("swirl"),
+                follow: 10.,
+            };
+            swarm.update(params, seconds, frame_dt.max(1e-3), zip.position + zip.turn() * eye);
+            world.upload_creatures(&swarm.out);
+        } else {
+            world.upload_creatures(&[]);
+        }
         let mut indices = [0; EYES];
         for (swapchain, index) in swapchains.iter_mut().zip(&mut indices) {
             *index = swapchain.acquire_image()? as usize;
