@@ -15,7 +15,7 @@
   "committedIn": [],
   "status": {
     "state": "partially",
-    "comment": "Priors in train.py: train.texture (local edge energy, 8x8 windows), train.corridor (contrast >= 0.8x truth, mean luminance within +-0.05), and 2026-11-24 train.spectrum: radially averaged log power spectrum of luminance (8 bands) vs truth's, only on fully known crops. Check: same 0.000, shifted 0.000 (position-free), 3x3-blurred 1.899. A/B queued: runs/gatespec (gate + spectrum 0.3) vs runs/gate, and runs/gatecorr (corridor) vs runs/gate. Not done: vertical-structure prior, CLIP teacher.",
+    "comment": "Priors in train.py: texture (in use, 1.0), corridor (FAILED: -32% all pixels, see 029c7fcb), spectrum (8b7ff08: log power spectrum of luminance; check same 0, shift 0, blur 1.9). Spectrum A/B 2026-11-24, gate 1, spectrum 0.3, 500 its (runs/gatespec vs runs/gate), evaluate.py 64 x 96: all 0.1871 vs 0.0786, holes 0.2002 vs 0.1624: destructive at 0.3, the log-spectrum term dominates the loss (0.24 vs ~0.08). Untested: weight ~0.01-0.03, or matching only the high bands. Not done: vertical-structure prior, CLIP teacher.",
     "date": 1795380493614
   },
   "intrinsicValue": 0,
