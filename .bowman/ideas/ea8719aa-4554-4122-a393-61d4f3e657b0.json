@@ -151,7 +151,8 @@
         3.27,
         1.84
       ],
-      "weight": 8
+      "weight": 8,
+      "reflection": "Held: explicit velocity makes moving content reproject and lets video training supervise it directly; hidden channels still useful alongside."
     },
     {
       "ideaId": "b2a10f3d-6737-4c36-b4a5-7ac812eeba70",

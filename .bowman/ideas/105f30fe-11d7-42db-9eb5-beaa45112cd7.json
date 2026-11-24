@@ -1,0 +1,27 @@
+{
+  "id": "105f30fe-11d7-42db-9eb5-beaa45112cd7",
+  "text": "Train for hallucination, not prediction",
+  "description": "Ideation: objectives that reward emergent pattern while staying stable through the carried hidden state: video as style rather than target, texture/edge statistics, long free-running rollouts that must neither die nor explode, open-endedness/novelty. Push-pull stays the baseline to beat on look.",
+  "archived": false,
+  "color": "#7b4fa0",
+  "tags": [
+    "ideation",
+    "training"
+  ],
+  "supportingConnections": [],
+  "supportedIdeas": [
+    "003b71b2-fdb8-4e45-b46d-fd1b01cab5a2"
+  ],
+  "committedIn": [],
+  "status": {
+    "state": "open",
+    "comment": "",
+    "date": 1795555229160
+  },
+  "intrinsicValue": 0,
+  "cost": 4,
+  "selfWeight": 1,
+  "duration": 3,
+  "costVariance": 0,
+  "valueVariance": 0
+}

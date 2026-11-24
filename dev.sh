@@ -11,6 +11,9 @@
 #   BROKER_PORT=8090  CONTROLLER_PORT=4173  HEADSET=qwerty|simulated (auto-rotating)
 #   MONADO_WORKSPACE (sway): where Monado's windows go, default 5
 #   plus the app's variables: EYE_SIZE=256 VIEW=... MOVE=4 ...
+#   WEIGHTS=dir pins a net (e.g. WEIGHTS=nice-net, WEIGHTS=random for random weights);
+#   unset, the app follows the newest export of any training run (train/runs/*/net,
+#   rewritten every train.preview iterations) and restarts when a newer one appears.
 set -euo pipefail
 root=$(cd -- "$(dirname -- "$0")" && pwd)
 out=$root/build/native
@@ -18,7 +21,7 @@ logs=$root/build/dev
 mkdir -p "$logs"
 broker_port=${BROKER_PORT:-8090}
 controller_port=${CONTROLLER_PORT:-4173}
-export EYE_SIZE=${EYE_SIZE:-1024} #384
+export EYE_SIZE=${EYE_SIZE:-512} #384
 export MOVE=${MOVE:-4} # qwerty WASD is slow at city scale
 headset=${HEADSET:-qwerty}
 # sway: put Monado's windows on this workspace: the compositor (Wayland app_id
@@ -35,6 +38,25 @@ if [[ ${VALIDATE:-0} == 1 ]]; then export VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_va
 for tool in npx monado-service glslangValidator cargo; do
     command -v "$tool" >/dev/null || { echo "dev.sh: '$tool' not found (see README)" >&2; exit 1; }
 done
+
+follow=0
+if [[ -z ${WEIGHTS:-} ]]; then follow=1
+elif [[ $WEIGHTS == random ]]; then unset WEIGHTS
+fi
+latest_net() { # newest train/runs/*/net (by weights.bin), empty if none
+    ls -t "$root"/train/runs/*/net/weights.bin 2>/dev/null | head -1 | xargs -r dirname
+}
+pick_net() { # sets WEIGHTS to the newest export when following; returns 1 if unchanged
+    [[ $follow == 1 ]] || return 1
+    local net; net=$(latest_net)
+    [[ -n $net ]] || return 1
+    local stamp; stamp="$net $(stat -c %Y "$net/weights.bin")"
+    [[ $stamp != "${net_stamp:-}" ]] || return 1
+    net_stamp=$stamp
+    export WEIGHTS=$net
+    echo "dev.sh: net ${net#"$root"/}, exported $(date -d @"${stamp##* }" +%H:%M)"
+}
+pick_net || true
 
 groups=() # process groups started here (each service runs in its own session)
 app=""
@@ -130,6 +152,11 @@ while true; do
     elif [[ -n $changed ]]; then
         echo "dev.sh: shaders changed, compiling (the app reloads them)"
         "$root/native/build.sh" "$out" --shaders || echo "dev.sh: shader compile failed, keeping the old ones"
+    fi
+    if pick_net; then
+        sleep 1 # let the export finish writing
+        echo "dev.sh: newer net, restarting the app"
+        start_app
     fi
     if [[ -n $app ]] && ! kill -0 "$app" 2>/dev/null; then
         echo "dev.sh: the app exited; save a Rust file to restart it"

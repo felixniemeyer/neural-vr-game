@@ -1,0 +1,27 @@
+{
+  "id": "71b252d9-4cd2-46e9-90ef-eb55a74d655f",
+  "text": "Cellular automata in the loop: hand-made rules as nets",
+  "description": "Express classic CAs (Game of Life-like, reaction-diffusion, Lenia, smooth-life) in the same per-pixel net format (taps on the mip pyramid, hidden state), run them on the splat-reprojected state. Mip taps make them multi-scale for free. Compare to trained and random nets by look and ms.",
+  "archived": false,
+  "color": "#7b4fa0",
+  "tags": [
+    "research",
+    "ideation"
+  ],
+  "supportingConnections": [],
+  "supportedIdeas": [
+    "003b71b2-fdb8-4e45-b46d-fd1b01cab5a2"
+  ],
+  "committedIn": [],
+  "status": {
+    "state": "open",
+    "comment": "",
+    "date": 1795555229160
+  },
+  "intrinsicValue": 0,
+  "cost": 5,
+  "selfWeight": 1,
+  "duration": 3,
+  "costVariance": 0,
+  "valueVariance": 0
+}

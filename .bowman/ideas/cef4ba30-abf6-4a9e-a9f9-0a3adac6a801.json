@@ -14,7 +14,7 @@
         -3.12,
         2.09
       ],
-      "weight": 10.986624
+      "weight": 10.333953267326732
     },
     {
       "ideaId": "069be3ea-befd-4613-b5d1-d2af9c76e2f4",
@@ -22,7 +22,7 @@
         2.04,
         3.15
       ],
-      "weight": 9.15552
+      "weight": 8.611627722772274
     },
     {
       "ideaId": "f15f1791-6c85-40b1-be2f-c1ba62ec9bdc",
@@ -30,15 +30,15 @@
         -3.42,
         1.53
       ],
-      "weight": 11.4444
+      "weight": 10.764534653465345
     },
     {
       "ideaId": "a2b28fc2-3630-4257-8bb2-4aad45e07b5c",
       "relativePosition": [
-        -2.33,
-        -2.94
+        1.98,
+        -2.68
       ],
-      "weight": 10.097999999999999
+      "weight": 9.498118811881186
     },
     {
       "ideaId": "54ea744e-c784-44a9-9701-f34a35ae1eb1",
@@ -46,7 +46,7 @@
         3.45,
         1.46
       ],
-      "weight": 11.88
+      "weight": 11.174257425742573
     },
     {
       "ideaId": "56bda4f2-0144-429b-a00d-92a443283036",
@@ -54,24 +54,47 @@
         1.33,
         3.5
       ],
-      "weight": 8.8
+      "weight": 8.277227722772276
     },
     {
       "ideaId": "57acb3f3-0901-4486-9492-98f22f7b897e",
       "relativePosition": [
-        -1.48,
-        -3.44
+        2.93,
+        -1.96
       ],
-      "weight": 12
+      "weight": 11.287128712871285,
+      "hypothesis": "Pendulum swinging between the rising blocks is more fun and more VR-native than zipping, and keeps the player moving through the net's generated city."
+    },
+    {
+      "ideaId": "88656f62-6d73-4966-a134-f1f05a5c05b4",
+      "relativePosition": [
+        -0.28,
+        -2.86
+      ],
+      "weight": 0.9405940594059404
+    },
+    {
+      "ideaId": "7ffd71cd-aeab-4193-a177-abddfaaebf1a",
+      "relativePosition": [
+        -2.9,
+        0.01
+      ],
+      "weight": 5,
+      "hypothesis": "A EUR 30k-scale XR development grant pays for remote GPU training and a production sprint, the two things currently limiting quality (CPU-only training, one run at a time). Refuted if the project's form (art/tech experiment) does not match the funds' commercial criteria."
     },
     {
       "ideaId": "c0469046-f50d-49fb-8f3c-8f157e9ae965",
       "relativePosition": [
-        0.35,
-        -3.73
+        -2.13,
+        -1.92
       ],
       "weight": 1,
       "hypothesis": "Positioned as the tiny, on-device, 90 Hz stereo counterpart to 5B world models, a demo draws collaborators, GPU access or funding (the two current limits) within weeks. Refuted if a posted demo gets no contact from people with compute, funds or XR distribution."
+    },
+    {
+      "ideaId": "003b71b2-fdb8-4e45-b46d-fd1b01cab5a2",
+      "weight": 10,
+      "hypothesis": "Exploring cost/beauty bounds keeps the renderer's art direction alive and finds cheaper, prettier nets"
     }
   ],
   "supportedIdeas": [],
@@ -82,7 +105,7 @@
     "date": 1795165840695
   },
   "intrinsicValue": 1000,
-  "selfWeight": 25.635456,
+  "selfWeight": 24.112557623762374,
   "duration": 1,
   "costVariance": 0,
   "valueVariance": 0

@@ -1,0 +1,26 @@
+{
+  "id": "ddb3c27f-74c3-4cd6-bb60-c8435de31bf1",
+  "text": "Head-turn augmentation: extra random camera rotation on real-video rollouts, warped back for ground truth",
+  "description": "Film camera motion is slow, so training holes are small (edges, disocclusions). In VR a head turn opens thick borders. Add random extra yaw/pitch to some rollout steps and later steps undo it (warp-back), so the large holes still have the real frame as target. Makes the push-pull fill + net learn big regenerations.",
+  "archived": false,
+  "color": "#3d612f",
+  "tags": [
+    "training"
+  ],
+  "supportingConnections": [],
+  "supportedIdeas": [
+    "90d2813f-497c-42fe-8ebc-0c374a2ea7cf"
+  ],
+  "committedIn": [],
+  "status": {
+    "state": "implemented",
+    "comment": "train.turn (commit after 7368daa): virtual cameras turn away and back (sin profile), truth through the turned camera, masked loss; static-scene check passes. Used in run 'texture' (with texture loss): holes +2.3% vs push-pull (L1). Not yet compared in isolation.",
+    "date": 1795336677353
+  },
+  "intrinsicValue": 0,
+  "cost": 3,
+  "selfWeight": 1,
+  "duration": 1,
+  "costVariance": 0,
+  "valueVariance": 0
+}

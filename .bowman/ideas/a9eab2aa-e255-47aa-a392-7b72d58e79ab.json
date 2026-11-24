@@ -1,0 +1,27 @@
+{
+  "id": "a9eab2aa-e255-47aa-a392-7b72d58e79ab",
+  "text": "Pattern gallery: nets x faders as a grid of snapshots",
+  "description": "One command renders every exported net (runs/*/nets/*) and a few fader settings (wild, gate, rate) into a contact sheet, so judging by eye is quick and the history of training is visible.",
+  "archived": false,
+  "color": "#7b4fa0",
+  "tags": [
+    "tooling",
+    "art"
+  ],
+  "supportingConnections": [],
+  "supportedIdeas": [
+    "003b71b2-fdb8-4e45-b46d-fd1b01cab5a2"
+  ],
+  "committedIn": [],
+  "status": {
+    "state": "open",
+    "comment": "",
+    "date": 1795555229160
+  },
+  "intrinsicValue": 0,
+  "cost": 2,
+  "selfWeight": 1,
+  "duration": 3,
+  "costVariance": 0,
+  "valueVariance": 0
+}

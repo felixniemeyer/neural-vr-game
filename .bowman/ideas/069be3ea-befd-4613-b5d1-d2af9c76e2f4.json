@@ -14,7 +14,7 @@
         -1.41,
         -3.47
       ],
-      "weight": 9.444444444444445
+      "weight": 8.415841584158416
     },
     {
       "ideaId": "dfc306d4-2901-41b8-966b-3798534f3779",
@@ -22,7 +22,7 @@
         -2.67,
         2.64
       ],
-      "weight": 9.444444444444445
+      "weight": 8.415841584158416
     },
     {
       "ideaId": "90d2813f-497c-42fe-8ebc-0c374a2ea7cf",
@@ -30,7 +30,8 @@
         -1.08,
         -3.59
       ],
-      "weight": 9.444444444444445,
+      "weight": 8.415841584158416,
+      "hypothesis": "Extra interior holes give the net many more regeneration examples per iteration than natural disocclusions, so it learns to fill holes with structure instead of the push-pull blur (96-frame val below push-pull).",
       "reflection": "Did not hold: extra interior holes (dropout 0.3, 500 its from nice-net) did not improve 96-frame hole filling (+11.2% vs push-pull, against +12.1% without dropout) and cost 2% on all pixels."
     },
     {
@@ -39,7 +40,7 @@
         -0.86,
         -3.65
       ],
-      "weight": 9.444444444444445
+      "weight": 8.415841584158416
     },
     {
       "ideaId": "d96d0297-bf62-46f1-8b2d-e78edf46cd3f",
@@ -47,7 +48,7 @@
         -3.72,
         0.46
       ],
-      "weight": 9.444444444444445
+      "weight": 8.415841584158416
     },
     {
       "ideaId": "97438475-a34f-4620-af40-eee895b60dfa",
@@ -55,7 +56,7 @@
         2.13,
         -3.08
       ],
-      "weight": 9.444444444444445
+      "weight": 8.415841584158416
     },
     {
       "ideaId": "9407c421-d9fa-48cb-9bb6-fa500622ce6d",
@@ -63,7 +64,7 @@
         3.44,
         -1.49
       ],
-      "weight": 9.444444444444445
+      "weight": 8.415841584158416
     },
     {
       "ideaId": "8427528c-d9d4-488e-9efb-0de0d1bb91b8",
@@ -71,7 +72,7 @@
         -2.48,
         -2.81
       ],
-      "weight": 9.444444444444445
+      "weight": 8.415841584158416
     },
     {
       "ideaId": "102a3e3a-f030-495b-9336-6c4d19bbb7d6",
@@ -79,7 +80,7 @@
         -2.52,
         -2.78
       ],
-      "weight": 15
+      "weight": 13.366336633663366
     },
     {
       "ideaId": "2ab79dc8-777c-4af8-b7ef-93ea31bf674c",
@@ -87,7 +88,16 @@
         -1.74,
         -3.32
       ],
-      "weight": 1
+      "weight": 0.8910891089108911
+    },
+    {
+      "ideaId": "40ef3183-599b-439f-a494-fc500b19b48c",
+      "relativePosition": [
+        -1.64,
+        -3.37
+      ],
+      "weight": 10,
+      "hypothesis": "Teacher footage in the target style and with VR-like camera motion trains a net whose 96-frame free-running output beats push-pull and looks like the intended world, which Arcane film footage with cuts doesn't give."
     }
   ],
   "supportedIdeas": [
@@ -100,7 +110,7 @@
     "date": 1795165859296
   },
   "intrinsicValue": 0,
-  "selfWeight": 9.444444444444445,
+  "selfWeight": 8.415841584158416,
   "duration": 1,
   "costVariance": 0,
   "valueVariance": 0

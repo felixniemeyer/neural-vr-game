@@ -1,0 +1,54 @@
+{
+  "id": "003b71b2-fdb8-4e45-b46d-fd1b01cab5a2",
+  "text": "Baby ASI hallucinations: the most interesting patterns per millisecond",
+  "description": "Research and ideation track, artistic. No realism expected. Question: what are the minimal costs (weights, taps, ms per frame at high resolution, still real time) for a tiny net to render non-realistic, interesting patterns? Start from cellular automata. Keep the core: splat reprojection (gives 3D consistency) + push-pull fill as the baseline, certainty/hole as an input. Judge by eye (snapshot grids) and by cost, not by hole error alone.",
+  "archived": false,
+  "color": "#7b4fa0",
+  "tags": [
+    "research",
+    "ideation",
+    "art"
+  ],
+  "supportingConnections": [
+    {
+      "ideaId": "ee18d979-b32e-44d1-b607-7ac377c35c57",
+      "weight": 1,
+      "hypothesis": "A net with far fewer than nice-net's ~5k weights still produces patterns judged interesting, at a fraction of the ms"
+    },
+    {
+      "ideaId": "71b252d9-4cd2-46e9-90ef-eb55a74d655f",
+      "weight": 1,
+      "hypothesis": "Hand-written CA rules running on the reprojected state give 3D-consistent, lively patterns at near-zero training cost"
+    },
+    {
+      "ideaId": "105f30fe-11d7-42db-9eb5-beaa45112cd7",
+      "weight": 1,
+      "hypothesis": "Losses that ask for stable, rich texture instead of exact frames make nets that look more alive than nice-net"
+    },
+    {
+      "ideaId": "a9eab2aa-e255-47aa-a392-7b72d58e79ab",
+      "weight": 1,
+      "hypothesis": "A visual overview speeds up choosing directions more than loss numbers do"
+    },
+    {
+      "ideaId": "adbc954a-ec4a-4fb3-bfce-1a56528be965",
+      "weight": 1,
+      "hypothesis": "Wider coarse levels carry richer large-scale structure (shapes, not just averaged colour), so hallucinations get more coherent at similar ms"
+    }
+  ],
+  "supportedIdeas": [
+    "cef4ba30-abf6-4a9e-a9f9-0a3adac6a801"
+  ],
+  "committedIn": [],
+  "status": {
+    "state": "open",
+    "comment": "",
+    "date": 1795555229160
+  },
+  "intrinsicValue": 300,
+  "cost": 8,
+  "selfWeight": 1,
+  "duration": 3,
+  "costVariance": 0,
+  "valueVariance": 0
+}
