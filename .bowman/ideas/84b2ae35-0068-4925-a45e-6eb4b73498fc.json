@@ -15,9 +15,9 @@
   ],
   "committedIn": [],
   "status": {
-    "state": "open",
-    "comment": "",
-    "date": 1795556594720
+    "state": "partially",
+    "date": 1795556642980,
+    "comment": "Round 1 (2026-11-24): NCA lower bounds and multi-scale: muNCA (68-few hundred params), DyNCA (multi-scale perception, style+flow losses), Cells-to-Pixels (coarse NCA + decoder). Written into Lower bounds, CNN pyramid, Train for hallucination; new idea: coarse net, fine decoder."
   },
   "intrinsicValue": 0,
   "cost": 2,

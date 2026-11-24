@@ -1,7 +1,7 @@
 {
   "id": "ee18d979-b32e-44d1-b607-7ac377c35c57",
   "text": "Lower bounds: smallest net that still makes patterns worth looking at",
-  "description": "Sweep layers, hidden width, tap count and mip levels down from nice-net; time net.frag at 1024-2048 px per eye (desktop and Frame). Record the curve weights/ms vs a by-eye rating. Where does it stop being interesting?",
+  "description": "Sweep layers, hidden width, tap count and mip levels down from nice-net; time net.frag at 1024-2048 px per eye (desktop and Frame). Record the curve weights/ms vs a by-eye rating. Where does it stop being interesting?\n\nResearch 2026-11-24: muNCA (Mordvintsev & Niklasson 2021, arXiv 2111.13545) makes textures with a few hundred parameters, down to 68; a GLSL generator is a few lines. nice-net has 4920, so sweep far lower: hidden [8] or [4], 2-3 mip levels, few hidden-state channels. First run: nice-net's config with hidden [8], from scratch, judged with evaluate.py's sharpness/contrast.",
   "archived": false,
   "color": "#7b4fa0",
   "tags": [

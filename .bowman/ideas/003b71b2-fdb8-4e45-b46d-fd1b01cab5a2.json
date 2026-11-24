@@ -39,6 +39,11 @@
       "ideaId": "84b2ae35-0068-4925-a45e-6eb4b73498fc",
       "weight": 1,
       "hypothesis": "A steady stream of researched, thought-through ideas keeps the experiments well chosen"
+    },
+    {
+      "ideaId": "4d4de87c-460d-474e-99c9-a17b2fc37333",
+      "weight": 1,
+      "hypothesis": "Most of the per-ms gain at high resolution comes from decoupling the net's resolution from the display's"
     }
   ],
   "supportedIdeas": [

@@ -1,0 +1,28 @@
+{
+  "id": "4d4de87c-460d-474e-99c9-a17b2fc37333",
+  "text": "Coarse net, fine decoder: run the net at low resolution, a tiny per-pixel decoder at display resolution",
+  "description": "Research 2026-11-24: 'Neural Cellular Automata: From Cells to Pixels' (Pajouheshgar et al. 2025, arXiv 2506.22899) evolves the NCA on a coarse grid and renders through a lightweight implicit decoder (cell state + local coordinate -> colour), full HD in real time. Here: keep splat + net at e.g. 256 px per eye (cost scales with pixels), and let display.frag decode the hidden state with a tiny MLP at 1024-2048 px, so detail comes from the decoder instead of the net's resolution. Training: the decoder sees the sub-cell coordinate, loss at full footage resolution.",
+  "archived": false,
+  "color": "#7b4fa0",
+  "tags": [
+    "research",
+    "architecture",
+    "perf"
+  ],
+  "supportingConnections": [],
+  "supportedIdeas": [
+    "003b71b2-fdb8-4e45-b46d-fd1b01cab5a2"
+  ],
+  "committedIn": [],
+  "status": {
+    "state": "open",
+    "comment": "",
+    "date": 1795556642980
+  },
+  "intrinsicValue": 0,
+  "cost": 6,
+  "selfWeight": 1,
+  "duration": 4,
+  "costVariance": 0,
+  "valueVariance": 0
+}

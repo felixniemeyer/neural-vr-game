@@ -1,7 +1,7 @@
 {
   "id": "105f30fe-11d7-42db-9eb5-beaa45112cd7",
   "text": "Train for hallucination, not prediction",
-  "description": "Ideation: objectives that reward emergent pattern while staying stable through the carried hidden state: video as style rather than target, texture/edge statistics, long free-running rollouts that must neither die nor explode, open-endedness/novelty. Push-pull stays the baseline to beat on look.",
+  "description": "Ideation: objectives that reward emergent pattern while staying stable through the carried hidden state: video as style rather than target, texture/edge statistics, long free-running rollouts that must neither die nor explode, open-endedness/novelty. Push-pull stays the baseline to beat on look.\n\nResearch 2026-11-24: DyNCA trains dynamic textures with a style (Gram) loss on appearance plus an optical-flow loss on motion, not per-pixel targets. Cheap variant for our CPU training: Gram or sliced-Wasserstein statistics of a fixed random conv bank (no VGG) between rollout and footage, position-free, next to the existing texture loss. evaluate.py now reports sharpness/contrast to judge it.",
   "archived": false,
   "color": "#7b4fa0",
   "tags": [
