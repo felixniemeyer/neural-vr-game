@@ -42,7 +42,7 @@
   "committedIn": [],
   "status": {
     "state": "open",
-    "comment": "",
+    "comment": "nice-net vs push-pull, free-running 120 steps (6 rollouts, 64 px): push-pull blurs (sharpness 0.98 -> 0.17 of truth, contrast 0.61 at step 96), nice-net keeps or invents structure (1.00 -> 2.14, contrast ~1.1-1.2) while its L1 is up to 40% higher: L1 rewards blur, so it cannot judge this track.",
     "date": 1795555229160
   },
   "intrinsicValue": 300,

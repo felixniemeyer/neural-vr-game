@@ -14,9 +14,9 @@
   ],
   "committedIn": [],
   "status": {
-    "state": "open",
-    "comment": "",
-    "date": 1795555229160
+    "state": "partially",
+    "date": 1795556176427,
+    "comment": "train/ca.py writes a Lenia-like rule as a runtime net (1.6k weights, WEIGHTS=ca/lenia ./dev.sh; set the gate fader to 0). Needs the scene as seed (from a = 0 it dies) and a restoring palette pull (a constant tint drifts to saturation). Flat 2D test (no reprojection, no observation): fine speckle texture, mostly flat; not yet looked at in the app."
   },
   "intrinsicValue": 0,
   "cost": 5,
