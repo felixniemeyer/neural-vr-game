@@ -1,7 +1,7 @@
 {
   "id": "93e4925e-2dd0-4323-8b03-6cc15cd69806",
   "text": "Creatures as particle-physics bodies (David's Aquarium, no Godot)",
-  "description": "Vendored steam-frame-vr's procedural creatures (native/src/creatures.rs). A subset (count fader) becomes mass-spring soft bodies (swarm.rs): a particle per vertex, springs on triangle edges whose rest lengths follow the animated pose (muscles), a weak pull to the pose, a divergence-free current. Drawn as round points with world velocity into the scene G-buffer, so the net reprojects them. Next: look in the headset, tune (hold, link, flow), maybe particles that detach, trails, bodies colliding with each other or the player, fewer particles per body (subsample) for the Frame's CPU.",
+  "description": "Vendored steam-frame-vr's procedural creatures (native/src/creatures.rs). A subset (count fader) becomes mass-spring soft bodies (swarm.rs): a particle per vertex, springs on triangle edges whose rest lengths follow the animated pose (muscles), a weak pull to the pose, a divergence-free current. Drawn as round points with world velocity into the scene G-buffer, so the net reprojects them. Next: look in the headset, tune (hold, link, flow), maybe particles that detach, trails, bodies colliding with each other or the player, fewer particles per body (subsample) for the Frame's CPU.\n\nResearch 2026-11-24: XPBD (time-step independent stiffness; Physically Based Shape Matching, SCA 2022; OmniBody: 64k particles in 3.1 ms on GPU) if stiffer bodies are wanted: distance constraints instead of explicit springs, stable at one iteration. Shape matching as a cheap per-body alternative to the pose pull.",
   "archived": false,
   "color": "#2f6d8a",
   "tags": [
@@ -9,15 +9,21 @@
     "creatures",
     "physics"
   ],
-  "supportingConnections": [],
+  "supportingConnections": [
+    {
+      "ideaId": "f60c671b-cfe9-4838-a384-18a7aaeb555a",
+      "weight": 1,
+      "hypothesis": "Emergent interactions make the creatures feel alive more than any swim path"
+    }
+  ],
   "supportedIdeas": [
     "081b8c48-f101-43f7-99fa-1a8942382d4c"
   ],
   "committedIn": [],
   "status": {
     "state": "partially",
-    "comment": "Implemented and stable in a test (8 creatures = 15k particles, max 2.6 m from the pose, ~5 ms CPU per frame for 2 substeps); runs in the app (scene pass ~1 ms). Not yet looked at in the headset.",
-    "date": 1795556594720
+    "date": 1795556709409,
+    "comment": "Welded triangle soup (9e338fa): connected soft bodies, 8 creatures = 4.7k particles / 9.6k springs, 0.9 ms CPU per update (was ~5 ms, 15k unconnected triangles). Not yet looked at in the headset."
   },
   "intrinsicValue": 0,
   "cost": 5,
