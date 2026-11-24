@@ -34,6 +34,11 @@
       "ideaId": "adbc954a-ec4a-4fb3-bfce-1a56528be965",
       "weight": 1,
       "hypothesis": "Wider coarse levels carry richer large-scale structure (shapes, not just averaged colour), so hallucinations get more coherent at similar ms"
+    },
+    {
+      "ideaId": "84b2ae35-0068-4925-a45e-6eb4b73498fc",
+      "weight": 1,
+      "hypothesis": "A steady stream of researched, thought-through ideas keeps the experiments well chosen"
     }
   ],
   "supportedIdeas": [

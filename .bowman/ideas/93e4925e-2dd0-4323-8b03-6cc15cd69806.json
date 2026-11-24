@@ -1,0 +1,28 @@
+{
+  "id": "93e4925e-2dd0-4323-8b03-6cc15cd69806",
+  "text": "Creatures as particle-physics bodies (David's Aquarium, no Godot)",
+  "description": "Vendored steam-frame-vr's procedural creatures (native/src/creatures.rs). A subset (count fader) becomes mass-spring soft bodies (swarm.rs): a particle per vertex, springs on triangle edges whose rest lengths follow the animated pose (muscles), a weak pull to the pose, a divergence-free current. Drawn as round points with world velocity into the scene G-buffer, so the net reprojects them. Next: look in the headset, tune (hold, link, flow), maybe particles that detach, trails, bodies colliding with each other or the player, fewer particles per body (subsample) for the Frame's CPU.",
+  "archived": false,
+  "color": "#2f6d8a",
+  "tags": [
+    "scene",
+    "creatures",
+    "physics"
+  ],
+  "supportingConnections": [],
+  "supportedIdeas": [
+    "081b8c48-f101-43f7-99fa-1a8942382d4c"
+  ],
+  "committedIn": [],
+  "status": {
+    "state": "partially",
+    "comment": "Implemented and stable in a test (8 creatures = 15k particles, max 2.6 m from the pose, ~5 ms CPU per frame for 2 substeps); runs in the app (scene pass ~1 ms). Not yet looked at in the headset.",
+    "date": 1795556594720
+  },
+  "intrinsicValue": 0,
+  "cost": 5,
+  "selfWeight": 1,
+  "duration": 3,
+  "costVariance": 0,
+  "valueVariance": 0
+}

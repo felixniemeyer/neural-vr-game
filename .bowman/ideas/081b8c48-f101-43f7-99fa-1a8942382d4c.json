@@ -1,0 +1,33 @@
+{
+  "id": "081b8c48-f101-43f7-99fa-1a8942382d4c",
+  "text": "Scenes beyond boxes: switchable geometry, things that move",
+  "description": "The skyscraper boxes are one scene of several. Each scene gets a control tab with an on switch and its settings (city, creatures, ...), so they can be mixed or swapped live. Moving geometry matters: the net and the reprojection get velocity to work with, not only head motion. Candidates: creatures, flocks, falling/rising things, procedural plants, the twisted crystals.",
+  "archived": false,
+  "color": "#2f6d8a",
+  "tags": [
+    "scene",
+    "content"
+  ],
+  "supportingConnections": [
+    {
+      "ideaId": "93e4925e-2dd0-4323-8b03-6cc15cd69806",
+      "weight": 1,
+      "hypothesis": "Soft bodies that lag and smear look alive and artistic, more than replayed rigid animation"
+    }
+  ],
+  "supportedIdeas": [
+    "f15f1791-6c85-40b1-be2f-c1ba62ec9bdc"
+  ],
+  "committedIn": [],
+  "status": {
+    "state": "partially",
+    "comment": "Control tabs with switches: city (blocks on/off, ground plate stays) and creatures (commit after 588c366).",
+    "date": 1795556594720
+  },
+  "intrinsicValue": 0,
+  "cost": 4,
+  "selfWeight": 1,
+  "duration": 3,
+  "costVariance": 0,
+  "valueVariance": 0
+}

@@ -1,0 +1,28 @@
+{
+  "id": "84b2ae35-0068-4925-a45e-6eb4b73498fc",
+  "text": "Research loop: research, think through, research, think through",
+  "description": "Open-ended work for an agent while training runs (needs no GPU, little memory): pick an open question of the art track (cheapest interesting rules, hallucination losses, CNN pyramids, CAs, particle bodies, world models at tiny scale), research it (papers, demos, code), think it through against this codebase and its costs, write the findings into the idea (status comment / new child ideas with hypotheses), pick the next question. Never finishes; each round leaves a written note.",
+  "archived": false,
+  "color": "#2f6d8a",
+  "tags": [
+    "research",
+    "ideation",
+    "loop"
+  ],
+  "supportingConnections": [],
+  "supportedIdeas": [
+    "003b71b2-fdb8-4e45-b46d-fd1b01cab5a2"
+  ],
+  "committedIn": [],
+  "status": {
+    "state": "open",
+    "comment": "",
+    "date": 1795556594720
+  },
+  "intrinsicValue": 0,
+  "cost": 2,
+  "selfWeight": 1,
+  "duration": 3,
+  "costVariance": 0,
+  "valueVariance": 0
+}
