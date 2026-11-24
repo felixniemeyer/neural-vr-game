@@ -11,9 +11,9 @@
   ],
   "committedIn": [],
   "status": {
-    "state": "partially",
-    "comment": "Research (abstracts): infilling vectors (Kanchana et al. WACV 2022, 2110.08805) copy holes from a predicted offset instead of predicting colour; PatchEX: parallel patch inpainting + shadow nets. Experiment 1 done, REFUTED: background-biased push-pull (net.background = 2, e62dfa7), A/B 500 its from nice-net vs nodrop, evaluate.py 64x96 mean L1: push-pull holes 0.1841 vs 0.1837, net holes 0.1615 vs 0.1616, all pixels 0.0903 vs 0.0907: no effect (push-pull takes the finest level with data, so near and far rarely share a cell). Remaining: experiment 2, the net outputs a copy offset for hole pixels (infilling vector).",
-    "date": 1795466646733
+    "state": "failed",
+    "comment": "Research (abstracts): infilling vectors (Kanchana et al. WACV 2022) copy holes from a predicted offset; PatchEX: parallel patch inpainting. Both cheap variants tested, 500 its from nice-net, evaluate.py 64 x 96 mean L1: (1) background-biased push-pull (net.background 2, e62dfa7) vs nodrop: holes 0.1615 vs 0.1616, no effect. (2) infilling vectors (net.copy 6 px, f4a81cd, zero-initialised head) vs gate: holes 0.1634 vs 0.1624, all 0.0788 vs 0.0786; the head barely learned (|w| mean 0.009, offsets ~0.1-0.5 px), and the copy alone (max_change 0) made holes slightly worse (0.1848 vs 0.1837). No gain at this budget; options stay in train/ (default off).",
+    "date": 1795480405173
   },
   "intrinsicValue": 0,
   "cost": 2,

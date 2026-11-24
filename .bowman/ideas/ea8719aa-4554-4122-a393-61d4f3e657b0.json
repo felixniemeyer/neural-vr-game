@@ -169,7 +169,8 @@
         3.03
       ],
       "weight": 1,
-      "hypothesis": "Predicting where to copy a hole from (infilling vectors toward the background side) instead of a colour beats push-pull on eval96 holes by more than the current +12%, because disocclusions reveal background that sits right next to them."
+      "hypothesis": "Predicting where to copy a hole from (infilling vectors toward the background side) instead of a colour beats push-pull on eval96 holes by more than the current +12%, because disocclusions reveal background that sits right next to them.",
+      "reflection": "Did not hold at 500 its: neither copy offsets (infilling vectors) nor a far-side push-pull bias improved 96-frame holes over push-pull + net (+11.6-12.3% either way)."
     },
     {
       "ideaId": "f7c340c1-e7eb-4a58-9448-ebfdeaf551e8",
