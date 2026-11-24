@@ -13,9 +13,9 @@
   ],
   "committedIn": [],
   "status": {
-    "state": "partially",
-    "comment": "Prerequisite done: train.margin (36dddc2), a state margin simulated and observed like the app's OVERSCAN, losses and evaluate.py on the inner crop only. A/B 500 its from nice-net, margin 8 vs nodrop (evaluate.py 64 x 96, mean L1): holes push-pull 0.063 vs 0.184 (border disocclusions mostly vanish: content survives in the margin), net vs push-pull all pixels -14.5% vs -18.9%, holes +2.8% vs +12.1% (little left to fill). Note: margin also shifts the sampled crops, so baselines differ slightly (pp all 0.0727 vs 0.0763). The margin makes training closer to the runtime; use it for further runs (3.6 s/it vs 1.6 at 32+16 px). Next: the loop loss itself (replay the camera back to step 1, dt = 0, L1 against the step-1 prediction where both are covered).",
-    "date": 1795471079300
+    "state": "failed",
+    "comment": "Implemented: train.margin (36dddc2) and train.loop (78757e3; the last prediction warped back to step 1's camera by the composed inverse, dt 0, L1 vs the step-1 prediction where both covered; synthetic transform check 0.047 vs 0.254 wrong). A/B 2026-11-24, 500 its from nice-net, both gate 1 + margin 8 (runs/gatemargin vs runs/gateloop, loop 1.0), evaluate.py 64 x 96 mean L1: all 0.0734 vs 0.0732, holes 0.0611 vs 0.0611: no effect. Likely because the 8-step training rollouts are mostly forward motion with observe blends toward the real frames, so loops rarely leave anything to remember. The margin itself is the useful part (border holes mostly vanish).",
+    "date": 1795484137139
   },
   "intrinsicValue": 0,
   "cost": 3,
