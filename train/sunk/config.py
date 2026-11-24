@@ -70,6 +70,9 @@ class Train:
     dropout: float = 0.0        # max fraction of the resolved state knocked out per step (blobs), to regenerate
     preview: int = 250          # write preview + export every n iterations
     threads: int = 0            # torch threads, 0 = all
+    duty: float = 1.0           # fraction of wall time spent training (sleeps in between); re-read live from config.toml
+    on_battery: str = "run"     # "run", "pause" (checkpoint, wait for AC) or "stop" (checkpoint, exit)
+    checkpoint: int = 25        # save checkpoint.pt every n iterations (Ctrl+C / SIGTERM also saves)
     init: str = ""              # start from these weights (an export folder, e.g. ../stereo24/nets/001250); "" = random
 
 

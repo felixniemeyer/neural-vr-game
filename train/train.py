@@ -24,9 +24,9 @@ and penalises differences.
 
 Writes into the project: log.txt, preview/<iter>.png (per sample: resolved with holes
 magenta | prediction | truth | predicted depth | true depth, at 3 steps of a
-free-running rollout), net/ (latest export for the app), checkpoint.pt (resumes).
+free-running rollout), net/ (latest export for the app), checkpoint.pt (resumes; Ctrl+C saves, see train.duty and train.on_battery).
 """
-import sys, time
+import os, signal, sys, time
 from fractions import Fraction
 from pathlib import Path
 
@@ -458,6 +458,15 @@ def preview(path, frames, near, scale=4):
     image.resize((image.width * scale, image.height * scale), Image.NEAREST).save(path)
 
 
+def on_mains() -> bool:
+    """True if a mains supply is online (or the machine has no battery)."""
+    supplies = list(Path("/sys/class/power_supply").glob("*"))
+    mains = [p for p in supplies if (p / "type").read_text().strip() == "Mains"]
+    if not mains:
+        return True
+    return any((p / "online").read_text().strip() == "1" for p in mains)
+
+
 def main():
     if len(sys.argv) != 2:
         sys.exit("usage: uv run train.py runs/<name>")
@@ -465,6 +474,10 @@ def main():
     config = load(project)
     if config.train.threads:
         torch.set_num_threads(config.train.threads)
+    os.nice(19)  # background priority: the desktop and the app stay responsive
+    stopping = []
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(sig, lambda *_: (stopping.append(1), print("stopping after this iteration", flush=True)))
     data = Footage(config)
     net = Net(config)
     opt = torch.optim.Adam(net.parameters(), lr=config.train.lr)
@@ -503,7 +516,13 @@ def main():
     log = open(project / "log.txt", "a")
     began, total = time.time(), 0.0
     stereo = config.train.stereo
+    def save(it):
+        torch.save({"net": net.state_dict(), "opt": opt.state_dict(), "sched": sched.state_dict(), "iter": it},
+                   checkpoint)
+
+    duty = config.train.duty
     for it in range(start + 1, config.train.iters + 1):
+        work = time.time()
         batch, initial = streams.batch(rng)
         loss, _, final = rollout(net, data, batch, config.train.observe, start=initial, dropout=config.train.dropout)
         streams.advance(final)
@@ -538,8 +557,31 @@ def main():
             preview(project / "preview" / f"{it:06d}.png", frames, config.net.near)
             net.export(project / "net", config, max_tau=max_tau)
             net.export(project / "nets" / f"{it:06d}", config, max_tau=max_tau)  # every version (~20 KB)
-            torch.save({"net": net.state_dict(), "opt": opt.state_dict(), "sched": sched.state_dict(), "iter": it},
-                       checkpoint)
+            save(it)
+        elif it % config.train.checkpoint == 0:
+            save(it)
+            try:
+                duty = load(project).train.duty  # live: edit config.toml to speed up or slow down
+            except Exception as e:
+                print(f"config.toml not reloaded: {e}", flush=True)
+        if stopping:
+            save(it)
+            print(f"saved at {it}; run again to resume", flush=True)
+            return
+        if config.train.on_battery != "run" and not on_mains():
+            save(it)
+            if config.train.on_battery == "stop":
+                print(f"on battery: saved at {it}, stopping", flush=True)
+                return
+            print(f"on battery: saved at {it}, waiting for AC", flush=True)
+            while not on_mains() and not stopping:
+                time.sleep(30)
+            if stopping:
+                return
+            print("on AC again, continuing", flush=True)
+            began = time.time()
+        elif duty < 1:
+            time.sleep((time.time() - work) * (1 / max(duty, 0.05) - 1))
 
 
 if __name__ == "__main__":
