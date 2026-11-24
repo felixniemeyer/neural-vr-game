@@ -77,6 +77,26 @@ def pyramid(state, levels, down=None, near=1.0, weight=None):
     return out
 
 
+def encode(state, mips, convs, near):
+    """CNN pyramid (net.cnn): per level 1.. a 1x1 conv over the 2x2 children (pixel-unshuffled;
+    per child the normalised rgb, inv * near, hidden, the child's features, coverage) gives
+    that level's features, ReLU, widening with depth. Premultiplied by coverage like the
+    mips, so read() normalises them. Returns [None, (features, coverage), ...]."""
+    out = [None]
+    feats = None
+    for index, conv in enumerate(convs):
+        values, cover = mips[index]
+        v = values / cover.clamp_min(1e-4)
+        parts = [v[:, RGB], v[:, INV:INV + 1] * near, v[:, HID], (cover > 1e-3).float()]
+        if feats is not None:
+            parts.append(feats)
+        f = F.relu(conv(F.pixel_unshuffle(torch.cat(parts, 1), 2)))
+        coarse = mips[index + 1][1]
+        out.append((f * coarse, coarse))
+        feats = f
+    return out
+
+
 def read(level, grid):
     """Bilinear read of a mip (premultiplied values, coverage) at a grid; normalised."""
     v = F.grid_sample(level[0], grid, mode="bilinear", padding_mode="border", align_corners=False)
@@ -112,6 +132,18 @@ class Net(nn.Module):
             with torch.no_grad():
                 self.copy_head.weight.zero_()
                 self.copy_head.bias.zero_()
+        # CNN pyramid (net.cnn): an encoder with widening features per level, read by the
+        # same taps through a zero-initialised extra input layer (starts as the plain net).
+        self.cnn = list(n.cnn)
+        assert not self.cnn or len(self.cnn) == n.levels - 1, "net.cnn: one width per level 1.."
+        widths = [0] + self.cnn
+        self.encoder = nn.ModuleList(nn.Conv2d(4 * (child + widths[i]), widths[i + 1], 1)
+                                     for i in range(len(self.cnn))) if self.cnn else None
+        self.wide_in = nn.Conv2d(sum(widths[level] for level, _, _ in self.taps), sizes[1], 1, bias=False) \
+            if self.cnn else None
+        if self.wide_in is not None:
+            with torch.no_grad():
+                self.wide_in.weight.zero_()
         if self.down is not None:
             with torch.no_grad():
                 for conv in self.down:
@@ -164,8 +196,19 @@ class Net(nn.Module):
         features += [filled[:, CERT:CERT + 1], valid, one, one * tau if self.tau_input else 0 * one]
         x = torch.cat(features, 1)
 
-        for layer in self.layers[:-1]:
-            x = F.relu(layer(x))
+        wide = None
+        if self.encoder is not None:
+            coded, reads = encode(state, mips, self.encoder, self.near), []
+            for level, dx, dy in self.taps:
+                if level > 0:
+                    value, covered = read(coded[level], self.grid(h, w, dx, dy, state.device).expand(b, -1, -1, -1))
+                    reads.append(value * covered)
+            wide = self.wide_in(torch.cat(reads, 1))
+        for index, layer in enumerate(self.layers[:-1]):
+            x = layer(x)
+            if index == 0 and wide is not None:
+                x = x + wide
+            x = F.relu(x)
         if self.copy_head is not None:
             offset = self.copy * torch.tanh(self.copy_head(x)).permute(0, 2, 3, 1)  # [B, H, W, 2] px
             scale = torch.tensor([2.0 / w, 2.0 / h], device=state.device)
@@ -203,6 +246,7 @@ class Net(nn.Module):
             "hidden_state": config.net.hidden_state, "near": self.near, "max_change": self.max_change,
             "rate": self.rate, "max_tau": max_tau, "background": self.background, "gate": self.gate, "copy": self.copy,
             "down": [[c.in_channels, c.out_channels] for c in self.down] if self.down is not None else [],
+            "cnn": self.cnn,  # torch only: weights.bin leaves the encoder out, the app cannot run it
         }, indent=1))
 
 

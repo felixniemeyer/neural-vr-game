@@ -43,6 +43,7 @@ class Net:
     gate: float = 0.0           # the update is scaled by 1 - gate * certainty: well-observed pixels drift less
     copy: float = 0.0           # infilling vectors: holes copy the filled state from a predicted offset (<= copy px); 0 = off
     down: bool = False          # learned downsampling: coarse levels' hidden channels get a 1x1 conv over 2x2 children
+    cnn: list = field(default_factory=list)  # CNN pyramid (torch only): feature widths of levels 1.. (multiples of 4, e.g. [8, 8, 16, 16]); the taps read them too
 
 
 @dataclass
