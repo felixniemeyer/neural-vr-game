@@ -296,6 +296,26 @@ def corridor(pred, truth, known, slack=0.05, contrast=0.8):
     return (F.relu((mp - mt).abs() - slack) + F.relu(contrast * st - sp)).mean()
 
 
+_style_bank = None
+
+
+def style(x, known):
+    """Gram matrices of a fixed random conv bank (16 filters, 5x5) on the colour at two
+    scales: position-free texture statistics (DyNCA's style loss without VGG). [B, 2, 16, 16]."""
+    global _style_bank
+    if _style_bank is None:
+        g = torch.Generator().manual_seed(11)
+        _style_bank = torch.randn(16, 3, 5, 5, generator=g) / (5 * 5 * 3) ** 0.5
+    grams = []
+    for level in range(2):
+        if level:
+            x, known = F.avg_pool2d(x, 2), F.avg_pool2d(known, 2)
+        f = F.relu(F.conv2d(x - x.mean((2, 3), keepdim=True), _style_bank, padding=2)) * known
+        f = f.flatten(2)
+        grams.append(f @ f.transpose(1, 2) / known.flatten(2).sum(2, keepdim=True).clamp_min(1))
+    return torch.stack(grams, 1)
+
+
 def spectrum(x, known, bands=8):
     """Radially averaged log power spectrum of luminance [B, bands] (train.spectrum),
     unknown pixels set to the known mean so the mask edge adds little power."""
@@ -362,6 +382,9 @@ def rollout(net, data, batch, observe, record=False, start=None, dropout=0.0):
                 return F.avg_pool2d(g, 8, stride=4)
             window = F.avg_pool2d(known[..., :-1, :-1], 8, stride=4) > 0.99
             step_loss = step_loss + cfg.train.texture * ((energy(image) - energy(target)).abs() * window).mean()
+        if cfg.train.style:
+            # Texture statistics vs the footage's (position-free): structure, not exact pixels.
+            step_loss = step_loss + cfg.train.style * (style(image[:, RGB], known) - style(target[:, RGB], known)).abs().mean()
         if cfg.train.spectrum:
             full = (known.amin((2, 3)) > 0).float()[:, 0]  # only samples whose crop is fully known
             gap = (spectrum(image[:, RGB], known) - spectrum(target[:, RGB], known)).abs().mean(1)
