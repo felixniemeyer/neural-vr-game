@@ -564,6 +564,9 @@ def main():
         sys.exit("usage: uv run train.py runs/<name>")
     project = Path(sys.argv[1])
     config = load(project)
+    if config.net.layout == "cube-v1":  # the sphere pipeline (train_cube.py)
+        import train_cube
+        return train_cube.main(project)
     if config.train.threads:
         torch.set_num_threads(config.train.threads)
     os.nice(19)  # background priority: the desktop and the app stay responsive
