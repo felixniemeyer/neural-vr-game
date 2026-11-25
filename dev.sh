@@ -11,9 +11,12 @@
 #   BROKER_PORT=8090  CONTROLLER_PORT=4173  HEADSET=qwerty|simulated (auto-rotating)
 #   MONADO_WORKSPACE (sway): where Monado's windows go, default 5
 #   plus the app's variables: EYE_SIZE=256 VIEW=... MOVE=4 ...
-#   WEIGHTS=dir pins a net (e.g. WEIGHTS=nice-net, WEIGHTS=random for random weights);
-#   unset, the app follows the newest export of any training run (train/runs/*/net,
-#   rewritten every train.preview iterations) and restarts when a newer one appears.
+#   WEIGHTS=dir pins a net (e.g. WEIGHTS=nice-net, WEIGHTS=random for random weights).
+#   Unset, on a terminal: a picker (train/zoo.py) lists the nets by layout (reproject-v2,
+#   reproject-v1) with their metrics. Picking a run follows its exports (train/runs/<run>/net,
+#   rewritten every train.preview iterations: the app restarts on a newer one); a loose
+#   export (nice-net) is pinned; "newest" follows the newest export of any run (also
+#   without a terminal).
 set -euo pipefail
 root=$(cd -- "$(dirname -- "$0")" && pwd)
 out=$root/build/native
@@ -40,14 +43,29 @@ for tool in npx monado-service glslangValidator cargo; do
 done
 
 follow=0
-if [[ -z ${WEIGHTS:-} ]]; then follow=1
+runs=("$root"/train/runs/*) # the runs followed
+if [[ -z ${WEIGHTS:-} ]]; then
+    follow=1
+    if [[ -t 0 && -t 1 ]]; then
+        choice_file=$(mktemp)
+        if ! python3 "$root/train/zoo.py" pick "$choice_file"; then
+            rm -f "$choice_file"
+            echo "dev.sh: nothing picked"
+            exit 0
+        fi
+        choice=$(<"$choice_file")
+        rm -f "$choice_file"
+        case $choice in
+            follow\ *) runs=("${choice#follow }") ;;
+            pin\ *) follow=0; export WEIGHTS=${choice#pin } ;;
+        esac
+    fi
 elif [[ $WEIGHTS == random ]]; then unset WEIGHTS
 fi
-latest_net() { # newest train/runs/*/net (by weights.bin) the app can run, empty if none
+latest_net() { # newest net/ (by weights.bin) of the followed runs the app can run, empty if none
     local file
-    for file in $(ls -t "$root"/train/runs/*/net/weights.bin 2>/dev/null); do
-        # torch-only experiments (net.cnn) export weights the app cannot run
-        grep -qE '"cnn": \[[^]]' "${file%/*}/net.json" 2>/dev/null && continue
+    for file in $(ls -t "${runs[@]/%//net/weights.bin}" 2>/dev/null); do
+        python3 "$root/train/zoo.py" runnable "${file%/*}" >/dev/null || continue
         dirname "$file"; return
     done
 }
