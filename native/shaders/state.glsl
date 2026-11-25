@@ -2,7 +2,7 @@
 //   1-6    previous state (2 eyes x A, B, C)
 //   7-14   splat accumulators (2 eyes x acc0..acc3)
 //   15-20  resolved state (2 eyes x A, B, C), with the hole-aware mip pyramid
-//   21-22  resolved certainty (per eye)
+//   21-22  resolved D (per eye), with mips like A, B, C
 //   23-28  new state (2 eyes x A, B, C)
 //   29-32  scene (2 eyes x colour + inverse distance, world velocity)
 //   33     net weights (uniform buffer)
@@ -15,10 +15,14 @@
 // Accumulators:        acc0 = (rgb, inv)*w, acc1 = (velocity, certainty)*w, acc2 = h*w, acc3 = w
 // Resolved (mid):      A = (rgb, inv), B = (velocity, coverage), C = h; holes are all 0, so
 //                      level 0 is "premultiplied by coverage" and its mips (2x2 averages)
-//                      are the hole-aware pyramid: value = mip / coverage.
+//                      are the hole-aware pyramid: value = mip / coverage. D = (certainty).
+//   LAYOUT 2 (reproject-v2): everything premultiplied by the raw splat weight w instead:
+//                      A = (rgb, inv) w, B = (velocity w, w), C = h w, D = (motion w, w),
+//                      value = mip / (mip weight + 1e-3) (see resolve.frag).
 
-layout(constant_id = 7) const int TARGET = 0;
-layout(constant_id = 8) const int SOURCE = 0; // splat: the eye whose state it reprojects
+layout(constant_id = 7) const int LAYOUT = 1; // the net's layout: 1 = reproject-v1, 2 = reproject-v2
+layout(constant_id = 8) const int TARGET = 0;
+layout(constant_id = 9) const int SOURCE = 0; // splat: the eye whose state it reprojects
 
 layout(set = 0, binding = 1) uniform sampler2D prev00;
 layout(set = 0, binding = 2) uniform sampler2D prev01;
@@ -40,8 +44,8 @@ layout(set = 0, binding = 17) uniform sampler2D mid02;
 layout(set = 0, binding = 18) uniform sampler2D mid10;
 layout(set = 0, binding = 19) uniform sampler2D mid11;
 layout(set = 0, binding = 20) uniform sampler2D mid12;
-layout(set = 0, binding = 21) uniform sampler2D cert0;
-layout(set = 0, binding = 22) uniform sampler2D cert1;
+layout(set = 0, binding = 21) uniform sampler2D mid03;
+layout(set = 0, binding = 22) uniform sampler2D mid13;
 layout(set = 0, binding = 23) uniform sampler2D next00;
 layout(set = 0, binding = 24) uniform sampler2D next01;
 layout(set = 0, binding = 25) uniform sampler2D next02;
@@ -95,8 +99,9 @@ vec4 accFetch(int eye, int image, ivec2 p) {
     return vec4(0.0);
 }
 
-// resolved state, exact (level 0)
+// resolved state, exact (level 0); image 3 = D
 vec4 midFetch(int eye, int image, ivec2 p) {
+    if (image == 3) return eye == 0 ? texelFetch(mid03, p, 0) : texelFetch(mid13, p, 0);
     switch (eye * 3 + image) {
     case 0: return texelFetch(mid00, p, 0);
     case 1: return texelFetch(mid01, p, 0);
@@ -108,8 +113,9 @@ vec4 midFetch(int eye, int image, ivec2 p) {
     return vec4(0.0);
 }
 
-// resolved state, bilinear at uv on a mip level (premultiplied by coverage)
+// resolved state, bilinear at uv on a mip level (premultiplied by coverage); image 3 = D
 vec4 midLod(int eye, int image, vec2 uv, float level) {
+    if (image == 3) return eye == 0 ? textureLod(mid03, uv, level) : textureLod(mid13, uv, level);
     switch (eye * 3 + image) {
     case 0: return textureLod(mid00, uv, level);
     case 1: return textureLod(mid01, uv, level);
@@ -122,7 +128,7 @@ vec4 midLod(int eye, int image, vec2 uv, float level) {
 }
 
 float certFetch(int eye, ivec2 p) {
-    return eye == 0 ? texelFetch(cert0, p, 0).x : texelFetch(cert1, p, 0).x;
+    return midFetch(eye, 3, p).x;
 }
 
 // new state (net output)

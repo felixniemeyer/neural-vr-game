@@ -628,8 +628,9 @@ fn run(shaders: &Path) -> Result<()> {
     // WEIGHTS=dir: a trained net (train/runs/<name>/net); without it random weights.
     let rule = rule::Rule::load(env::var_os("WEIGHTS").map(PathBuf::from).as_deref())?;
     println!(
-        "Net: {} ({} weights, {} mip levels)",
+        "Net: {} reproject-v{} ({} weights, {} mip levels)",
         if rule.trained() { "trained" } else { "random" },
+        rule.layout,
         rule.len(),
         rule.levels()
     );
@@ -730,8 +731,9 @@ fn run(shaders: &Path) -> Result<()> {
         .section("net")
         .fader("wild", 0., 1., initial("wild", 0.))
         // Certainty gate: the net's change per pixel times 1 - gate * certainty, so
-        // well-observed pixels drift less (train net.gate; 1 = full gate).
-        .fader_with("gate", 0., 1., initial("gate", 1.), 2)
+        // well-observed pixels drift less (train net.gate; 1 = full gate). Starts at the
+        // value the net trained with (random weights: 1); reproject-v2 has no gate.
+        .fader_with("gate", 0., 1., initial("gate", rule.gate.unwrap_or(1.)), 2)
         .fader("timescale", 0., 4., initial("timescale", 1.))
         .fader_with("netfps", 5., 90., initial("netfps", 24.), 0)
         // How much of the scene's colour and depth goes into the state per frame (at
@@ -965,8 +967,8 @@ fn run(shaders: &Path) -> Result<()> {
             std::fs::write(
                 dir.join("dump.json"),
                 format!(
-                    "{{\"size\": {edge}, \"tau\": {}, \"wild\": {}, \"layout\": \"mid A, B, C (rgba16f), certainty (r16f), next A, B, C (rgba16f)\"}}\n",
-                    settings.tau, settings.wild
+                    "{{\"size\": {edge}, \"tau\": {}, \"wild\": {}, \"net_layout\": {}, \"layout\": \"mid A, B, C, D (rgba16f), next A, B, C (rgba16f)\"}}\n",
+                    settings.tau, settings.wild, rule.layout
                 ),
             )?;
             println!("Dumped to {}", dir.display());

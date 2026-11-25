@@ -5,6 +5,10 @@
 //! Time: net.json "rate" (ticks per second) and "max_tau" (the largest step it trained
 //! on); nets from before (no rate) trained on 10 fps steps without seeing tau.
 //!
+//! Layout: net.json "layout" (train/sunk/model.py), reproject-v1 (default: nets from
+//! before it existed) or reproject-v2; the shaders branch on it (LAYOUT, 1 or 2). Nets
+//! using features the shaders do not implement (down, copy, background, cnn) are refused.
+//!
 //! `WEIGHTS=dir` loads a trained net; without it the default layout runs with random
 //! weights only. The `wild` fader blends the trained weights toward random ones that
 //! slowly morph (several random bases mixed with sines, normalised): 0 = as trained,
@@ -31,6 +35,11 @@ pub struct Rule {
     pub rate: f32,
     pub max_tau: f32,
     tau_input: bool,
+    /// 1 = reproject-v1, 2 = reproject-v2.
+    pub layout: i32,
+    /// The certainty gate the net trained with (net.json "gate"; nets from before the
+    /// gate trained without it: 0); None for random weights.
+    pub gate: Option<f32>,
     trained: Option<Vec<f32>>,
     bases: Vec<Vec<f32>>,
 }
@@ -43,7 +52,7 @@ pub struct RuleFrame {
     pub layers: [[f32; 4]; MAX_LAYERS],
     /// per tap: level, dx, dy, 0
     pub taps: [[f32; 4]; MAX_TAPS],
-    /// tau input (1 or 0), 0, 0, 0
+    /// tau input (1 or 0), 0 (the gate fader's slot), ticks per second, 0
     pub run: [f32; 4],
 }
 
@@ -66,11 +75,11 @@ fn wave(time: f32, period: f32, phase: f32) -> f32 {
 
 impl Rule {
     pub fn load(dir: Option<&Path>) -> Result<Self> {
-        let (taps, layers, near, max_change, trained, time) = match dir {
+        let (taps, layers, near, max_change, trained, time, layout, gate) = match dir {
             None => {
                 let taps = default_taps();
                 let inputs = 4 * (2 * (1 + taps.len()) + 1);
-                (taps, vec![(inputs, 16), (16, 8)], 10., 0.5, None, (24., 1., true))
+                (taps, vec![(inputs, 16), (16, 8)], 10., 0.5, None, (24., 1., true), 1, None)
             }
             Some(dir) => {
                 let json: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("net.json"))?)?;
@@ -88,6 +97,20 @@ impl Rule {
                     .map(|l| Ok((number(&l[0])? as usize, number(&l[1])? as usize)))
                     .collect::<Result<Vec<_>>>()?;
                 ensure!(json["hidden_state"].as_u64() == Some(4), "the runtime state holds 4 hidden channels");
+                let layout = match json.get("layout").and_then(Value::as_str).unwrap_or("reproject-v1") {
+                    "reproject-v1" => 1,
+                    "reproject-v2" => 2,
+                    other => anyhow::bail!("unknown net layout {other}"),
+                };
+                for feature in ["down", "cnn"] {
+                    let used = json.get(feature).and_then(Value::as_array).is_some_and(|a| !a.is_empty());
+                    ensure!(!used, "the net uses net.{feature}, which the shaders do not implement");
+                }
+                for feature in ["copy", "background"] {
+                    let used = json.get(feature).and_then(Value::as_f64).is_some_and(|v| v != 0.);
+                    ensure!(!used, "the net uses net.{feature}, which the shaders do not implement");
+                }
+                let gate = Some(json.get("gate").map(number).transpose()?.unwrap_or(0.));
                 let bytes = std::fs::read(dir.join("weights.bin"))?;
                 let weights: Vec<f32> =
                     bytes.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect();
@@ -97,11 +120,13 @@ impl Rule {
                     Some(rate) => (number(rate)?, json.get("max_tau").map_or(Ok(1.), number)?, true),
                     None => (10., 1., false),
                 };
-                (taps, layers, number(&json["near"])?, number(&json["max_change"])?, Some(weights), time)
+                (taps, layers, number(&json["near"])?, number(&json["max_change"])?, Some(weights), time, layout, gate)
             }
         };
         ensure!(taps.len() <= MAX_TAPS && layers.len() <= MAX_LAYERS, "net too large for the shader");
-        ensure!(layers[0].0 == 4 * (2 * (1 + taps.len()) + 1), "layer 1 inputs do not match the taps");
+        // vec4s per position: v1 (rgb, inv), h; v2 also (motion, weight). Plus one extra.
+        let groups = if layout == 2 { 3 } else { 2 };
+        ensure!(layers[0].0 == 4 * (groups * (1 + taps.len()) + 1), "layer 1 inputs do not match the taps");
         ensure!(layers.last().unwrap().1 == 8, "the net must output 8 values");
         for &(i, o) in &layers {
             ensure!(i % 4 == 0 && o % 4 == 0 && o <= MAX_UNITS, "layer sizes must be multiples of 4, at most {MAX_UNITS}");
@@ -111,7 +136,7 @@ impl Rule {
             .map(|_| (0..count).map(|_| (rand::random::<f32>() * 2. - 1.) * 3f32.sqrt()).collect())
             .collect();
         let (rate, max_tau, tau_input) = time;
-        Ok(Self { taps, layers, near, max_change, rate, max_tau, tau_input, trained, bases })
+        Ok(Self { taps, layers, near, max_change, rate, max_tau, tau_input, layout, gate, trained, bases })
     }
 
     pub fn trained(&self) -> bool {
@@ -123,9 +148,10 @@ impl Rule {
         self.taps.iter().map(|t| t[0] as u32 + 1).max().unwrap_or(1)
     }
 
-    /// Specialization constants of net.frag: taps, levels, layers, units per layer (4).
-    pub fn specialization(&self) -> [i32; 7] {
-        let mut out = [self.taps.len() as i32, self.levels() as i32, self.layers.len() as i32, 8, 8, 8, 8];
+    /// Specialization constants: taps, levels, layers, units per layer (4) (net.frag),
+    /// layout (state.glsl LAYOUT).
+    pub fn specialization(&self) -> [i32; 8] {
+        let mut out = [self.taps.len() as i32, self.levels() as i32, self.layers.len() as i32, 8, 8, 8, 8, self.layout];
         for (slot, &(_, o)) in out[3..].iter_mut().zip(&self.layers) {
             *slot = o as i32;
         }
@@ -152,7 +178,7 @@ impl Rule {
             net: [self.taps.len() as f32, self.layers.len() as f32, self.near, self.max_change],
             layers,
             taps,
-            run: [if self.tau_input { 1. } else { 0. }, 0., 0., 0.],
+            run: [if self.tau_input { 1. } else { 0. }, 0., self.rate, 0.],
         }
     }
 

@@ -11,8 +11,9 @@
 //! Splat accumulation per eye, additive blending:
 //!   acc0 = (rgb, inv)*w, acc1 = (velocity, certainty)*w, acc2 = h*w, acc3 = w (R16F)
 //! Resolved state per eye (net input): A = (rgb, inv), B = (velocity, coverage), C = h,
-//! holes all 0, with mip levels (2x2 averages = the hole-aware pyramid), plus the
-//! certainty (R16F).
+//! holes all 0, with mip levels (2x2 averages = the hole-aware pyramid), plus D: the
+//! certainty (reproject-v1, D.x) or (screen motion, weight) (reproject-v2; then A, B, C,
+//! D are premultiplied by the splat weight, see shaders/resolve.frag), with mip levels.
 //! Scene G-buffer per eye: (sun shade, inverse distance, vertical velocity, id).
 
 use crate::gpu::{image_range, Resource, Resources, Shader};
@@ -34,7 +35,7 @@ const STATES: usize = 3;
 const ACCS: usize = 4;
 /// Scene images per eye: (colour, inverse distance), (world velocity, 0).
 const SCENES: usize = 2;
-/// prev state, accumulators, resolved state, certainty, new state, scene (per eye)
+/// prev state, accumulators, resolved state, resolved D, new state, scene (per eye)
 const SAMPLED_BINDINGS: u32 = (EYES * (STATES + ACCS + STATES + 1 + STATES + SCENES)) as u32;
 const WEIGHTS_BINDING: u32 = SAMPLED_BINDINGS + 1;
 /// The creatures' vertices (creatures.rs Vertex, std430), read by creatures.vert.
@@ -152,15 +153,15 @@ pub struct World {
     layout: vk::PipelineLayout,
     sets: [vk::DescriptorSet; 2],
     state_images: Vec<vk::Image>,
-    /// Resolved A, B, C per eye (with mip levels), and the certainty per eye.
+    /// Resolved A, B, C per eye and D per eye, all with mip levels.
     mid_images: [[vk::Image; STATES]; EYES],
-    cert_images: [vk::Image; EYES],
+    d_images: [vk::Image; EYES],
     levels: u32,
     /// Specialization constants of the net pipeline (the net's layout).
-    spec: [i32; 7],
+    spec: [i32; 8],
     weights: *mut u16,
     weight_count: usize,
-    /// Host-visible copy of eye 0's resolved state (A, B, C, certainty) and new state.
+    /// Host-visible copy of eye 0's resolved state (A, B, C, D) and new state.
     dump: (vk::Buffer, *mut u8),
     pub dumping: bool,
     scene_targets: [vk::Framebuffer; EYES],
@@ -351,7 +352,7 @@ impl World {
         size: vk::Extent2D,
         output_format: vk::Format,
         swapchains: [&[vk::Image]; EYES],
-        spec: [i32; 7],
+        spec: [i32; 8],
         weight_count: usize,
     ) -> Result<Self> {
         let levels = spec[1] as u32;
@@ -458,7 +459,7 @@ impl World {
         let four = [STATE, STATE, STATE, SINGLE];
         let splat_pass = render_pass(r, &four, false, clear, read_layout, true)?;
         let dont_care = vk::AttachmentLoadOp::DONT_CARE;
-        let resolve_pass = render_pass(r, &four, false, dont_care, read_layout, true)?;
+        let resolve_pass = render_pass(r, &[STATE; 4], false, dont_care, read_layout, true)?;
         let net_pass = render_pass(r, &[STATE; STATES], false, dont_care, read_layout, true)?;
         let display_pass = render_pass(
             r,
@@ -511,10 +512,13 @@ impl World {
                 mid[eye][i] = r.view_levels(image, STATE, vk::ImageAspectFlags::COLOR, levels)?;
             }
         }
-        let mut cert = [vk::ImageView::null(); EYES];
-        let mut cert_images = [vk::Image::null(); EYES];
+        let mut d_view = [vk::ImageView::null(); EYES];
+        let mut d_target = [vk::ImageView::null(); EYES];
+        let mut d_images = [vk::Image::null(); EYES];
         for eye in 0..EYES {
-            (cert_images[eye], cert[eye]) = r.image(size, SINGLE, target_usage | Usage::TRANSFER_SRC)?;
+            let (image, level0) = r.image_levels(size, STATE, mid_usage, levels)?;
+            (d_images[eye], d_target[eye]) = (image, level0);
+            d_view[eye] = r.view_levels(image, STATE, vk::ImageAspectFlags::COLOR, levels)?;
         }
         let mut gbuffer = [[vk::ImageView::null(); SCENES]; EYES];
         let mut scene_targets = [vk::Framebuffer::null(); EYES];
@@ -529,7 +533,7 @@ impl World {
             scene_targets[eye] = r.framebuffer(scene_pass, size, &[gbuffer[eye][0], gbuffer[eye][1], depth])?;
             acc_targets[eye] = r.framebuffer(splat_pass, size, &acc[eye])?;
             let [a, b, c] = mid_target[eye];
-            resolve_targets[eye] = r.framebuffer(resolve_pass, size, &[a, b, c, cert[eye]])?;
+            resolve_targets[eye] = r.framebuffer(resolve_pass, size, &[a, b, c, d_target[eye]])?;
             for parity in 0..2 {
                 net_targets[eye][parity] = r.framebuffer(net_pass, size, &state[eye][1 - parity])?;
             }
@@ -577,13 +581,13 @@ impl World {
                 .buffer(uniforms)
                 .range(size_of::<Uniforms>() as u64)];
             // Bindings 1.. : prev state, accumulators, resolved state (pyramid sampler),
-            // certainty, new state (each of both eyes), scene G-buffer of both eyes.
+            // D (pyramid sampler), new state (each of both eyes), scene G-buffer of both eyes.
             let views: Vec<_> = (0..EYES)
                 .flat_map(|e| state[e][parity])
                 .chain(acc.into_iter().flatten())
                 .map(|v| (v, nearest))
-                .chain(mid.into_iter().flatten().map(|v| (v, linear)))
-                .chain(cert.into_iter().chain((0..EYES).flat_map(|e| state[e][next])).chain(gbuffer.into_iter().flatten()).map(|v| (v, nearest)))
+                .chain(mid.into_iter().flatten().chain(d_view).map(|v| (v, linear)))
+                .chain((0..EYES).flat_map(|e| state[e][next]).chain(gbuffer.into_iter().flatten()).map(|v| (v, nearest)))
                 .collect();
             assert_eq!(views.len(), SAMPLED_BINDINGS as usize);
             let views: Vec<_> = views
@@ -646,7 +650,7 @@ impl World {
             sets: [allocated[0], allocated[1]],
             state_images,
             mid_images,
-            cert_images,
+            d_images,
             levels,
             spec,
             weights,
@@ -778,7 +782,7 @@ impl World {
             ],
             step: [dt, settings.tau, settings.day.unwrap_or(-1.), 0.],
             net: rule.net,
-            net_run: [rule.run[0], settings.gate, 0., 0.],
+            net_run: [rule.run[0], settings.gate, rule.run[2], 0.],
             net_layers: rule.layers,
             net_taps: rule.taps,
             city: [settings.cell, settings.height, settings.crystals, settings.blocks as f32],
@@ -897,7 +901,8 @@ impl World {
                     d.cmd_end_render_pass(cmd);
                 }
                 if index == 3 {
-                    build_mips(d, cmd, self.mid_images.as_flattened(), self.size, self.levels);
+                    let mids: Vec<_> = self.mid_images.as_flattened().iter().chain(&self.d_images).copied().collect();
+                    build_mips(d, cmd, &mids, self.size, self.levels);
                 }
                 stamp(index);
             }
@@ -916,15 +921,13 @@ impl World {
             copy_to_buffer(d, cmd, image, self.size, 0, self.readback.0, 0);
         }
         if self.dumping {
-            // Eye 0: resolved A, B, C, certainty, then the new A, B, C.
+            // Eye 0: resolved A, B, C, D, then the new A, B, C.
             let state = 8 * (self.size.width * self.size.height) as u64;
             let mut offset = 0;
-            for image in self.mid_images[0] {
+            for image in self.mid_images[0].into_iter().chain([self.d_images[0]]) {
                 copy_to_buffer(d, cmd, image, self.size, 0, self.dump.0, offset);
                 offset += state;
             }
-            copy_to_buffer(d, cmd, self.cert_images[0], self.size, 0, self.dump.0, offset);
-            offset += state / 4;
             for i in 0..STATES {
                 let image = self.state_images[(1 - self.parity) * STATES + i];
                 copy_to_buffer(d, cmd, image, self.size, 0, self.dump.0, offset);
@@ -943,7 +946,7 @@ impl World {
     }
 
     /// The dump of the last frame with `dumping` set (after its commands finished):
-    /// eye 0's resolved A, B, C (RGBA16F), certainty (R16F), new A, B, C (RGBA16F).
+    /// eye 0's resolved A, B, C, D, new A, B, C (all RGBA16F).
     pub fn dumped(&self) -> &[u8] {
         unsafe { std::slice::from_raw_parts(self.dump.1, dump_bytes(self.size)) }
     }
@@ -1068,7 +1071,7 @@ fn half_to_f32(h: u16) -> f32 {
 
 fn dump_bytes(size: vk::Extent2D) -> usize {
     let pixels = (size.width * size.height) as usize;
-    pixels * (8 * 2 * STATES + 2)
+    pixels * 8 * (2 * STATES + 1)
 }
 
 /// Fill mip levels 1.. of the resolved images (level 0 written by the resolve pass,
