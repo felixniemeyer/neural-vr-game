@@ -131,6 +131,7 @@ ln -s /path/to/your/videos/*.mp4 videos/      # any footage
 SIZE=256 ./frames.sh                           # crop + scale to data/frames/256/native/ (FPS=10: .../10fps/)
 uv run new.py tiny                             # runs/tiny/config.toml: all settings
 uv run prepare.py runs/tiny                    # depth, flow, camera motion -> data/prepared/
+uv run fov.py runs/tiny                        # per-frame FOV + refit cameras (cube-v1, train.cameras = measured)
 uv run view.py data/prepared/<name>/chunk_000.npz   # colour | depth | flow | object motion
 uv run train.py runs/tiny                      # previews in runs/tiny/preview/, net in runs/tiny/net/ (every version in nets/<iteration>/)
 WEIGHTS=train/runs/tiny/net ./dev.sh           # (from the repo root)
@@ -150,6 +151,11 @@ Training settings worth knowing (`[train]`):
 - `init`: start from an exported net (e.g. `../stereo24/nets/001250`) with a fresh optimiser
 - `stereo`, `baseline`: a second eye up to `baseline` m to the right, with the app's
   cross-eye splat and a loss on the eyes' disagreement
+- `cameras` (cube-v1): `measured` uses each frame's field of view and the cameras refit with it
+  (`fov.py`). The FOV comes, best first, from `fov.py --measure` (GeoCalib on a few frames per
+  shot, smoothed within each shot so zooms are followed; needs
+  `uv add --optional fov "geocalib @ git+https://github.com/cvg/GeoCalib"`), from a sidecar
+  `videos/<video>.json` such as `{"vfov": 24}` (vertical FOV of the full frame), else `data.fov`
 
 To work on the av-controls Rust receiver locally, point cargo at your checkout in
 `native/.cargo/config.toml` (git-ignored):

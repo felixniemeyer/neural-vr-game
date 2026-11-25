@@ -87,6 +87,8 @@ class Train:
     context_weight: float = 0.5  # weight of that ring in the pyramid
     recall: float = 4.0         # pixel-loss weight factor on texels back in view after being out of it
     periods: list = field(default_factory=lambda: [1])  # per 8x8 tile update period (ticks), drawn per stream: evaluate with tau * P, then blend 1/P .. 1/1
+    cameras: str = "fixed"      # "fixed": data.fov everywhere, prepare.py's cameras; "measured" (cube-v1): per-frame FOV
+                                # and cameras refit with it (fov.py: measured > videos/<name>.json > data.fov)
     preview: int = 250          # write preview + export every n iterations
     threads: int = 0            # torch threads, 0 = all
     duty: float = 1.0           # fraction of wall time spent training (sleeps in between); re-read live from config.toml

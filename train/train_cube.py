@@ -75,7 +75,8 @@ def truth(clip, chunk, frames, config, big_origin, big):
     def pixels(focal, size):
         return focal * c[..., 0] / z + size / 2 - 0.5, -focal * c[..., 1] / z + size / 2 - 0.5
 
-    px, py = pixels(clip.focal, clip.scale)
+    rows = clip.t0 + index
+    px, py = pixels(clip.focal[index].view(-1, 1, 1), clip.scale)
     inside = (front & (px >= 0) & (px <= clip.scale - 1) & (py >= 0) & (py <= clip.scale - 1)).float()
     wh, ww = clip.window.shape[1:3]
     off = clip.offset[index].float()
@@ -83,9 +84,8 @@ def truth(clip, chunk, frames, config, big_origin, big):
     window = torch.tensor(clip.window[frames]).permute(0, 3, 1, 2).float() / 255
     rgb = F.grid_sample(window, grid, mode="bilinear", padding_mode="border", align_corners=False)
 
-    qx, qy = pixels(focal_of(size0, config.data.fov), size0)
+    qx, qy = pixels(torch.tensor([focal_of(size0, float(f)) for f in chunk["fov"][rows.numpy()]]).view(-1, 1, 1), size0)
     grid = torch.stack([(qx + 0.5) / size0 * 2 - 1, (qy + 0.5) / size0 * 2 - 1], -1)
-    rows = clip.t0 + index
     disp = torch.tensor(chunk["disp"][rows.numpy()].astype(np.float32))[:, None]
     inv = F.grid_sample(disp, grid, mode="bilinear", padding_mode="border", align_corners=False)[:, 0] * z / near
     last = len(chunk["vel"]) - 1

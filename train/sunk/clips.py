@@ -23,6 +23,7 @@ import torch
 import torch.nn.functional as F
 from PIL import Image
 
+from sunk.camera import focal_of
 from sunk.config import ROOT
 from sunk.sphere import QUARTER, directions, look_at
 from sunk.video import chunks as chunk_schedule
@@ -30,14 +31,10 @@ from sunk.video import chunks as chunk_schedule
 SLACK = 2  # frames decoded before t0 (alignment search -SLACK..SLACK)
 
 
-def focal_of(size, fov):
-    return size / 2 / math.tan(math.radians(fov) / 2)
-
-
 class Clip:
     """See the module docstring. Fields: c, t0, frames, scale, focal, angle, origin [2]
     (face texel of the big canvas's (0, 0)), big (canvas + ring, texels), cams [frames, 3, 3]
-    (canvas -> camera f), window [frames, h, w, 3] uint8, offset [frames, 2] (x, y px),
+    (canvas -> camera f), focal [frames] (px at scale), window [frames, h, w, 3] uint8, offset [frames, 2] (x, y px),
     error (alignment: mean abs error at data.size, 0..1)."""
 
 
@@ -65,9 +62,11 @@ def cameras(chunk, t0, frames, start):
 
 
 def project(dirs, cams, focal, size):
-    """Pixel coords [F, ..., 2] (x right, y down; centres at +0.5 - 0.5) and in-front mask."""
+    """Pixel coords [F, ..., 2] (x right, y down; centres at +0.5 - 0.5) and in-front mask;
+    focal: one per frame [F]."""
     c = torch.einsum("fij,...j->f...i", cams, dirs)
     z = c[..., 2].clamp_min(1e-6)
+    focal = torch.as_tensor(focal, dtype=c.dtype).reshape((-1,) + (1,) * (c.dim() - 2))
     px = focal * c[..., 0] / z + size / 2 - 0.5
     py = -focal * c[..., 1] / z + size / 2 - 0.5
     return torch.stack([px, py], -1), c[..., 2] > 1e-3
@@ -135,11 +134,12 @@ class Clips:
         frames = int(min(frames, footage.ahead[c][t0] + 1))  # pairs ahead + 1 frames
         clip = Clip()
         clip.c, clip.t0, clip.frames, clip.scale = c, t0, frames, scale
-        clip.focal = focal_of(scale, cfg.data.fov)
-        clip.angle = 1 / clip.focal
+        fov = chunk["fov"][t0:t0 + frames]  # per frame (deg): zooms change the focal length
+        clip.focal = torch.tensor([focal_of(scale, float(f)) for f in fov])
+        clip.angle = 1 / float(clip.focal[0])  # the canvas keeps frame 0's texel angle
         big = self.big()
         clip.big = big
-        clip.origin, start = place(rng, big, clip.angle, cfg.data.fov)
+        clip.origin, start = place(rng, big, clip.angle, float(fov[0]))
         clip.cams = cameras(chunk, t0, frames, start)
 
         # Where the big canvas lands in each frame: a coarse grid of its texels is enough.

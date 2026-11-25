@@ -93,6 +93,13 @@ class Footage:
             z = np.load(path)
             chunk = {k: z[k] for k in ("rgb", "disp", "vel", "R", "t", "ok")}
             chunk["fps"] = float(z["fps"]) if "fps" in z else self.config.data.fps or 10.0
+            chunk["fov"] = np.full(len(chunk["rgb"]), self.config.data.fov, np.float32)  # per frame (deg)
+            if self.config.train.cameras == "measured":
+                cam = path.with_suffix(".cam.npz")
+                if not cam.exists():
+                    sys.exit(f"train.cameras = measured: {cam.name} missing, run uv run fov.py <project>")
+                z = np.load(cam)
+                chunk.update({k: z[k] for k in ("fov", "R", "t", "vel", "ok")})
             ahead = np.zeros(len(chunk["ok"]) + 1, int)
             for t in range(len(chunk["ok"]) - 1, -1, -1):
                 ahead[t] = (ahead[t + 1] + 1) * bool(chunk["ok"][t])
@@ -567,6 +574,8 @@ def main():
     if config.net.layout == "cube-v1":  # the sphere pipeline (train_cube.py)
         import train_cube
         return train_cube.main(project)
+    if config.train.cameras != "fixed":
+        sys.exit("train.cameras = measured needs net.layout cube-v1 (one focal length per run here)")
     if config.train.threads:
         torch.set_num_threads(config.train.threads)
     os.nice(19)  # background priority: the desktop and the app stay responsive
