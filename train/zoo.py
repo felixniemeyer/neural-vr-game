@@ -3,6 +3,7 @@
   python3 zoo.py              list (layouts, runs, metrics)
   python3 zoo.py pick <file>  interactive picker (arrows/j/k, Enter, q); writes the choice
                               to <file>: "newest", "follow <run dir>" or "pin <net dir>"
+                              (dev.sh: at start, and live with p in its terminal)
   python3 zoo.py runnable <net dir>   exit 0 if the app can run it, else print why
 
 Nets: train/runs/<run>/net (followed: the app restarts on new exports of that run) and
@@ -70,20 +71,22 @@ def entries():
     return found
 
 
+HEADER = f"  {'net':<16} {'exported':<12}  {'short: net / push-pull':<22}  {'long: net / push-pull':<27}  notes"
+
+
 def describe(e):
+    """One table row (columns as HEADER): name, export time, the last validation's error
+    over train.steps steps and over the long horizon (frames), each next to push-pull."""
     layout, name, kind, path, net, why, m, exported, training = e
     when = time.strftime("%d.%m. %H:%M", time.localtime(exported))
-    text = f"{name:<16} {when}"
+    short = long = ""
     if m:
-        val, pp, frames, long, long_pp = m
-        text += f"   short {val:.4f} (pp {pp:.4f})"
+        val, pp, frames, long_val, long_pp = m
+        short = f"{val:.4f} / {pp:.4f}"
         if frames:
-            text += f"   {frames} frames {long:.4f} (pp {long_pp:.4f})"
-    if training:
-        text += "   [training]"
-    if why:
-        text += f"   -- can't run: {why}"
-    return text
+            long = f"{long_val:.4f} / {long_pp:.4f} ({frames} fr)"
+    notes = ["training" if training else "", f"can't run: {why}" if why else "", "pinned" if kind == "pin" else ""]
+    return f"  {name:<16} {when:<12}  {short:<22}  {long:<27}  {', '.join(n for n in notes if n)}"
 
 
 def rows():
@@ -95,7 +98,8 @@ def rows():
             layout = e[0]
             out.append(("", None))
             out.append((layout, None))
-        out.append(("  " + describe(e), e))
+            out.append((HEADER, None))
+        out.append((describe(e), e))
     return out
 
 
@@ -118,7 +122,9 @@ def pick(result: Path):
             for y, (text, e) in enumerate(table[top:top + height - 2]):
                 index = top + y
                 style = curses.A_NORMAL
-                if e is None and text:
+                if e is None and text == HEADER:
+                    style = curses.A_DIM
+                elif e is None and text:
                     style = curses.A_BOLD | curses.A_UNDERLINE
                 elif e not in (None, "newest") and e[5]:
                     style = curses.A_DIM

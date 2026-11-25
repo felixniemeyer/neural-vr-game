@@ -14,9 +14,10 @@
 #   WEIGHTS=dir pins a net (e.g. WEIGHTS=nice-net, WEIGHTS=random for random weights).
 #   Unset, on a terminal: a picker (train/zoo.py) lists the nets by layout (reproject-v2,
 #   reproject-v1) with their metrics. Picking a run follows its exports (train/runs/<run>/net,
-#   rewritten every train.preview iterations: the app restarts on a newer one); a loose
-#   export (nice-net) is pinned; "newest" follows the newest export of any run (also
-#   without a terminal).
+#   rewritten every train.preview iterations); a loose export (nice-net) is pinned; "newest"
+#   follows the newest export of any run (also without a terminal). p in this terminal
+#   opens the picker again. Nets switch live: dev.sh writes the net's path to
+#   build/dev/net (NET_FILE) and the running app swaps it in, no restart.
 set -euo pipefail
 root=$(cd -- "$(dirname -- "$0")" && pwd)
 out=$root/build/native
@@ -42,25 +43,33 @@ for tool in npx monado-service glslangValidator cargo; do
     command -v "$tool" >/dev/null || { echo "dev.sh: '$tool' not found (see README)" >&2; exit 1; }
 done
 
+export NET_FILE=$logs/net # the running app swaps in the net named here (live)
 follow=0
 runs=("$root"/train/runs/*) # the runs followed
+use_net() { # the app's net: WEIGHTS for (re)starts, NET_FILE for the running app
+    export WEIGHTS=$1
+    echo "$1" >"$NET_FILE"
+}
+choose() { # the picker (train/zoo.py); returns 1 if nothing was picked
+    local file choice
+    file=$(mktemp)
+    if ! python3 "$root/train/zoo.py" pick "$file"; then rm -f "$file"; return 1; fi
+    choice=$(<"$file")
+    rm -f "$file"
+    net_stamp="" # announce (and send) the followed net even if it is the same
+    case $choice in
+        newest) follow=1; runs=("$root"/train/runs/*) ;;
+        follow\ *) follow=1; runs=("${choice#follow }") ;;
+        pin\ *) follow=0; use_net "${choice#pin }"; echo "dev.sh: net ${WEIGHTS#"$root"/} (pinned)" ;;
+    esac
+}
 if [[ -z ${WEIGHTS:-} ]]; then
     follow=1
     if [[ -t 0 && -t 1 ]]; then
-        choice_file=$(mktemp)
-        if ! python3 "$root/train/zoo.py" pick "$choice_file"; then
-            rm -f "$choice_file"
-            echo "dev.sh: nothing picked"
-            exit 0
-        fi
-        choice=$(<"$choice_file")
-        rm -f "$choice_file"
-        case $choice in
-            follow\ *) runs=("${choice#follow }") ;;
-            pin\ *) follow=0; export WEIGHTS=${choice#pin } ;;
-        esac
+        choose || { echo "dev.sh: nothing picked"; exit 0; }
     fi
 elif [[ $WEIGHTS == random ]]; then unset WEIGHTS
+else use_net "$WEIGHTS"
 fi
 latest_net() { # newest net/ (by weights.bin) of the followed runs the app can run, empty if none
     local file
@@ -69,14 +78,14 @@ latest_net() { # newest net/ (by weights.bin) of the followed runs the app can r
         dirname "$file"; return
     done
 }
-pick_net() { # sets WEIGHTS to the newest export when following; returns 1 if unchanged
+pick_net() { # the newest export of the followed runs to the app (use_net); returns 1 if unchanged
     [[ $follow == 1 ]] || return 1
     local net; net=$(latest_net)
     [[ -n $net ]] || return 1
     local stamp; stamp="$net $(stat -c %Y "$net/weights.bin")"
     [[ $stamp != "${net_stamp:-}" ]] || return 1
     net_stamp=$stamp
-    export WEIGHTS=$net
+    use_net "$net"
     echo "dev.sh: net ${net#"$root"/}, exported $(date -d @"${stamp##* }" +%H:%M)"
 }
 pick_net || true
@@ -164,8 +173,15 @@ echo "dev.sh: logs of broker, controller and Monado in build/dev/; Ctrl+C stops 
 # Watch the sources (polling, no extra tools needed).
 stamp=$logs/.stamp
 touch "$stamp"
+[[ -t 0 ]] && echo "dev.sh: p picks another net (switched live)"
 while true; do
-    sleep 1
+    if [[ -t 0 ]]; then
+        key=""
+        read -rsn1 -t 1 key || true
+        if [[ $key == p ]]; then choose || echo "dev.sh: nothing picked, keeping the net"; fi
+    else
+        sleep 1
+    fi
     touch "$stamp.new"
     changed=$(find "$root/native/shaders" "$root/native/src" "$root/native/Cargo.toml" -newer "$stamp" -type f)
     mv "$stamp.new" "$stamp"
@@ -176,11 +192,7 @@ while true; do
         echo "dev.sh: shaders changed, compiling (the app reloads them)"
         "$root/native/build.sh" "$out" --shaders || echo "dev.sh: shader compile failed, keeping the old ones"
     fi
-    if pick_net; then
-        sleep 1 # let the export finish writing
-        echo "dev.sh: newer net, restarting the app"
-        start_app
-    fi
+    pick_net || true # a newer export goes to the running app (NET_FILE), no restart
     if [[ -n $app ]] && ! kill -0 "$app" 2>/dev/null; then
         echo "dev.sh: the app exited; save a Rust file to restart it"
         app=""

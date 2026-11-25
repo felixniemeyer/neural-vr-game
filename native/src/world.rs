@@ -742,6 +742,23 @@ impl World {
         Ok(())
     }
 
+    /// Switch to another net live (main.rs NET_FILE): its specialization constants and
+    /// weight count, then the pipelines rebuilt as in `reload`. The pyramid depth is fixed
+    /// by the images, so the net must read as many mip levels. The caller makes sure the
+    /// GPU is idle; on error nothing changes.
+    pub fn set_net(&mut self, r: &mut Resources<'_>, shaders: &Path, spec: [i32; 8], weight_count: usize) -> Result<()> {
+        anyhow::ensure!(spec[1] as u32 == self.levels, "the net reads {} mip levels, the running app has {} (restart for it)", spec[1], self.levels);
+        anyhow::ensure!(weight_count <= WEIGHT_HALVES, "the net has {weight_count} weights, at most {WEIGHT_HALVES} fit");
+        let old = self.spec;
+        self.spec = spec;
+        if let Err(error) = self.reload(r, shaders) {
+            self.spec = old;
+            return Err(error);
+        }
+        self.weight_count = weight_count;
+        Ok(())
+    }
+
     /// Record one frame for both eyes: scene, splat, resolve, net, display. Writes
     /// timestamps 1..STAMPS-1 into `queries` after each stage (0 is the caller's).
     pub fn draw(

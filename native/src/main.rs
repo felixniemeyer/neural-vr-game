@@ -626,7 +626,7 @@ fn run(shaders: &Path) -> Result<()> {
     // These resources are dropped before the OpenXR images and session.
     let mut resources = Resources::new(&gpu);
     // WEIGHTS=dir: a trained net (train/runs/<name>/net); without it random weights.
-    let rule = rule::Rule::load(env::var_os("WEIGHTS").map(PathBuf::from).as_deref())?;
+    let mut rule = rule::Rule::load(env::var_os("WEIGHTS").map(PathBuf::from).as_deref())?;
     println!(
         "Net: {} reproject-v{} ({} weights, {} mip levels)",
         if rule.trained() { "trained" } else { "random" },
@@ -700,6 +700,12 @@ fn run(shaders: &Path) -> Result<()> {
     }
     let mut exit_requested = false;
     let mut stamp = shaders_stamp(shaders);
+    // NET_FILE=file: holds a net directory (dev.sh writes it: picker, new exports of the
+    // followed run). When the file changes, that net is swapped in live, without a restart
+    // (it must read as many mip levels); a net that fails to load leaves the current one.
+    let net_file = env::var_os("NET_FILE").map(PathBuf::from);
+    let net_stamp_of = |file: &Option<PathBuf>| file.as_ref().and_then(|f| f.metadata().ok()?.modified().ok());
+    let mut net_stamp = net_stamp_of(&net_file);
     let mut events = xr::EventDataBuffer::new();
     let mut running = false;
     let mut frames = 0u64;
@@ -846,6 +852,28 @@ fn run(shaders: &Path) -> Result<()> {
                         print_stats(&gpu, &world);
                     }
                     Err(error) => println!("Shader reload failed, keeping the old ones: {error:#}"),
+                }
+            }
+            let now = net_stamp_of(&net_file);
+            if now != net_stamp {
+                net_stamp = now;
+                thread::sleep(Duration::from_millis(200)); // let the export finish writing
+                if let Some(text) = net_file.as_ref().and_then(|f| std::fs::read_to_string(f).ok()) {
+                    let dir = PathBuf::from(text.trim());
+                    let switched = rule::Rule::load(Some(&dir)).and_then(|next| {
+                        unsafe { d.device_wait_idle()? };
+                        world.set_net(&mut resources, shaders, next.specialization(), next.len())?;
+                        Ok(next)
+                    });
+                    match switched {
+                        Ok(next) => {
+                            rule = next;
+                            weights = vec![0f32; rule.len()];
+                            packed = vec![0u16; rule.len()];
+                            println!("Net: {} (reproject-v{}, {} weights), switched live", dir.display(), rule.layout, rule.len());
+                        }
+                        Err(error) => println!("Net switch to {} failed, keeping the current one: {error:#}", dir.display()),
+                    }
                 }
             }
         }
