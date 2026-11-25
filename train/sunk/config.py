@@ -54,6 +54,7 @@ class Train:
     steps: int = 8              # net steps per iteration (BPTT)
     strides: list = field(default_factory=lambda: [1.0])  # video frames per net step, drawn per sample
     horizon: int = 8            # video frames a sample follows its clip, continuing from its own state
+    chunks: int = 0             # load at most this many prepared chunks, spread evenly over the footage (~80 MiB RAM each); 0 = all
     stereo: float = 0.0         # weight of the two eyes' disagreement; 0 = one eye
     baseline: float = 1.0       # max distance of the second eye (m, uniform 0..baseline)
     batch: int = 16
@@ -61,6 +62,9 @@ class Train:
     iters: int = 20000
     turn: float = 0.0           # head-turn augmentation: max border shift (fraction of crop)
     observe: float = 0.3        # max blend toward the real frame per step (like the blocks)
+    observe_seconds: float = 0.0  # >0: no blend toward the real frame once a stream is this long (s) past its real start; 0 = always
+    pixel_seconds: float = 0.0  # >0: pixel losses (L1, edges) full for this long (s) past the stream's real start, then halving every pixel_seconds; 0 = always full
+    style_far: float = 0.0      # extra style weight as the pixel weight fades: style + style_far * (1 - pixel weight)
     hole_weight: float = 4.0    # extra loss weight on pixels that were holes
     edge_weight: float = 1.0    # loss on image gradients
     texture: float = 0.0        # loss on local edge energy (8x8 windows, position-free)
@@ -70,6 +74,10 @@ class Train:
     loop: float = 0.0           # loop closure: the last step's prediction warped back to step 1's camera must match step 1's
     semigroup: float = 0.0      # weight of |net(x, tau) - net(net(x, tau/2), tau/2)|: big steps agree with small ones
     dropout: float = 0.0        # max fraction of the resolved state knocked out per step (blobs), to regenerate
+    damage: float = 0.0         # fraction of samples whose start state is damaged (Growing NCA's regeneration training)
+    damage_area: float = 0.5    # max fraction of a damaged sample's area (blobs), each at a random strength
+                                # (certainty drops by it; strong damage leaves holes)
+    damage_kinds: list = field(default_factory=lambda: ["colour"])  # per damaged sample one of: colour (+ hidden), depth, both
     preview: int = 250          # write preview + export every n iterations
     threads: int = 0            # torch threads, 0 = all
     duty: float = 1.0           # fraction of wall time spent training (sleeps in between); re-read live from config.toml

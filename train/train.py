@@ -16,6 +16,11 @@ Streams (train.horizon): every sample follows its clip, continuing from the net'
 (detached) state of the previous iteration, so it learns to keep its own old states
 good. A stream restarts from a real frame at a cut, the clip's end, or the horizon.
 
+Distance along the stream (train.pixel_seconds, train.style_far, train.observe_seconds):
+near its real start the result is compared pixel by pixel; further out the pixel losses
+fade (a hallucination should diverge, and L1 then rewards blur) and texture statistics
+take over, and late it gets no blend toward the real frame: it runs on its own.
+
 Stereo (train.stereo, train.baseline): each sample is two eyes, the second one shifted
 by a random baseline to the right. Its truth is the real frame splatted over (unknown
 where uncovered). As in the app, each eye's resolve also takes half of the other eye's
@@ -74,10 +79,17 @@ class Footage:
         self.refresh()
 
     def refresh(self):
-        """Load chunks that appeared since (prepare.py may still be running)."""
-        for path in sorted(self.config.prep_dir().glob("chunk_[0-9][0-9][0-9].npz")):
+        """Load chunks that appeared since (prepare.py may still be running), at most
+        train.chunks of them, spread evenly over what exists (memory: ~80 MiB each)."""
+        paths = sorted(self.config.prep_dir().glob("chunk_[0-9][0-9][0-9].npz"))
+        limit = self.config.train.chunks
+        if limit and len(paths) > limit:
+            paths = [paths[round(i)] for i in np.linspace(0, len(paths) - 1, limit)]
+        for path in paths:
             if path in self.paths:
                 continue
+            if limit and len(self.paths) >= limit:
+                break
             z = np.load(path)
             chunk = {k: z[k] for k in ("rgb", "disp", "vel", "R", "t", "ok")}
             chunk["fps"] = float(z["fps"]) if "fps" in z else self.config.data.fps or 10.0
@@ -343,9 +355,48 @@ def knock_out(resolved, hole, most):
     return resolved * (1 - out), torch.maximum(hole, out)
 
 
-def rollout(net, data, batch, observe, record=False, start=None, dropout=0.0):
+def damage(state, share, area, kinds=("colour",), generator=None):
+    """Soft damage (train.damage, after Growing NCA's regeneration training): a `share`
+    of the samples get blobs of about 8 px over up to `area` of the crop, each sample at
+    a random strength s and of a random kind (train.damage_kinds): "colour" blends
+    colour and hidden toward noise by s, "depth" scales the inverse depth by per-pixel
+    noise (log-normal, sigma 0.7 s: the splat then scatters the points), "both" does
+    both. Certainty drops by s; above s = 0.8 the blobs become holes (all 0, as the
+    splat leaves them). Returns (state, mask)."""
+    b, _, h, w = state.shape
+    rand = lambda *shape: torch.rand(*shape, generator=generator)
+    hit = (rand(b, 1, 1, 1) < share).float()
+    noise = F.interpolate(rand(b, 1, max(h // 8, 1), max(w // 8, 1)), size=(h, w), mode="bilinear", align_corners=False)
+    mask = (noise < area * rand(b, 1, 1, 1)).float() * hit
+    s = rand(b, 1, 1, 1) * mask
+    kind = [kinds[i] for i in (rand(b) * len(kinds)).long().clamp(max=len(kinds) - 1)]
+    colour = torch.tensor([k in ("colour", "both") for k in kind], dtype=state.dtype).view(b, 1, 1, 1)
+    depth = torch.tensor([k in ("depth", "both") for k in kind], dtype=state.dtype).view(b, 1, 1, 1)
+    out = state.clone()
+    sc = s * colour
+    out[:, RGB] = state[:, RGB] * (1 - sc) + rand(b, 3, h, w) * sc
+    out[:, HID] = state[:, HID] * (1 - sc) + (rand(b, state.shape[1] - HID.start, h, w) * 2 - 1) * sc
+    out[:, INV:INV + 1] = state[:, INV:INV + 1] * torch.exp(0.7 * s * depth * torch.randn(b, 1, h, w, generator=generator))
+    out[:, CERT:CERT + 1] = state[:, CERT:CERT + 1] * (1 - s)
+    out = out * (1 - (s > 0.8).float())
+    return out, mask
+
+
+def pixel_weight(elapsed, seconds):
+    """Weight of the pixel losses (train.pixel_seconds) after `elapsed` seconds of rollout:
+    1 up to `seconds`, then halving every `seconds`. Far out an exact match makes no sense
+    (a hallucination should diverge, and L1 then rewards blur); statistics take over."""
+    if seconds <= 0:
+        return torch.ones_like(elapsed)
+    return 0.5 ** ((elapsed - seconds).clamp_min(0) / seconds)
+
+
+def rollout(net, data, batch, observe, record=False, start=None, dropout=0.0, ages=None):
     """Loss over the batch's steps; start: initial states (per sample [eyes * C, H, W]
     as [C, H, W] per eye stacked, None where the rollout starts from the real frame).
+    ages: per sample, seconds its stream has run since its real start (training); with
+    them, the loss depends on distance along the rollout (train.pixel_seconds,
+    train.style_far, train.observe_seconds). None: every step counts alike (validation).
     Returns (loss, recorded frames (left eye), final state [eyes * B, C, H, W])."""
     cfg = data.config
     near = cfg.net.near
@@ -357,6 +408,8 @@ def rollout(net, data, batch, observe, record=False, start=None, dropout=0.0):
         fresh = state.view(-1, n, *state.shape[1:])
         state = torch.stack([s if s is not None else fresh[:, i] for i, s in enumerate(start)], 1)
         state = state.flatten(0, 1)
+    if cfg.train.damage and ages is not None:  # training only: regrow damaged content
+        state, _ = damage(state, cfg.train.damage, cfg.train.damage_area, cfg.train.damage_kinds)
     tau = eyes.both(batch["dt"] * net.rate)
     loss, total_known, frames = 0.0, 0.0, []
     for k in range(steps):
@@ -369,10 +422,16 @@ def rollout(net, data, batch, observe, record=False, start=None, dropout=0.0):
         weight = (1 + cfg.train.hole_weight * hole) * known
         image = torch.cat([pred[:, RGB], pred[:, INV:INV + 1] * near], 1)
         target = torch.cat([truth[:, RGB], truth[:, INV:INV + 1] * near], 1)
-        step_loss = ((image - target).abs() * weight).mean()
+        if ages is None:
+            elapsed, pixels = None, torch.ones(len(pred))
+        else:
+            elapsed = eyes.both(ages + (k + 1) * batch["dt"])  # seconds since the stream's real frame
+            pixels = pixel_weight(elapsed, cfg.train.pixel_seconds)
+        pixel_loss = ((image - target).abs() * weight).mean((1, 2, 3))
         pairs = (known[..., 1:, :] * known[..., :-1, :], known[..., :, 1:] * known[..., :, :-1])
         for gp, gt, both in zip(gradients(image), gradients(target), pairs):
-            step_loss = step_loss + cfg.train.edge_weight * ((gp - gt).abs() * both).mean()
+            pixel_loss = pixel_loss + cfg.train.edge_weight * ((gp - gt).abs() * both).mean((1, 2, 3))
+        step_loss = (pixel_loss * pixels).mean()
         if cfg.train.texture:
             # Local edge energy (mean gradient magnitude per 8x8 window), compared without
             # requiring the edges to line up: rewards plausible structure over blur.
@@ -382,9 +441,11 @@ def rollout(net, data, batch, observe, record=False, start=None, dropout=0.0):
                 return F.avg_pool2d(g, 8, stride=4)
             window = F.avg_pool2d(known[..., :-1, :-1], 8, stride=4) > 0.99
             step_loss = step_loss + cfg.train.texture * ((energy(image) - energy(target)).abs() * window).mean()
-        if cfg.train.style:
+        style_weight = cfg.train.style + cfg.train.style_far * (1 - pixels)  # [B]: rises as pixels fade
+        if style_weight.any():
             # Texture statistics vs the footage's (position-free): structure, not exact pixels.
-            step_loss = step_loss + cfg.train.style * (style(image[:, RGB], known) - style(target[:, RGB], known)).abs().mean()
+            gap = (style(image[:, RGB], known) - style(target[:, RGB], known)).abs().mean((1, 2, 3))
+            step_loss = step_loss + (style_weight * gap).mean()
         if cfg.train.spectrum:
             full = (known.amin((2, 3)) > 0).float()[:, 0]  # only samples whose crop is fully known
             gap = (spectrum(image[:, RGB], known) - spectrum(target[:, RGB], known)).abs().mean(1)
@@ -406,6 +467,8 @@ def rollout(net, data, batch, observe, record=False, start=None, dropout=0.0):
         if record:
             frames.append((resolved[:n], hole[:n], pred[:n], truth[:n]))
         alpha = observe * torch.rand(len(pred), 1, 1, 1) * observed
+        if elapsed is not None and cfg.train.observe_seconds > 0:  # late: the net runs on its own
+            alpha = alpha * (elapsed <= cfg.train.observe_seconds).float().view(-1, 1, 1, 1)
         state = pred.clone()
         for channels in (RGB, slice(INV, INV + 1), VEL):
             state[:, channels] = pred[:, channels] * (1 - alpha) + truth[:, channels] * alpha
@@ -448,7 +511,9 @@ class Streams:
                 self.picks[i], self.states[i], self.ages[i] = data.pick(rng, stride=stride), None, 0
             else:
                 self.picks[i] = (*p[:4], stride, p[5])
-        return data.batch(self.n, rng, picks=self.picks), self.states
+        # Seconds each stream has run on its own since its real start (for rollout's ages).
+        ages = torch.tensor([a / data.chunks[p[0]]["fps"] for a, p in zip(self.ages, self.picks)], dtype=torch.float32)
+        return data.batch(self.n, rng, picks=self.picks), self.states, ages
 
     def advance(self, final):
         eyes = final.view(-1, self.n, *final.shape[1:])
@@ -546,8 +611,9 @@ def main():
     duty = config.train.duty
     for it in range(start + 1, config.train.iters + 1):
         work = time.time()
-        batch, initial = streams.batch(rng)
-        loss, _, final = rollout(net, data, batch, config.train.observe, start=initial, dropout=config.train.dropout)
+        batch, initial, ages = streams.batch(rng)
+        loss, _, final = rollout(net, data, batch, config.train.observe, start=initial, dropout=config.train.dropout,
+                                 ages=ages)
         streams.advance(final)
         opt.zero_grad()
         loss.backward()
