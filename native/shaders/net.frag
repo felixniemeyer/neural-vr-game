@@ -127,18 +127,24 @@ void mainV2() {
     Tap2 s = unpremultiply(midFetch(TARGET, 0, p), midFetch(TARGET, 1, p), midFetch(TARGET, 2, p), midFetch(TARGET, 3, p));
     float w = s.w;
 
-    // Continuous push-pull fill from the pyramid.
-    float need = 1.0 - min(w, 1.0);
+    // Continuous push-pull fill: the own value counts min(w, 1), each level what is still
+    // missing times its coverage; normalised by what was gathered (model.py forward_v2).
+    float own = min(w, 1.0);
+    float total = own, need = 1.0 - own;
+    Tap2 g = Tap2(s.a * own, s.v * own, s.c * own, s.m * own, w);
     [[unroll]] for (int level = 1; level < LEVELS; level++) {
         Tap2 t = read2(gl_FragCoord.xy / size, float(level));
         float covered = min(t.w, 1.0);
         float take = need * covered;
-        s.a = mix(s.a, t.a, take);
-        s.v = mix(s.v, t.v, take);
-        s.c = mix(s.c, t.c, take);
-        s.m = mix(s.m, t.m, take);
+        g.a += t.a * take;
+        g.v += t.v * take;
+        g.c += t.c * take;
+        g.m += t.m * take;
+        total += take;
         need *= 1.0 - covered;
     }
+    float k = 1.0 / max(total, 1e-6);
+    s = Tap2(g.a * k, g.v * k, g.c * k, g.m * k, w);
     // What was missing takes the scene's depth and velocity (colour stays push-pull's).
     float missing = 1.0 - min(w, 1.0);
     if (missing > 0.0) {

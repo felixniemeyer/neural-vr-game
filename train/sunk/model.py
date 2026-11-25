@@ -294,13 +294,19 @@ class Net(nn.Module):
         for _ in range(self.levels - 1):
             mips.append((F.avg_pool2d(mips[-1][0], 2), F.avg_pool2d(mips[-1][1], 2)))
         centre = self.grid(h, w, 0, 0, state.device).expand(b, -1, -1, -1)
-        filled = mips[0][0] / (weight + EPS)
-        need = 1 - weight.clamp(max=1)
-        for level in mips[1:]:  # continuous push-pull: partly covered pixels mix in the fill
+        # Continuous push-pull: the pixel's own value counts min(w, 1), each level what is
+        # still missing times its coverage; normalised by what was gathered (a hole is
+        # not pulled toward 0 where even the coarsest level is only partly covered).
+        own = weight.clamp(max=1)
+        gathered = mips[0][0] / (weight + EPS) * own
+        total, need = own, 1 - own
+        for level in mips[1:]:
             value, covered = read_v2(level, centre)
             take = need * covered.clamp(max=1)
-            filled = filled * (1 - take) + value * take
+            gathered = gathered + value * take
+            total = total + take
             need = need * (1 - covered.clamp(max=1))
+        filled = gathered / total.clamp_min(1e-6)
         m = filled[:, -3:]
         filled = filled[:, :-3]
 
