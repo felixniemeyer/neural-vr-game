@@ -59,15 +59,19 @@ def to_grid(x, h, w):
     return torch.stack([(x[..., 0] + 0.5) / w * 2 - 1, (x[..., 1] + 0.5) / h * 2 - 1], -1)
 
 
-def sample(image, x, size=None, padding="zeros"):
+def sample(image, x, size=None, padding="border"):
     """Bilinear read of image [B, C, h, w] at canvas texel coords x [B, H, W, 2]; size:
     the canvas (h, w) when image is a mip level of it (default: the image's own)."""
     h, w = size or image.shape[-2:]
     return F.grid_sample(image, to_grid(x, h, w), mode="bilinear", padding_mode=padding, align_corners=False)
 
 
-def pull(state, angle, origin, delta, dt, levels=5, sigma=0.5):
+def pull(state, angle, origin, delta, dt, levels=5, sigma=0.5, inner=None):
     """One step of pull reprojection on a canvas.
+
+    inner = (y0, y1, x0, x1): only these targets (the output covers just them); the
+    sources are the whole canvas. Reads past the canvas clamp to its border, so every
+    target finds some source (as on the runtime's sphere); a bad one shows as low weight.
 
     state [B, C, h, w] (normalised values, CERT = weight), angle [B], origin [B, 2],
     delta [B, 3]: the head's translation this step in canvas frame (a static point p
@@ -80,7 +84,9 @@ def pull(state, angle, origin, delta, dt, levels=5, sigma=0.5):
     inv = state[:, INV]
     step = torch.as_tensor(dt, dtype=state.dtype).reshape(-1, 1, 1, 1)
     j, i = torch.meshgrid(torch.arange(h, dtype=state.dtype), torch.arange(w, dtype=state.dtype), indexing="ij")
-    here = torch.stack([i, j], -1)[None].expand(b, -1, -1, -1)
+    grid = torch.stack([i, j], -1)[None].expand(b, -1, -1, -1)
+    y0, y1, x0, x1 = inner or (0, h, 0, w)
+    here = grid[:, y0:y1, x0:x1]
     # The search for each target's source needs no gradients: only the final read has them.
     with torch.no_grad():
         weight, inv, state_ = weight.detach(), inv.detach(), state.detach()
@@ -88,7 +94,7 @@ def pull(state, angle, origin, delta, dt, levels=5, sigma=0.5):
         vel = state_[:, VEL].permute(0, 2, 3, 1)
         p = dirs / inv.clamp_min(1e-6)[..., None] + vel * step - delta[:, None, None]
         alive = ((inv > 1e-6) & (p[..., 2] > 1e-3)).float()[:, None] * weight
-        m = (texel_of(p, angle, origin) - here).permute(0, 3, 1, 2) * (alive > 0)
+        m = (texel_of(p, angle, origin) - grid).permute(0, 3, 1, 2) * (alive > 0)
         mips = [(m * alive, alive)]
         for _ in range(levels - 1):
             mips.append((F.avg_pool2d(mips[-1][0], 2), F.avg_pool2d(mips[-1][1], 2)))

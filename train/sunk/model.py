@@ -463,10 +463,25 @@ def init_from(net, parent):
     cube-v1 (same shapes; the scale column, unused 0 in v2, starts at zero)."""
     if parent.layout == V1 and net.layout in (V2, CUBE):
         return init_from_v1(net, parent)
-    assert parent.layout == V2 and net.layout == CUBE, f"no init from {parent.layout} to {net.layout}"
-    net.load_state_dict(parent.state_dict())
-    with torch.no_grad():
-        net.layers[0].weight[:, 4 * 3 * (1 + len(net.taps)) + 2] = 0
+    assert parent.layout in (V2, CUBE) and net.layout == CUBE, f"no init from {parent.layout} to {net.layout}"
+    taps, old = len(net.taps), len(parent.taps)
+    if taps == old:
+        net.load_state_dict(parent.state_dict())
+    else:  # more tap levels: the parent's taps are a prefix, the new columns start at zero
+        assert net.taps[:old] == parent.taps and taps > old, "tap layout differs"
+        assert [l.weight.shape for l in net.layers[1:]] == [l.weight.shape for l in parent.layers[1:]]
+        with torch.no_grad():
+            src, dst = parent.layers[0].weight, net.layers[0].weight
+            dst.zero_()
+            dst[:, :12 * (1 + old)] = src[:, :12 * (1 + old)]
+            dst[:, 12 * (1 + taps):] = src[:, 12 * (1 + old):]
+            net.layers[0].bias.copy_(parent.layers[0].bias)
+            for a, b in zip(net.layers[1:], parent.layers[1:]):
+                a.weight.copy_(b.weight)
+                a.bias.copy_(b.bias)
+    if parent.layout == V2:
+        with torch.no_grad():
+            net.layers[0].weight[:, 4 * 3 * (1 + len(net.taps)) + 2] = 0
 
 
 def init_from_v1(net, v1):

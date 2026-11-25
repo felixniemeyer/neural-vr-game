@@ -194,7 +194,8 @@ def rollout(net, config, batch, observe, start=None, ages=None, periods=None, ti
     steps = batch["delta"].shape[1]
     b = len(batch["dt"])
     fresh = start_state(batch, channels, ctx)
-    state = torch.stack([s if s is not None else fresh[i] for i, s in enumerate(start)]) if start else fresh
+    keep = channels + FLAGS if periods is None else 2 * channels + FLAGS  # the period target only when on
+    state = torch.stack([(s if s is not None else fresh[i])[:keep] for i, s in enumerate(start)]) if start else fresh[:, :keep]
     n = state.shape[-1]
     if t.damage and ages is not None:
         body, _ = damage(state[:, :channels], t.damage, t.damage_area, t.damage_kinds)
@@ -207,8 +208,16 @@ def rollout(net, config, batch, observe, start=None, ages=None, periods=None, ti
     loss, total_known, frames = 0.0, 0.0, []
     recall_sum, recall_count = 0.0, 0.0
     for k in range(steps):
-        pulled, displacement, log_change = pull(state, batch["angle"], batch["origin"], batch["delta"][:, k], batch["dt"],
-                                                levels=net.levels)
+        # Sources: the whole big canvas (the carried state inside, the footage of step k
+        # around it, as the runtime's sphere has what it saw); reads past it clamp to its
+        # border. Targets: the inner canvas only.
+        source = ring(batch, k, state[:, :channels], t.context_weight, ctx, channels)
+        parts = [source, F.pad(state[:, channels:channels + FLAGS], (ctx, ctx, ctx, ctx))]
+        if periods is not None:
+            parts.append(ring(batch, k, state[:, channels + FLAGS:], t.context_weight, ctx, channels))
+        source = torch.cat(parts, 1)
+        pulled, displacement, log_change = pull(source, batch["angle"], batch["origin"] - ctx, batch["delta"][:, k],
+                                                batch["dt"], levels=net.levels, inner=inner)
         weight = pulled[:, CERT:CERT + 1]
         hole = (weight < 0.01).float()
         flags = (pulled[:, channels:channels + FLAGS] > 0.5).float()
@@ -279,7 +288,7 @@ def rollout(net, config, batch, observe, start=None, ages=None, periods=None, ti
         nxt[:, RGB] = new[:, RGB] * (1 - alpha) + truth_rgb * alpha
         nxt[:, INV:INV + 1] = new[:, INV:INV + 1] * (1 - alpha) + truth_inv * alpha
         nxt[:, VEL] = new[:, VEL] * (1 - alpha) + batch["vel"][:, k + 1, :, ctx:ctx + n, ctx:ctx + n] * alpha
-        state = torch.cat([nxt, seen, missed, target if periods is not None else nxt], 1)
+        state = torch.cat([nxt, seen, missed] + ([target] if periods is not None else []), 1)
     return loss / max(float(total_known), 1.0), frames, state, recall_sum, recall_count
 
 
@@ -419,7 +428,7 @@ def main(project):
     elif config.train.init:
         source = (project / config.train.init).resolve()
         parent = load_export(source)
-        if parent.layout != net.layout:
+        if parent.layout != net.layout or parent.taps != net.taps:
             init_from(net, parent)
         else:
             net.load_state_dict(parent.state_dict())
