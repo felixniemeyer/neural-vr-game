@@ -42,7 +42,7 @@ from PIL import Image
 
 from prepare import rays as make_rays
 from sunk.config import load
-from sunk.model import CERT, HID, INV, RGB, VEL, Net, accumulate, load_export, resolve, splat
+from sunk.model import CERT, HID, INV, RGB, V2, VEL, Net, accumulate, init_from_v1, load_export, resolve, screen_motion, splat
 
 
 def rotation(axis, angle):
@@ -239,8 +239,8 @@ class Eyes:
     or the left eye only. The right camera is the left one shifted by b along x:
     p_right = p_left - b x."""
 
-    def __init__(self, batch, focal, size, stereo):
-        self.batch, self.focal, self.size, self.stereo = batch, focal, size, stereo
+    def __init__(self, batch, focal, size, stereo, layout="reproject-v1"):
+        self.batch, self.focal, self.size, self.stereo, self.layout = batch, focal, size, stereo, layout
         self.b = shift(batch["baseline"])
         self.eye = torch.eye(3).expand(len(self.b), 3, 3)
 
@@ -269,7 +269,7 @@ class Eyes:
         r, t = self.batch["R"][:, k], self.batch["t"][:, k]
         args = (self.batch["rays"], self.batch["origin"], self.focal, self.size, self.batch["dt"])
         if not self.stereo:
-            return resolve(accumulate(state, r, t, *args))
+            return resolve(accumulate(state, r, t, *args), self.layout)
         n = len(r)
         rb = torch.einsum("bij,bj->bi", r, self.b)
         left, right = state[:n], state[n:]
@@ -278,7 +278,7 @@ class Eyes:
         keep = (((x + y + k) % 2) == 0).float()[None, None].expand(n, 1, h, w)
         acc_left = accumulate(left, r, t, *args) + accumulate(right, r, t + rb, *args, keep=keep)
         acc_right = accumulate(right, r, t + rb - self.b, *args) + accumulate(left, r, t - self.b, *args, keep=keep)
-        return resolve(torch.cat([acc_left, acc_right]))
+        return resolve(torch.cat([acc_left, acc_right]), self.layout)
 
     def disagreement(self, pred, near):
         """Each eye's result warped into the other, L1 of colour and depth where covered."""
@@ -401,7 +401,7 @@ def rollout(net, data, batch, observe, record=False, start=None, dropout=0.0, ag
     cfg = data.config
     near = cfg.net.near
     steps = batch["R"].shape[1]
-    eyes = Eyes(batch, data.focal, cfg.data.size, cfg.train.stereo > 0)
+    eyes = Eyes(batch, data.focal, cfg.data.size, cfg.train.stereo > 0, net.layout)
     n = len(batch["dt"])
     state, _ = eyes.truth(0, net.channels)
     if start is not None:
@@ -416,7 +416,11 @@ def rollout(net, data, batch, observe, record=False, start=None, dropout=0.0, ag
         resolved, hole = eyes.step(state, k)
         if dropout:  # training only (train.dropout); validation sees the real holes
             resolved, hole = knock_out(resolved, hole, dropout)
-        pred = net(resolved, tau)
+        motion = None
+        if net.layout == V2:  # the camera translation per second of this step (rotation is left out)
+            motion = screen_motion(resolved, eyes.both(batch["t"][:, k] / batch["dt"][:, None]),
+                                   eyes.both(batch["rays"]), data.focal, net.rate)
+        pred = net(resolved, tau, motion)
         truth, observed = eyes.truth(k + 1, net.channels)
         known = observed * eyes.both(batch["inner"])  # losses: the crop without the margin
         weight = (1 + cfg.train.hole_weight * hole) * known
@@ -455,7 +459,7 @@ def rollout(net, data, batch, observe, record=False, start=None, dropout=0.0, ag
         if cfg.train.semigroup:
             # Step-size consistency (ac841219: a 10 Hz periphery steps 100 ms at once): one
             # step of tau should match two of tau / 2 on the same view, no truth needed.
-            halves = net(net(resolved, tau / 2), tau / 2)
+            halves = net(net(resolved, tau / 2, motion), tau / 2, motion)
             both = [torch.cat([p[:, RGB], p[:, INV:INV + 1] * near], 1) for p in (pred, halves)]
             step_loss = step_loss + cfg.train.semigroup * (both[0] - both[1]).abs().mean()
         if eyes.stereo:
@@ -582,8 +586,12 @@ def main():
     elif config.train.init:
         # Fresh optimiser and schedule, the weights of an export (same layout).
         source = (project / config.train.init).resolve()
-        missing, _ = net.load_state_dict(load_export(source).state_dict(), strict=False)
-        assert all(k.startswith(("down.", "copy_head.", "encoder.", "wide_in.")) for k in missing), missing  # new parts start at zero
+        parent = load_export(source)
+        if parent.layout != net.layout:
+            init_from_v1(net, parent)  # v1 -> v2: moved columns, new inputs at zero
+        else:
+            missing, _ = net.load_state_dict(parent.state_dict(), strict=False)
+            assert all(k.startswith(("down.", "copy_head.", "encoder.", "wide_in.")) for k in missing), missing  # new parts start at zero
         print(f"starting from {source}")
     print(f"net: {net.inputs} inputs, layers {[l.out_channels for l in net.layers]}, "
           f"{sum(p.numel() for p in net.parameters())} weights, {len(net.taps) + 1} taps")

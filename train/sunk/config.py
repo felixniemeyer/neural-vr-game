@@ -32,6 +32,7 @@ class Data:
 
 @dataclass
 class Net:
+    layout: str = "reproject-v1"  # net inputs and state semantics (sunk/model.py): reproject-v1 or reproject-v2
     levels: int = 5             # mip levels with a triangle of taps (radius 1, 2, 4, .. px)
     points: int = 3             # taps per level: 3 = triangle, 4 = triangle + mip centre
     hidden: list = field(default_factory=lambda: [16])  # hidden layer widths (multiples of 4)

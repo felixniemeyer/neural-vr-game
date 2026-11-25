@@ -21,6 +21,18 @@ Time: a step covers tau ticks (tau = dt * net.rate). The update is an Euler step
 max_change * tau * tanh(out), and the net sees tau, so it can run at any step size.
 Certainty decays toward CERT_REST by 0.965 per tick. tau = 0: fill only, no change.
 Nets exported before tau existed (no "rate" in net.json) see 0 instead of tau.
+
+That is layout reproject-v1 (net.layout). reproject-v2 (forward_v2) differs:
+  - the certainty channel holds the raw splat weight w of this step (resolve: values =
+    sums / (w + EPS), no hole threshold): 0 = nothing landed, 1 = a clean 1:1
+    reprojection, > 1 = compression or a mix. Depth is only depth.
+  - the pyramid is premultiplied by w (mips average x w and w, reads divide), and the
+    push-pull fill is continuous: need = 1 - min(w, 1).
+  - inputs: self (rgb, inv * near), (h), (motion, w); per tap (rgb, (inv - inv_self) *
+    near * min(w_t, 1)), (h), (motion, w_t); extra (1, tau, 0, 0). motion =
+    screen_motion(): the apparent motion without camera rotation, px and log distance
+    per tick.
+  - no certainty decay, no gate.
 """
 import json, math
 from pathlib import Path
@@ -32,6 +44,27 @@ import torch.nn.functional as F
 
 RGB, INV, VEL, CERT, HID = slice(0, 3), 3, slice(4, 7), 7, slice(8, None)
 CERT_REST, CERT_KEEP = 0.03 / 0.035, 0.965  # certainty decay per tick
+V1, V2 = "reproject-v1", "reproject-v2"
+EPS = 1e-3  # v2: values = premultiplied sums / (weight + EPS)
+
+
+def screen_motion(state, cam_vel, rays, focal, rate):
+    """v2's motion input [B, 3, H, W]: how each point moves on screen without the camera's
+    rotation (that only shifts the image, it reveals nothing): (dx, dy) in px and the
+    change of log distance, per tick. cam_vel [B, 3]: the camera translation per second
+    in camera coords (+ for a static point: p' = R p + t, so t / dt); rays [B, H, W, 3];
+    pinhole projection x = focal X / Z, y = -focal Y / Z (rows down). 0 without depth."""
+    inv = state[:, INV]
+    p = F.normalize(rays, dim=-1) / inv.clamp_min(1e-6)[..., None]
+    q = p + (state[:, VEL].permute(0, 2, 3, 1) + cam_vel[:, None, None]) / rate
+
+    def pixel(x):
+        z = x[..., 2:3].clamp_min(1e-3)
+        return focal * x[..., :2] / z * torch.tensor([1.0, -1.0])
+
+    out = torch.cat([pixel(q) - pixel(p), (q.norm(dim=-1, keepdim=True) / p.norm(dim=-1, keepdim=True).clamp_min(1e-6)).clamp_min(1e-6).log()], -1)
+    alive = ((inv > 1e-6) & (p[..., 2] > 1e-3) & (q[..., 2] > 1e-3)).float()[..., None]
+    return (out * alive).permute(0, 3, 1, 2)
 
 
 def tap_offsets(levels, points):
@@ -97,6 +130,13 @@ def encode(state, mips, convs, near):
     return out
 
 
+def read_v2(level, grid):
+    """v2: bilinear read of a premultiplied mip at a grid: (sums / (w + EPS), w)."""
+    v = F.grid_sample(level[0], grid, mode="bilinear", padding_mode="border", align_corners=False)
+    c = F.grid_sample(level[1], grid, mode="bilinear", padding_mode="border", align_corners=False)
+    return v / (c + EPS), c
+
+
 def read(level, grid):
     """Bilinear read of a mip (premultiplied values, coverage) at a grid; normalised."""
     v = F.grid_sample(level[0], grid, mode="bilinear", padding_mode="border", align_corners=False)
@@ -113,10 +153,16 @@ class Net(nn.Module):
         self.background = n.background
         self.gate = n.gate
         self.copy = n.copy
+        self.layout = n.layout
+        assert self.layout in (V1, V2), f"net.layout: {V1} or {V2}"
+        if self.layout == V2:
+            assert not (n.gate or n.background or n.copy or n.down or n.cnn), \
+                "reproject-v2 has no gate, background, copy, down or cnn"
         self.tau_input = True
         self.taps = tap_offsets(n.levels, n.points)
         self.channels = 8 + n.hidden_state
-        self.inputs = 4 * (2 * (1 + len(self.taps)) + 1)
+        groups = 3 if self.layout == V2 else 2  # vec4s per position: A, C (+ motion, w)
+        self.inputs = 4 * (groups * (1 + len(self.taps)) + 1)
         self.outputs = 4 + n.hidden_state
         sizes = [self.inputs] + list(n.hidden) + [self.outputs]
         self.layers = nn.ModuleList(nn.Conv2d(a, b, 1) for a, b in zip(sizes[:-1], sizes[1:]))
@@ -161,8 +207,11 @@ class Net(nn.Module):
             self.grids[key] = torch.stack([(x + dx) / w * 2 - 1, (y + dy) / h * 2 - 1], -1)[None]
         return self.grids[key]
 
-    def forward(self, state, tau=1.0):
-        """tau: ticks this step covers, a number or [B] (per sample)."""
+    def forward(self, state, tau=1.0, motion=None):
+        """tau: ticks this step covers, a number or [B] (per sample). motion: v2's
+        screen_motion() of the state [B, 3, H, W] (None: zero)."""
+        if self.layout == V2:
+            return self.forward_v2(state, tau, motion)
         b, _, h, w = state.shape
         tau = torch.as_tensor(tau, dtype=state.dtype).reshape(-1, 1, 1, 1).expand(b, 1, 1, 1)
         mips = pyramid(state, self.levels, self.down, self.near)
@@ -231,6 +280,50 @@ class Net(nn.Module):
         out[:, CERT:CERT + 1] = CERT_REST + (cert - CERT_REST) * CERT_KEEP ** tau
         return out
 
+    def forward_v2(self, state, tau, motion):
+        """reproject-v2 (see the module docstring); net.frag's LAYOUT 2 branch."""
+        b, _, h, w = state.shape
+        tau = torch.as_tensor(tau, dtype=state.dtype).reshape(-1, 1, 1, 1).expand(b, 1, 1, 1)
+        if motion is None:
+            motion = torch.zeros(b, 3, h, w, dtype=state.dtype)
+        weight = state[:, CERT:CERT + 1].clamp_min(0)
+        # Premultiplied pyramid of (state, motion) by the weight, as the GPU's mips of the
+        # resolved images; level 0 read back the same way (sums / (w + EPS)).
+        full = torch.cat([state, motion], 1)
+        mips = [(full * weight, weight)]
+        for _ in range(self.levels - 1):
+            mips.append((F.avg_pool2d(mips[-1][0], 2), F.avg_pool2d(mips[-1][1], 2)))
+        centre = self.grid(h, w, 0, 0, state.device).expand(b, -1, -1, -1)
+        filled = mips[0][0] / (weight + EPS)
+        need = 1 - weight.clamp(max=1)
+        for level in mips[1:]:  # continuous push-pull: partly covered pixels mix in the fill
+            value, covered = read_v2(level, centre)
+            take = need * covered.clamp(max=1)
+            filled = filled * (1 - take) + value * take
+            need = need * (1 - covered.clamp(max=1))
+        m = filled[:, -3:]
+        filled = filled[:, :-3]
+
+        inv_self = filled[:, INV:INV + 1]
+        features = [filled[:, RGB], inv_self * self.near, filled[:, HID], m, weight]
+        for level, dx, dy in self.taps:
+            value, covered = read_v2(mips[level], self.grid(h, w, dx, dy, state.device).expand(b, -1, -1, -1))
+            features += [value[:, RGB], (value[:, INV:INV + 1] - inv_self) * self.near * covered.clamp(max=1),
+                         value[:, HID.start:self.channels], value[:, -3:], covered]
+        one = torch.ones_like(weight)
+        features += [one, one * tau, 0 * one, 0 * one]
+        x = torch.cat(features, 1)
+        for layer in self.layers[:-1]:
+            x = F.relu(layer(x))
+        delta = self.max_change * tau * torch.tanh(self.layers[-1](x))
+
+        out = filled.clone()
+        out[:, RGB] = (filled[:, RGB] + delta[:, 0:3]).clamp(0, 1.5)
+        out[:, INV:INV + 1] = inv_self * torch.exp(delta[:, 3:4])
+        out[:, HID] = (filled[:, HID] + delta[:, 4:]).clamp(-4, 4)
+        out[:, CERT:CERT + 1] = 1  # the next resolve replaces it with that step's weight
+        return out
+
     def export(self, folder: Path, config, max_tau=1.0):
         """net.json (layout) + weights.bin (float32: per layer W [out][in] row-major, then b;
         then the same for each learned downsampling conv, if any, level 1 first, then the copy head)."""
@@ -244,7 +337,7 @@ class Net(nn.Module):
             "layers": [[l.in_channels, l.out_channels] for l in self.layers],
             "taps": [list(t) for t in self.taps], "levels": self.levels,
             "hidden_state": config.net.hidden_state, "near": self.near, "max_change": self.max_change,
-            "rate": self.rate, "max_tau": max_tau, "background": self.background, "gate": self.gate, "copy": self.copy,
+            "layout": self.layout, "rate": self.rate, "max_tau": max_tau, "background": self.background, "gate": self.gate, "copy": self.copy,
             "down": [[c.in_channels, c.out_channels] for c in self.down] if self.down is not None else [],
             "cnn": self.cnn,  # torch only: weights.bin leaves the encoder out, the app cannot run it
         }, indent=1))
@@ -287,18 +380,23 @@ def accumulate(state, r, t, rays, origin, focal, full, dt, keep=None):
     return acc.view(b, c + 1, h, w)
 
 
-def resolve(acc):
-    """Normalise splat sums: the resolved state and the hole mask."""
+def resolve(acc, layout=V1):
+    """Normalise splat sums: the resolved state and the hole mask. v2: sums / (w + EPS),
+    the weight in the certainty channel, no threshold (the mask is for the losses)."""
     weight = acc[:, -1:]
     hole = (weight < 0.01).float()
+    if layout == V2:
+        out = acc[:, :-1] / (weight + EPS)
+        out[:, CERT:CERT + 1] = weight
+        return out, hole
     out = acc[:, :-1] / weight.clamp_min(0.01) * (1 - hole)
     out[:, CERT:CERT + 1] = acc[:, CERT:CERT + 1].clamp(0, 1) * (1 - hole)  # partial coverage lowers it
     return out, hole
 
 
-def splat(state, r, t, rays, origin, focal, full, dt=0.0):
+def splat(state, r, t, rays, origin, focal, full, dt=0.0, layout=V1):
     """accumulate + resolve: the state seen from camera c', and its holes."""
-    return resolve(accumulate(state, r, t, rays, origin, focal, full, dt))
+    return resolve(accumulate(state, r, t, rays, origin, focal, full, dt), layout)
 
 
 def load_export(folder: Path) -> Net:
@@ -306,6 +404,7 @@ def load_export(folder: Path) -> Net:
     from sunk.config import Config
     spec = json.loads((Path(folder) / "net.json").read_text())
     config = Config()
+    config.net.layout = spec.get("layout", V1)
     config.net.levels = spec["levels"]
     taps_per_level = sum(1 for t in spec["taps"] if t[0] == 1)
     config.net.points = taps_per_level
@@ -332,3 +431,29 @@ def load_export(folder: Path) -> Net:
             at += layer.bias.numel()
     assert at == len(flat)
     return net
+
+
+def init_from_v1(net, v1):
+    """Start a reproject-v2 net from a v1 one (same taps and widths): layer 1's columns
+    move to v2's input order (self and tap A, C), the new (motion, w) columns start at
+    zero, and v1's (certainty, valid, 1, tau) fold into v2's (1, tau): certainty ~0.93
+    and valid 1 on covered pixels, so it starts close to the v1 net."""
+    assert net.layout == V2 and v1.layout == V1 and net.taps == v1.taps
+    assert [l.weight.shape for l in net.layers[1:]] == [l.weight.shape for l in v1.layers[1:]]
+    taps = len(v1.taps)
+    with torch.no_grad():
+        src, dst = v1.layers[0].weight[:, :, 0, 0], net.layers[0].weight[:, :, 0, 0]
+        assert src.shape[0] == dst.shape[0], "same first layer width"
+        dst.zero_()
+        def move(a, b):  # vec4 a of v1 -> vec4 b of v2
+            dst[:, 4 * b:4 * b + 4] = src[:, 4 * a:4 * a + 4]
+        move(0, 0), move(1, 1)
+        for t in range(taps):
+            move(2 + 2 * t, 3 + 3 * t), move(3 + 2 * t, 4 + 3 * t)
+        extra_v1, extra_v2 = 4 * (2 + 2 * taps), 4 * (3 + 3 * taps)
+        dst[:, extra_v2] = src[:, extra_v1] * 0.93 + src[:, extra_v1 + 1] + src[:, extra_v1 + 2]
+        dst[:, extra_v2 + 1] = src[:, extra_v1 + 3]
+        net.layers[0].bias.copy_(v1.layers[0].bias)
+        for a, b in zip(net.layers[1:], v1.layers[1:]):
+            a.weight.copy_(b.weight)
+            a.bias.copy_(b.bias)

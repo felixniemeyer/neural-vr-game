@@ -16,7 +16,7 @@ import numpy as np
 import torch
 
 from sunk.config import load
-from sunk.model import INV, RGB, load_export, splat
+from sunk.model import INV, RGB, V2, load_export, screen_motion, splat
 from train import Footage, damage, truth_state
 
 args = [a for a in sys.argv[1:] if not a.startswith("--")]
@@ -55,12 +55,14 @@ def run(change):
     totals = np.zeros((steps, 4))
     with torch.no_grad():
         for k in range(steps):
-            motion = (batch["R"][:, k], batch["t"][:, k], batch["rays"], batch["origin"], data.focal, config.data.size, batch["dt"])
-            resolved, hole = splat(state, *motion)
+            move = (batch["R"][:, k], batch["t"][:, k], batch["rays"], batch["origin"], data.focal, config.data.size, batch["dt"])
+            resolved, hole = splat(state, *move, layout=net.layout)
             if damaged:
-                tracker, _ = splat(tracker, *motion)
+                tracker, _ = splat(tracker, *move)
                 hole = (tracker[:, :1] > 0.5).float()
-            state = net(resolved, batch["dt"] * net.rate)
+            motion = screen_motion(resolved, batch["t"][:, k] / batch["dt"][:, None], batch["rays"], data.focal,
+                                   net.rate) if net.layout == V2 else None
+            state = net(resolved, batch["dt"] * net.rate, motion)
             truth = truth_state(batch, k + 1, net.channels)
             known = batch["mask"][:, k + 1, None] * batch["inner"]
             error = torch.cat([(state[:, RGB] - truth[:, RGB]).abs(),
