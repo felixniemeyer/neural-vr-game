@@ -222,6 +222,8 @@ pub struct World {
 /// cube-v1's images at one face size (World::set_cube_face makes new ones).
 struct Cube {
     face: u32,
+    /// Texels around each face in the atlas (one texel of the coarsest mip level, cube.glsl).
+    gutter: u32,
     atlas: vk::Extent2D,
     /// state[parity] = (A, B, C); M and mid A..D with mip levels.
     state: [[vk::Image; STATES]; 2],
@@ -241,7 +243,9 @@ impl Cube {
     fn new(r: &mut Resources<'_>, face: u32, levels: u32, [forward, pull, net]: [vk::RenderPass; 3]) -> Result<Self> {
         use vk::ImageUsageFlags as Usage;
         anyhow::ensure!(face % (1 << (levels - 1)) == 0, "the cube face size must be divisible by 2^(levels - 1)");
-        let atlas = vk::Extent2D { width: 3 * face, height: 2 * face };
+        let gutter = 1 << (levels - 1);
+        let cell = face + 2 * gutter;
+        let atlas = vk::Extent2D { width: 3 * cell, height: 2 * cell };
         let state_usage = Usage::COLOR_ATTACHMENT | Usage::SAMPLED | Usage::TRANSFER_DST | Usage::TRANSFER_SRC;
         let mid_usage = Usage::COLOR_ATTACHMENT | Usage::SAMPLED | Usage::TRANSFER_SRC | Usage::TRANSFER_DST;
         let mut state = [[vk::Image::null(); STATES]; 2];
@@ -262,6 +266,7 @@ impl Cube {
         }
         Ok(Self {
             face,
+            gutter,
             atlas,
             state,
             m,
@@ -1026,7 +1031,7 @@ impl World {
             // Net time of this update (tau ticks at the net's rate), the scale input
             // (model.py scale_code), the texel angle.
             cube: [self.cube.face as f32, settings.tau / rule.run[2].max(1e-3), (texel_angle / arcmin).log2() / 4., texel_angle],
-            head: centre.extend(1.).to_array(),
+            head: centre.extend(self.cube.gutter as f32).to_array(),
             head_move: head_move.extend(0.).to_array(),
         };
         let zero = [vk::ClearValue {
@@ -1224,6 +1229,11 @@ impl World {
     /// eye 0's resolved A, B, C, D, new A, B, C (all RGBA16F).
     pub fn dumped(&self) -> &[u8] {
         unsafe { std::slice::from_raw_parts(self.dump.1, dump_bytes(self.dump_extent())) }
+    }
+
+    /// cube-v1: texels per face and the atlas's gutter around each face.
+    pub fn cube_layout(&self) -> (u32, u32) {
+        (self.cube.face, self.cube.gutter)
     }
 
     /// The dumped images' size: eye 0's, or the cube atlas (cube-v1: 3 x 2 faces).

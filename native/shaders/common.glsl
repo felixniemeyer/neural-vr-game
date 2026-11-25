@@ -21,7 +21,7 @@ layout(set = 0, binding = 0) uniform Frame {
     // cube-v1 (cube.glsl): face texels F, seconds of net time this update covers (dt), scale input
     // (log2(texel angle / 1 arcmin) / 4), texel angle (rad)
     vec4 cube;
-    vec4 head;       // head position (the store's centre), xyz
+    vec4 head;       // head position (the store's centre), xyz; w: the cube atlas's gutter (texels, cube.glsl)
     vec4 headMove;   // the head's translation since the last update, xyz (a static point p becomes p - move)
 } u;
 

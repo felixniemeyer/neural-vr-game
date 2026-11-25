@@ -204,6 +204,10 @@ void mainCube() {
     int f;
     vec2 here;
     atlasTexel(gl_FragCoord.xy, f, here);
+    if (!inFace(here)) { // the gutter: the state has none (cube.glsl)
+        stateA = stateB = stateC = vec4(0.0);
+        return;
+    }
     vec2 size = atlasSize();
     float near = u.net.z;
     Tap2 s = unpremultiply(texelFetch(cubeMidA, p, 0), texelFetch(cubeMidB, p, 0), texelFetch(cubeMidC, p, 0), texelFetch(cubeMidD, p, 0));

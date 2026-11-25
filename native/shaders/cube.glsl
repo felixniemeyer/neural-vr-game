@@ -1,13 +1,19 @@
 // cube-v1 (LAYOUT 3): the state is one head-centred sphere, an equi-angular cubemap (EAC)
 // whose faces are fixed to the world (train/sunk/sphere.py, train/train_cube.py).
 //
-// Faces: F x F texels each (u.cube.x), in a 3 x 2 atlas: face f at texel (f % 3, f / 3) * F.
+// Faces: F x F texels each (u.cube.x), in a 3 x 2 atlas of cells F + 2 G square: a gutter of
+// G texels (u.head.w, one texel of the coarsest mip level) around each face holds the face's
+// extended coordinates (below), so bilinear reads and mips cross face edges with the right
+// neighbours. Face f's texel 0 is at atlas texel (f % 3, f / 3) * (F + 2 G) + G.
 // Face frame (right, up, forward) in world coordinates, x right, y up, z ahead as in
 // training; texel rows go down. Texel coords x (continuous, texel centres at integers) map
 // to the angles uv = (x + 0.5) * a - pi/4 (a = pi/2 / F, the texel angle) and to the
 // direction normalize(right tan u - up tan v + forward). The formulas hold beyond the face
 // (|uv| > pi/4), so taps and the pull's search work in the face's own extended coordinates
-// and are mapped to whichever face holds that direction (cubeUV).
+// and are mapped to whichever face holds that direction (cubeUV) once they leave the gutter.
+// M and mid are computed in the gutters too (cube_forward, cube_pull: pure functions of the
+// previous state, so they match the neighbour face); the state (prev / next) is not: its
+// reads go to the owning face (cubeTexel), so every region has exactly one simulation.
 //
 // Images (atlas size, all RGBA16F), bindings after the per-eye ones (world.rs CUBE_BINDING):
 //   prev / next  A = (rgb, inverse distance from the head), B = (world velocity, weight),
@@ -38,9 +44,12 @@ const vec3 FACE_UP[6] = vec3[](vec3(0, 1, 0), vec3(0, 1, 0), vec3(0, 0, 1), vec3
 
 float faceSize() { return u.cube.x; }
 float texelAngle() { return u.cube.w; }
-vec2 atlasSize() { return vec2(3.0, 2.0) * faceSize(); }
+float gutter() { return u.head.w; }
+float cellSize() { return faceSize() + 2.0 * gutter(); }
+vec2 atlasSize() { return vec2(3.0, 2.0) * cellSize(); }
 vec3 faceRight(int f) { return cross(FACE_FORWARD[f], FACE_UP[f]); }
-vec2 faceOrigin(int f) { return vec2(f % 3, f / 3) * faceSize(); }
+vec2 faceOrigin(int f) { return vec2(f % 3, f / 3) * cellSize() + gutter(); }
+bool inFace(vec2 x) { return all(greaterThanEqual(x, vec2(0.0))) && all(lessThanEqual(x, vec2(faceSize() - 1.0))); }
 
 int faceOf(vec3 d) {
     vec3 a = abs(d);
@@ -62,31 +71,39 @@ vec2 faceTexel(int f, vec3 p) {
     return (uv + QUARTER) / texelAngle() - 0.5;
 }
 
-// The atlas texel (face, coords) of this fragment.
+// The atlas texel (face, coords) of this fragment; x in -G .. F + G - 1 (the gutter outside 0 .. F - 1).
 void atlasTexel(vec2 fragCoord, out int f, out vec2 x) {
-    vec2 cell = floor((fragCoord - 0.5) / faceSize());
+    vec2 cell = floor((fragCoord - 0.5) / cellSize());
     f = int(cell.x) + 3 * int(cell.y);
-    x = fragCoord - 0.5 - cell * faceSize();
+    x = fragCoord - 0.5 - cell * cellSize() - gutter();
 }
 
-// Atlas uv of the direction d for a bilinear read at mip `level`, kept half a level texel
-// inside its face (no bleeding into the atlas neighbour).
+// Whether a bilinear read at mip `level` around face coords x stays within the face and its
+// gutter (the level's texels: 2^level fine texels, centred).
+bool inCell(vec2 x, float level) {
+    float edge = 0.5 * (exp2(level) - 1.0);
+    vec2 lo = vec2(edge - gutter()), hi = vec2(faceSize() - 1.0 + gutter() - edge);
+    return all(greaterThanEqual(x, lo)) && all(lessThanEqual(x, hi));
+}
+
+// Atlas uv of the direction d (its own face; near an edge the bilinear footprint reaches
+// into the gutter).
 vec2 dirUV(vec3 d, float level) {
     int f = faceOf(d);
-    float s = exp2(level), edge = 0.5 * (s - 1.0);
-    vec2 x = clamp(faceTexel(f, d), vec2(edge), vec2(faceSize() - 1.0 - edge));
+    float edge = 0.5 * (exp2(level) - 1.0);
+    vec2 x = clamp(faceTexel(f, d), vec2(edge - gutter()), vec2(faceSize() - 1.0 + gutter() - edge));
     return (faceOrigin(f) + x + 0.5) / atlasSize();
 }
 
-// Atlas uv of face f's extended texel coords x (mapped to the face that holds them).
+// Atlas uv of face f's extended texel coords x: within its cell directly, else in the
+// face that holds the direction.
 vec2 cubeUV(int f, vec2 x, float level) {
-    float s = exp2(level), edge = 0.5 * (s - 1.0);
-    if (all(greaterThanEqual(x, vec2(edge))) && all(lessThanEqual(x, vec2(faceSize() - 1.0 - edge))))
-        return (faceOrigin(f) + x + 0.5) / atlasSize();
+    if (inCell(x, level)) return (faceOrigin(f) + x + 0.5) / atlasSize();
     return dirUV(faceDir(f, x), level);
 }
 
-// The atlas texel holding face f's integer extended coords c (nearest).
+// The atlas texel holding face f's integer extended coords c (nearest), always in the
+// owning face's interior (the state has no gutter).
 ivec2 cubeTexel(int f, ivec2 c) {
     int n = int(faceSize());
     if (all(greaterThanEqual(c, ivec2(0))) && all(lessThan(c, ivec2(n))))

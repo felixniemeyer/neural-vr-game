@@ -16,7 +16,8 @@ void main() {
     int f;
     vec2 x;
     atlasTexel(gl_FragCoord.xy, f, x);
-    ivec2 p = ivec2(gl_FragCoord.xy);
+    // In the gutter: the owning face's texel (the state has no gutter).
+    ivec2 p = inFace(x) ? ivec2(gl_FragCoord.xy) : cubeTexel(f, ivec2(x));
     vec4 a = texelFetch(cubePrevA, p, 0);
     vec4 b = texelFetch(cubePrevB, p, 0);
     vec3 d = faceDir(f, x);

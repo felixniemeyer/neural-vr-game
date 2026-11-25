@@ -1022,8 +1022,8 @@ fn run(shaders: &Path) -> Result<()> {
             std::fs::write(
                 dir.join("dump.json"),
                 format!(
-                    "{{\"size\": {edge}, \"width\": {}, \"height\": {}, \"tau\": {}, \"wild\": {}, \"net_layout\": {}, \"layout\": \"mid A, B, C, D (rgba16f), next A, B, C (rgba16f)\"}}\n",
-                    world.dump_extent().width, world.dump_extent().height, settings.tau, settings.wild, rule.layout
+                    "{{\"size\": {edge}, \"width\": {}, \"height\": {}, \"face\": {}, \"gutter\": {}, \"tau\": {}, \"wild\": {}, \"net_layout\": {}, \"layout\": \"mid A, B, C, D (rgba16f), next A, B, C (rgba16f)\"}}\n",
+                    world.dump_extent().width, world.dump_extent().height, world.cube_layout().0, world.cube_layout().1, settings.tau, settings.wild, rule.layout
                 ),
             )?;
             println!("Dumped to {}", dir.display());

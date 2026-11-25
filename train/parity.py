@@ -27,7 +27,8 @@ raw = np.fromfile(dump_dir / "dump.bin", dtype="<f2")
 
 
 def cube():
-    """cube-v1 (net_layout 3): the dump holds the 3 x 2 face atlas (F x F faces). Each face
+    """cube-v1 (net_layout 3): the dump holds the 3 x 2 face atlas (F x F faces, each in a
+    cell with a gutter). Each face
     runs through the torch net on its own (forward_v2 with the scale input); taps that
     leave a face read the neighbour face on the GPU and the face's border in torch, so
     only texels at least MARGIN from the face edges count. The GPU also gives texels with
@@ -37,7 +38,7 @@ def cube():
     from sunk.model import scale_code
     MARGIN = 40
     h, w = meta["height"], meta["width"]
-    f = w // 3
+    f, g = meta["face"], meta["gutter"]  # faces sit in cells of f + 2 g (a gutter around each)
     images, at = [], 0
     for _ in range(7):
         images.append(torch.tensor(raw[at:at + h * w * 4].reshape(h, w, 4).astype(np.float32)).permute(2, 0, 1)[None])
@@ -58,7 +59,7 @@ def cube():
     diffs, refs, fulls = [], [], []
     with torch.no_grad():
         for face in range(6):
-            y, x = (face // 3) * f, (face % 3) * f
+            y, x = (face // 3) * (f + 2 * g) + g, (face % 3) * (f + 2 * g) + g
             cut = lambda t: t[..., y:y + f, x:x + f]
             ref = net(cut(state), tau, cut(motion), scale)
             ref = torch.cat([ref[:, RGB], ref[:, INV:INV + 1], ref[:, VEL], ref[:, HID]], 1)
