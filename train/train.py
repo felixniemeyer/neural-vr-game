@@ -42,7 +42,7 @@ from PIL import Image
 
 from sunk.video import rays as make_rays
 from sunk.config import load
-from sunk.model import CERT, HID, INV, RGB, V2, VEL, Net, accumulate, init_from_v1, load_export, resolve, screen_motion, splat
+from sunk.model import CERT, HID, INV, RGB, V2, VEL, Net, accumulate, init_from, load_export, resolve, screen_motion, splat
 
 
 def rotation(axis, angle):
@@ -588,7 +588,7 @@ def main():
         source = (project / config.train.init).resolve()
         parent = load_export(source)
         if parent.layout != net.layout:
-            init_from_v1(net, parent)  # v1 -> v2: moved columns, new inputs at zero
+            init_from(net, parent)  # v1 -> v2: moved columns, new inputs at zero; v2 -> cube-v1
         else:
             missing, _ = net.load_state_dict(parent.state_dict(), strict=False)
             assert all(k.startswith(("down.", "copy_head.", "encoder.", "wide_in.")) for k in missing), missing  # new parts start at zero

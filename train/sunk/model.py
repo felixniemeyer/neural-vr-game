@@ -33,6 +33,12 @@ That is layout reproject-v1 (net.layout). reproject-v2 (forward_v2) differs:
     screen_motion(): the apparent motion without camera rotation, px and log distance
     per tick.
   - no certainty decay, no gate.
+
+cube-v1 is v2's net on a world-fixed EAC sphere (sunk/sphere.py, train_cube.py): the
+state is pulled instead of splatted, motion is the pull's displacement (texels and log
+distance per tick), and the extra input is (1, tau, scale, 0) with scale =
+log2(texel angle / 1 arcmin) / 4. forward() can build the pyramid over a canvas plus a
+context ring but evaluate only the inner rectangle (inner=), and tau may be per texel.
 """
 import json, math
 from pathlib import Path
@@ -44,7 +50,7 @@ import torch.nn.functional as F
 
 RGB, INV, VEL, CERT, HID = slice(0, 3), 3, slice(4, 7), 7, slice(8, None)
 CERT_REST, CERT_KEEP = 0.03 / 0.035, 0.965  # certainty decay per tick
-V1, V2 = "reproject-v1", "reproject-v2"
+V1, V2, CUBE = "reproject-v1", "reproject-v2", "cube-v1"
 EPS = 1e-3  # v2: values = premultiplied sums / (weight + EPS)
 
 
@@ -154,14 +160,14 @@ class Net(nn.Module):
         self.gate = n.gate
         self.copy = n.copy
         self.layout = n.layout
-        assert self.layout in (V1, V2), f"net.layout: {V1} or {V2}"
-        if self.layout == V2:
+        assert self.layout in (V1, V2, CUBE), f"net.layout: {V1}, {V2} or {CUBE}"
+        if self.layout in (V2, CUBE):
             assert not (n.gate or n.background or n.copy or n.down or n.cnn), \
                 "reproject-v2 has no gate, background, copy, down or cnn"
         self.tau_input = True
         self.taps = tap_offsets(n.levels, n.points)
         self.channels = 8 + n.hidden_state
-        groups = 3 if self.layout == V2 else 2  # vec4s per position: A, C (+ motion, w)
+        groups = 2 if self.layout == V1 else 3  # vec4s per position: A, C (+ motion, w)
         self.inputs = 4 * (groups * (1 + len(self.taps)) + 1)
         self.outputs = 4 + n.hidden_state
         sizes = [self.inputs] + list(n.hidden) + [self.outputs]
@@ -207,11 +213,12 @@ class Net(nn.Module):
             self.grids[key] = torch.stack([(x + dx) / w * 2 - 1, (y + dy) / h * 2 - 1], -1)[None]
         return self.grids[key]
 
-    def forward(self, state, tau=1.0, motion=None):
-        """tau: ticks this step covers, a number or [B] (per sample). motion: v2's
-        screen_motion() of the state [B, 3, H, W] (None: zero)."""
-        if self.layout == V2:
-            return self.forward_v2(state, tau, motion)
+    def forward(self, state, tau=1.0, motion=None, scale=None, inner=None):
+        """tau: ticks this step covers, a number or [B] (per sample), cube-v1 also
+        [B, 1, h, w] (per texel of the inner rectangle). motion: v2's screen_motion() of
+        the state [B, 3, H, W] (None: zero). cube-v1: scale [B], inner (y0, y1, x0, x1)."""
+        if self.layout != V1:
+            return self.forward_v2(state, tau, motion, scale, inner)
         b, _, h, w = state.shape
         tau = torch.as_tensor(tau, dtype=state.dtype).reshape(-1, 1, 1, 1).expand(b, 1, 1, 1)
         mips = pyramid(state, self.levels, self.down, self.near)
@@ -280,25 +287,31 @@ class Net(nn.Module):
         out[:, CERT:CERT + 1] = CERT_REST + (cert - CERT_REST) * CERT_KEEP ** tau
         return out
 
-    def forward_v2(self, state, tau, motion):
-        """reproject-v2 (see the module docstring); net.frag's LAYOUT 2 branch."""
+    def forward_v2(self, state, tau, motion, scale=None, inner=None):
+        """reproject-v2 (see the module docstring); net.frag's LAYOUT 2 branch. cube-v1:
+        the same with the scale input and an inner rectangle (pyramid over all of state,
+        output only for state[..., y0:y1, x0:x1])."""
         b, _, h, w = state.shape
-        tau = torch.as_tensor(tau, dtype=state.dtype).reshape(-1, 1, 1, 1).expand(b, 1, 1, 1)
+        y0, y1, x0, x1 = inner or (0, h, 0, w)
+        tau = torch.as_tensor(tau, dtype=state.dtype)
+        tau = tau if tau.dim() == 4 else tau.reshape(-1, 1, 1, 1).expand(b, 1, 1, 1)
         if motion is None:
             motion = torch.zeros(b, 3, h, w, dtype=state.dtype)
-        weight = state[:, CERT:CERT + 1].clamp_min(0)
+        weight_all = state[:, CERT:CERT + 1].clamp_min(0)
         # Premultiplied pyramid of (state, motion) by the weight, as the GPU's mips of the
         # resolved images; level 0 read back the same way (sums / (w + EPS)).
         full = torch.cat([state, motion], 1)
-        mips = [(full * weight, weight)]
+        mips = [(full * weight_all, weight_all)]
         for _ in range(self.levels - 1):
             mips.append((F.avg_pool2d(mips[-1][0], 2), F.avg_pool2d(mips[-1][1], 2)))
-        centre = self.grid(h, w, 0, 0, state.device).expand(b, -1, -1, -1)
+        cut = lambda g: g[:, y0:y1, x0:x1].expand(b, -1, -1, -1)
+        centre = cut(self.grid(h, w, 0, 0, state.device))
+        weight = weight_all[..., y0:y1, x0:x1]
         # Continuous push-pull: the pixel's own value counts min(w, 1), each level what is
         # still missing times its coverage; normalised by what was gathered (a hole is
         # not pulled toward 0 where even the coarsest level is only partly covered).
         own = weight.clamp(max=1)
-        gathered = mips[0][0] / (weight + EPS) * own
+        gathered = mips[0][0][..., y0:y1, x0:x1] / (weight + EPS) * own
         total, need = own, 1 - own
         for level in mips[1:]:
             value, covered = read_v2(level, centre)
@@ -313,11 +326,12 @@ class Net(nn.Module):
         inv_self = filled[:, INV:INV + 1]
         features = [filled[:, RGB], inv_self * self.near, filled[:, HID], m, weight]
         for level, dx, dy in self.taps:
-            value, covered = read_v2(mips[level], self.grid(h, w, dx, dy, state.device).expand(b, -1, -1, -1))
+            value, covered = read_v2(mips[level], cut(self.grid(h, w, dx, dy, state.device)))
             features += [value[:, RGB], (value[:, INV:INV + 1] - inv_self) * self.near * covered.clamp(max=1),
                          value[:, HID.start:self.channels], value[:, -3:], covered]
         one = torch.ones_like(weight)
-        features += [one, one * tau, 0 * one, 0 * one]
+        code = 0 * one if scale is None else one * torch.as_tensor(scale, dtype=state.dtype).reshape(-1, 1, 1, 1)
+        features += [one, one * tau, code, 0 * one]
         x = torch.cat(features, 1)
         for layer in self.layers[:-1]:
             x = F.relu(layer(x))
@@ -439,12 +453,28 @@ def load_export(folder: Path) -> Net:
     return net
 
 
+def scale_code(angle):
+    """cube-v1's scale input from the texel angle (rad): log2(angle / 1 arcmin) / 4."""
+    return torch.log2(torch.as_tensor(angle) / math.radians(1 / 60)) / 4
+
+
+def init_from(net, parent):
+    """Start `net` from an export of another layout: v1 -> v2 (init_from_v1), v2 ->
+    cube-v1 (same shapes; the scale column, unused 0 in v2, starts at zero)."""
+    if parent.layout == V1 and net.layout in (V2, CUBE):
+        return init_from_v1(net, parent)
+    assert parent.layout == V2 and net.layout == CUBE, f"no init from {parent.layout} to {net.layout}"
+    net.load_state_dict(parent.state_dict())
+    with torch.no_grad():
+        net.layers[0].weight[:, 4 * 3 * (1 + len(net.taps)) + 2] = 0
+
+
 def init_from_v1(net, v1):
     """Start a reproject-v2 net from a v1 one (same taps and widths): layer 1's columns
     move to v2's input order (self and tap A, C), the new (motion, w) columns start at
     zero, and v1's (certainty, valid, 1, tau) fold into v2's (1, tau): certainty ~0.93
     and valid 1 on covered pixels, so it starts close to the v1 net."""
-    assert net.layout == V2 and v1.layout == V1 and net.taps == v1.taps
+    assert net.layout in (V2, CUBE) and v1.layout == V1 and net.taps == v1.taps
     assert [l.weight.shape for l in net.layers[1:]] == [l.weight.shape for l in v1.layers[1:]]
     taps = len(v1.taps)
     with torch.no_grad():
