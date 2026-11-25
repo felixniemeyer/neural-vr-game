@@ -203,24 +203,113 @@ pub struct World {
     parity: usize,
     frame: u32,
     pub mode: i32,
-    /// cube-v1: face size (texels), atlas extent, the forward pass (one target), pipelines.
-    cube_face: u32,
-    atlas: vk::Extent2D,
+    /// cube-v1: the forward pass (one target), pipelines, the images (resizable).
     forward_pass: vk::RenderPass,
     cube_forward: vk::Pipeline,
     cube_pull: vk::Pipeline,
     cube_net: vk::Pipeline,
     cube_display: [vk::Pipeline; EYES],
-    /// cube_state[parity] = (A, B, C); M and mid A..D with mip levels.
-    cube_state: [[vk::Image; STATES]; 2],
-    cube_m: vk::Image,
-    cube_mid: [vk::Image; 4],
-    forward_target: vk::Framebuffer,
-    pull_target: vk::Framebuffer,
-    /// cube_net_targets[parity] writes cube_state[1 - parity].
-    cube_net_targets: [vk::Framebuffer; 2],
+    cube: Cube,
+    /// Clear the cube's images before the next frame (new or resized).
+    cube_clear: bool,
     /// The store's centre: the head at the last update (None: no update yet).
     cube_centre: Option<Vec3>,
+    /// The pyramid sampler (the cube's descriptors use it for all its images).
+    linear: vk::Sampler,
+    dump_capacity: usize,
+}
+
+/// cube-v1's images at one face size (World::set_cube_face makes new ones).
+struct Cube {
+    face: u32,
+    atlas: vk::Extent2D,
+    /// state[parity] = (A, B, C); M and mid A..D with mip levels.
+    state: [[vk::Image; STATES]; 2],
+    m: vk::Image,
+    mid: [vk::Image; 4],
+    state_views: [[vk::ImageView; STATES]; 2],
+    m_view: vk::ImageView,
+    mid_views: [vk::ImageView; 4],
+    forward_target: vk::Framebuffer,
+    pull_target: vk::Framebuffer,
+    /// net_targets[parity] writes state[1 - parity].
+    net_targets: [vk::Framebuffer; 2],
+}
+
+impl Cube {
+    /// passes: forward (M), pull (mid A..D; the resolve pass), net (A, B, C).
+    fn new(r: &mut Resources<'_>, face: u32, levels: u32, [forward, pull, net]: [vk::RenderPass; 3]) -> Result<Self> {
+        use vk::ImageUsageFlags as Usage;
+        anyhow::ensure!(face % (1 << (levels - 1)) == 0, "the cube face size must be divisible by 2^(levels - 1)");
+        let atlas = vk::Extent2D { width: 3 * face, height: 2 * face };
+        let state_usage = Usage::COLOR_ATTACHMENT | Usage::SAMPLED | Usage::TRANSFER_DST | Usage::TRANSFER_SRC;
+        let mid_usage = Usage::COLOR_ATTACHMENT | Usage::SAMPLED | Usage::TRANSFER_SRC | Usage::TRANSFER_DST;
+        let mut state = [[vk::Image::null(); STATES]; 2];
+        let mut state_views = [[vk::ImageView::null(); STATES]; 2];
+        for parity in 0..2 {
+            for i in 0..STATES {
+                (state[parity][i], state_views[parity][i]) = r.image(atlas, STATE, state_usage)?;
+            }
+        }
+        let (m, m_target) = r.image_levels(atlas, STATE, mid_usage, levels)?;
+        let m_view = r.view_levels(m, STATE, vk::ImageAspectFlags::COLOR, levels)?;
+        let mut mid = [vk::Image::null(); 4];
+        let mut mid_targets = [vk::ImageView::null(); 4];
+        let mut mid_views = [vk::ImageView::null(); 4];
+        for i in 0..4 {
+            (mid[i], mid_targets[i]) = r.image_levels(atlas, STATE, mid_usage, levels)?;
+            mid_views[i] = r.view_levels(mid[i], STATE, vk::ImageAspectFlags::COLOR, levels)?;
+        }
+        Ok(Self {
+            face,
+            atlas,
+            state,
+            m,
+            mid,
+            state_views,
+            m_view,
+            mid_views,
+            forward_target: r.framebuffer(forward, atlas, &[m_target])?,
+            pull_target: r.framebuffer(pull, atlas, &mid_targets)?,
+            net_targets: [r.framebuffer(net, atlas, &state_views[1])?, r.framebuffer(net, atlas, &state_views[0])?],
+        })
+    }
+
+    /// Point both descriptor sets' cube bindings at these images: prev, next (by parity), M, mid A..D.
+    fn bind(&self, d: &Device, sets: [vk::DescriptorSet; 2], sampler: vk::Sampler) {
+        for (parity, &set) in sets.iter().enumerate() {
+            let infos: Vec<_> = self.state_views[parity]
+                .into_iter()
+                .chain(self.state_views[1 - parity])
+                .chain([self.m_view])
+                .chain(self.mid_views)
+                .map(|view| {
+                    [vk::DescriptorImageInfo::default()
+                        .image_view(view)
+                        .sampler(sampler)
+                        .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)]
+                })
+                .collect();
+            assert_eq!(infos.len(), CUBE_IMAGES as usize);
+            let writes: Vec<_> = infos
+                .iter()
+                .enumerate()
+                .map(|(i, info)| {
+                    vk::WriteDescriptorSet::default()
+                        .dst_set(set)
+                        .dst_binding(CUBE_BINDING + i as u32)
+                        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                        .image_info(info)
+                })
+                .collect();
+            unsafe { d.update_descriptor_sets(&writes, &[]) };
+        }
+    }
+
+    /// Every image with its mip level count.
+    fn images(&self, levels: u32) -> Vec<(vk::Image, u32)> {
+        self.state.as_flattened().iter().map(|&i| (i, 1)).chain([self.m].into_iter().chain(self.mid).map(|i| (i, levels))).collect()
+    }
 }
 
 /// Colour attachments plus an optional cleared, discarded depth attachment.
@@ -390,9 +479,6 @@ impl World {
         cube_face: u32,
     ) -> Result<Self> {
         let levels = spec[1] as u32;
-        anyhow::ensure!(cube_face % (1 << (levels - 1)) == 0, "CUBE_SIZE must be divisible by 2^(levels - 1)");
-        anyhow::ensure!(2 * cube_face >= size.width.max(size.height), "CUBE_SIZE must be at least half of EYE_SIZE");
-        let atlas = vk::Extent2D { width: 3 * cube_face, height: 2 * cube_face };
         use vk::ImageUsageFlags as Usage;
         let d = &r.gpu.device;
         let stages = vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT;
@@ -586,38 +672,17 @@ impl World {
             }
         }
 
-        // cube-v1: the sphere's state (ping-pong), its motion field M and the pulled state
-        // (mid A..D), M and mid with the pyramid's levels.
-        let mut cube_state = [[vk::Image::null(); STATES]; 2];
-        let mut cube_state_views = [[vk::ImageView::null(); STATES]; 2];
-        for parity in 0..2 {
-            for i in 0..STATES {
-                (cube_state[parity][i], cube_state_views[parity][i]) = r.image(atlas, STATE, state_usage)?;
-            }
-        }
-        let (cube_m, m_target) = r.image_levels(atlas, STATE, mid_usage, levels)?;
-        let m_view = r.view_levels(cube_m, STATE, vk::ImageAspectFlags::COLOR, levels)?;
-        let mut cube_mid = [vk::Image::null(); 4];
-        let mut cube_mid_targets = [vk::ImageView::null(); 4];
-        let mut cube_mid_views = [vk::ImageView::null(); 4];
-        for i in 0..4 {
-            (cube_mid[i], cube_mid_targets[i]) = r.image_levels(atlas, STATE, mid_usage, levels)?;
-            cube_mid_views[i] = r.view_levels(cube_mid[i], STATE, vk::ImageAspectFlags::COLOR, levels)?;
-        }
-        let forward_target = r.framebuffer(forward_pass, atlas, &[m_target])?;
-        let pull_target = r.framebuffer(resolve_pass, atlas, &cube_mid_targets)?;
-        let cube_net_targets = [
-            r.framebuffer(net_pass, atlas, &cube_state_views[1])?,
-            r.framebuffer(net_pass, atlas, &cube_state_views[0])?,
-        ];
+        let cube = Cube::new(r, cube_face, levels, [forward_pass, resolve_pass, net_pass])?;
 
         // Zeroed initial contents; every field is plain f32 data.
         let initial: Uniforms = unsafe { std::mem::zeroed() };
         let (uniforms, mapped) = r.buffer(&[initial], vk::BufferUsageFlags::UNIFORM_BUFFER)?;
         let pixels = vec![[0u16; 4]; (size.width * size.height) as usize];
         let readback = r.buffer(&pixels, vk::BufferUsageFlags::TRANSFER_DST)?;
-        // Room for eye 0's images or the cube atlas (cube-v1), whichever is larger.
-        let dump = r.buffer(&vec![0u8; dump_bytes(size).max(dump_bytes(atlas))], vk::BufferUsageFlags::TRANSFER_DST)?;
+        // Room for eye 0's images or the cube atlas (cube-v1), whichever is larger (a
+        // larger cube later gets a larger buffer).
+        let dump_capacity = dump_bytes(size).max(dump_bytes(cube.atlas));
+        let dump = r.buffer(&vec![0u8; dump_capacity], vk::BufferUsageFlags::TRANSFER_DST)?;
         // The level about PROBE pixels wide (within the pyramid).
         let probe_level = (size.width / PROBE).max(1).ilog2().min(levels - 1);
         let probe_pixels = mip_extent(size, probe_level);
@@ -685,22 +750,6 @@ impl World {
                     .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                     .buffer_info(&storage),
             );
-            // cube-v1: prev, next (by parity), M, mid A..D.
-            let cube_views: Vec<_> = cube_state_views[parity]
-                .into_iter()
-                .chain(cube_state_views[next])
-                .chain([m_view])
-                .chain(cube_mid_views)
-                .map(|view| [vk::DescriptorImageInfo::default().image_view(view).sampler(linear).image_layout(read_layout)])
-                .collect();
-            assert_eq!(cube_views.len(), CUBE_IMAGES as usize);
-            writes.extend(cube_views.iter().enumerate().map(|(i, info)| {
-                vk::WriteDescriptorSet::default()
-                    .dst_set(set)
-                    .dst_binding(CUBE_BINDING + i as u32)
-                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                    .image_info(info)
-            }));
             let creature_info = [vk::DescriptorBufferInfo::default().buffer(creature_buffer).range(vk::WHOLE_SIZE)];
             writes.push(
                 vk::WriteDescriptorSet::default()
@@ -711,6 +760,7 @@ impl World {
             );
             unsafe { d.update_descriptor_sets(&writes, &[]) };
         }
+        cube.bind(d, [allocated[0], allocated[1]], linear);
 
         Ok(Self {
             size,
@@ -755,20 +805,16 @@ impl World {
             parity: 0,
             frame: 0,
             mode: 0,
-            cube_face,
-            atlas,
             forward_pass,
             cube_forward,
             cube_pull,
             cube_net,
             cube_display,
-            cube_state,
-            cube_m,
-            cube_mid,
-            forward_target,
-            pull_target,
-            cube_net_targets,
+            cube,
+            cube_clear: true,
             cube_centre: None,
+            linear,
+            dump_capacity,
         })
     }
 
@@ -872,6 +918,24 @@ impl World {
         Ok(())
     }
 
+    /// Give the sphere store `face` texels per face: new, cleared images (the old ones stay
+    /// in `Resources` until exit). The caller makes sure the GPU is idle.
+    pub fn set_cube_face(&mut self, r: &mut Resources<'_>, face: u32) -> Result<()> {
+        if face == self.cube.face {
+            return Ok(());
+        }
+        let cube = Cube::new(r, face, self.levels, [self.forward_pass, self.resolve_pass, self.net_pass])?;
+        if dump_bytes(cube.atlas) > self.dump_capacity {
+            self.dump_capacity = dump_bytes(cube.atlas);
+            self.dump = r.buffer(&vec![0u8; self.dump_capacity], vk::BufferUsageFlags::TRANSFER_DST)?;
+        }
+        cube.bind(&r.gpu.device, self.sets, self.linear);
+        self.cube = cube;
+        self.cube_clear = true;
+        self.cube_centre = None;
+        Ok(())
+    }
+
     /// Record one frame for both eyes: scene, splat, resolve, net, display. Writes
     /// timestamps 1..STAMPS-1 into `queries` after each stage (0 is the caller's).
     pub fn draw(
@@ -888,11 +952,15 @@ impl World {
     ) {
         if self.previous.is_none() {
             clear_to_read(d, cmd, &self.state_images, 1);
-            clear_to_read(d, cmd, self.cube_state.as_flattened(), 1);
             // Pyramids too: a layout's passes never write the other layout's images, and
             // the descriptors expect every image readable.
-            let pyramids: Vec<_> = self.mid_images.as_flattened().iter().chain(&self.d_images).chain([&self.cube_m]).chain(&self.cube_mid).copied().collect();
+            let pyramids: Vec<_> = self.mid_images.as_flattened().iter().chain(&self.d_images).copied().collect();
             clear_to_read(d, cmd, &pyramids, self.levels);
+        }
+        if std::mem::take(&mut self.cube_clear) {
+            for (image, levels) in self.cube.images(self.levels) {
+                clear_to_read(d, cmd, &[image], levels);
+            }
         }
         // cube-v1: the store updates on the frames where the net runs; it moves with the head.
         let cube = self.spec[7] == 3;
@@ -906,7 +974,7 @@ impl World {
             self.cube_centre = Some(head);
         }
         let centre = self.cube_centre.unwrap_or(head);
-        let texel_angle = std::f32::consts::FRAC_PI_2 / self.cube_face as f32;
+        let texel_angle = std::f32::consts::FRAC_PI_2 / self.cube.face as f32;
         let arcmin = (1f32 / 60.).to_radians();
         let (previous, last_time) = self.previous.replace((cameras, time)).unwrap_or((cameras, time));
         let dt = (time - last_time).clamp(0., 0.1);
@@ -957,7 +1025,7 @@ impl World {
             },
             // Net time of this update (tau ticks at the net's rate), the scale input
             // (model.py scale_code), the texel angle.
-            cube: [self.cube_face as f32, settings.tau / rule.run[2].max(1e-3), (texel_angle / arcmin).log2() / 4., texel_angle],
+            cube: [self.cube.face as f32, settings.tau / rule.run[2].max(1e-3), (texel_angle / arcmin).log2() / 4., texel_angle],
             head: centre.extend(1.).to_array(),
             head_move: head_move.extend(0.).to_array(),
         };
@@ -1036,20 +1104,20 @@ impl World {
             stamp(1);
             if cube {
                 let fullscreen = |pass, target, pipeline| {
-                    begin_sized(pass, target, self.atlas);
+                    begin_sized(pass, target, self.cube.atlas);
                     d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipeline);
                     push(0, 0, 0);
                     d.cmd_draw(cmd, 3, 1, 0, 0);
                     d.cmd_end_render_pass(cmd);
                 };
                 if update {
-                    fullscreen(self.forward_pass, self.forward_target, self.cube_forward);
-                    build_mips(d, cmd, &[self.cube_m], self.atlas, self.levels);
+                    fullscreen(self.forward_pass, self.cube.forward_target, self.cube_forward);
+                    build_mips(d, cmd, &[self.cube.m], self.cube.atlas, self.levels);
                     stamp(2);
-                    fullscreen(self.resolve_pass, self.pull_target, self.cube_pull);
-                    build_mips(d, cmd, &self.cube_mid, self.atlas, self.levels);
+                    fullscreen(self.resolve_pass, self.cube.pull_target, self.cube_pull);
+                    build_mips(d, cmd, &self.cube.mid, self.cube.atlas, self.levels);
                     stamp(3);
-                    fullscreen(self.net_pass, self.cube_net_targets[self.parity], self.cube_net);
+                    fullscreen(self.net_pass, self.cube.net_targets[self.parity], self.cube_net);
                     stamp(4);
                 } else {
                     stamp(2);
@@ -1066,16 +1134,17 @@ impl World {
                 stamp(5);
                 // The latest state: written this frame (next), else the one from before (prev).
                 let latest = if update { 1 - self.parity } else { self.parity };
-                if self.capture {
+                let fits = self.cube.atlas.width >= self.size.width && self.cube.atlas.height >= self.size.height;
+                if self.capture && fits {
                     // Exposure: the top-left eye-sized part of the atlas (faces +x, -x, +y).
-                    copy_to_buffer(d, cmd, self.cube_state[latest][0], self.size, 0, self.readback.0, 0);
+                    copy_to_buffer(d, cmd, self.cube.state[latest][0], self.size, 0, self.readback.0, 0);
                 }
                 if self.dumping && update {
                     // The net's input (mid A..D) and output (the new A, B, C) on the atlas.
-                    let bytes = 8 * (self.atlas.width * self.atlas.height) as u64;
-                    let images = self.cube_mid.iter().chain(&self.cube_state[latest]);
+                    let bytes = 8 * (self.cube.atlas.width * self.cube.atlas.height) as u64;
+                    let images = self.cube.mid.iter().chain(&self.cube.state[latest]);
                     for (i, &image) in images.enumerate() {
-                        copy_to_buffer(d, cmd, image, self.atlas, 0, self.dump.0, i as u64 * bytes);
+                        copy_to_buffer(d, cmd, image, self.cube.atlas, 0, self.dump.0, i as u64 * bytes);
                     }
                 }
                 if update {
@@ -1159,7 +1228,7 @@ impl World {
 
     /// The dumped images' size: eye 0's, or the cube atlas (cube-v1: 3 x 2 faces).
     pub fn dump_extent(&self) -> vk::Extent2D {
-        if self.spec[7] == 3 { self.atlas } else { self.size }
+        if self.spec[7] == 3 { self.cube.atlas } else { self.size }
     }
 
     /// World points of the image's geometry around both eyes, from the last frame's

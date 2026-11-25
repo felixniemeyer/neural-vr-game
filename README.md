@@ -76,7 +76,7 @@ Environment variables (on the Frame, set them in `native/frame/start.sh`):
 | `DUMP`, `DUMP_FRAME`, `DUMP_TAU` | unset, 60, 1 | Write eye 0's net input and output once, one update of `DUMP_TAU` ticks (for `train/parity.py`) |
 | `ZIP_ANYWHERE` | 1 | 1: the trigger also zips when the ray misses the blocks (toward a point 40 m along it); 0: only toward blocks |
 | `OVERSCAN` | 1.15    | Field-of-view margin for the compositor's reprojection |
-| `CUBE_SIZE` | 3/4 of `EYE_SIZE` | cube-v1 nets: texels per face of the sphere store (a multiple of 16, at least half of `EYE_SIZE`) |
+| `CUBE_SIZE` | from the view | cube-v1 nets: texels per face of the sphere store (a multiple of 16). Unset: a texel is about one eye pixel at the view centre, so the net's finest taps reach about 1 px (Monado at `EYE_SIZE` 512: 384) |
 | `VALIDATE` | unset   | 1 = Vulkan validation layer |
 
 Controllers: point at a block and hold the trigger to zip toward it (it buzzes when it

@@ -635,12 +635,12 @@ fn run(shaders: &Path) -> Result<()> {
         rule.levels()
     );
     ensure!(edge % (1 << (rule.levels() - 1)) == 0, "EYE_SIZE must be divisible by 2^(levels - 1)");
-    // CUBE_SIZE: texels per face of cube-v1's sphere store (world.rs), default 3/4 of the
-    // eye size (about the eyes' texel density at a ~100 degree view), a multiple of 16.
-    let cube_face = env::var("CUBE_SIZE")
-        .ok()
-        .and_then(|v| v.parse::<u32>().ok())
-        .unwrap_or((edge * 3 / 4).div_ceil(16) * 16);
+    // CUBE_SIZE: texels per face of cube-v1's sphere store (world.rs). Unset: chosen from
+    // the first located views so that a texel is about an eye pixel at the view centre (the
+    // net's finest taps, radius 1 texel, then reach about 1 px); until then a small one.
+    let pinned_cube = env::var("CUBE_SIZE").ok().and_then(|v| v.parse::<u32>().ok());
+    let cube_face = pinned_cube.unwrap_or(1 << (rule.levels() - 1));
+    let mut cube_sized = pinned_cube.is_some();
     let mut weights = vec![0f32; rule.len()];
     let mut packed = vec![0u16; rule.len()];
     let mut world = World::new(
@@ -898,6 +898,26 @@ fn run(shaders: &Path) -> Result<()> {
         if views.len() != EYES || !flags.contains(xr::ViewStateFlags::ORIENTATION_VALID) {
             stream.end(time, BLEND, &[])?;
             continue;
+        }
+        if !cube_sized {
+            cube_sized = true;
+            // Radians per pixel at the view centre (d angle = d tan there), the finest of
+            // both eyes and axes, overscan included.
+            let pixel = views
+                .iter()
+                .flat_map(|v| [v.fov.angle_right.tan() - v.fov.angle_left.tan(), v.fov.angle_up.tan() - v.fov.angle_down.tan()])
+                .fold(f32::MAX, f32::min)
+                / edge as f32;
+            let step = 1u32 << (rule.levels() - 1);
+            let face = ((std::f32::consts::FRAC_PI_2 / pixel / step as f32).round() as u32).max(1) * step;
+            unsafe { d.device_wait_idle()? };
+            world.set_cube_face(&mut resources, face)?;
+            let arcmin = |radians: f32| radians.to_degrees() * 60.;
+            println!(
+                "Cube: {face} texels per face ({:.2} arcmin; eye pixel at the view centre {:.2} arcmin; CUBE_SIZE overrides)",
+                arcmin(std::f32::consts::FRAC_PI_2 / face as f32),
+                arcmin(pixel)
+            );
         }
         let seconds = (time - *start.get_or_insert(time)).as_nanos() as f32 / 1e9;
         // Only the head centre is scaled; the stereo eye offset stays real.
