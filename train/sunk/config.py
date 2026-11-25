@@ -79,6 +79,14 @@ class Train:
     damage_area: float = 0.5    # max fraction of a damaged sample's area (blobs), each at a random strength
                                 # (certainty drops by it; strong damage leaves holes)
     damage_kinds: list = field(default_factory=lambda: ["colour"])  # per damaged sample one of: colour (+ hidden), depth, both
+    # cube-v1 (net.layout; sunk/clips.py, train_cube.py): a world-fixed canvas on a virtual EAC face
+    scales: list = field(default_factory=lambda: [128, 816])  # square frame size (px) range clips are cut at, log-uniform: data.size .. native centre crop
+    clips: int = 64             # clips (one stream's footage, ~4 MB each) kept in RAM, refreshed in the background
+    trim: float = 300.0         # seconds frames.sh dropped from each video's start (TRIM): finds chunks in train/videos
+    context: int = 24           # texels of footage around the canvas each side: the coarse taps' surroundings (not pulled from)
+    context_weight: float = 0.5  # weight of that ring in the pyramid
+    recall: float = 4.0         # pixel-loss weight factor on texels back in view after being out of it
+    periods: list = field(default_factory=lambda: [1])  # per 8x8 tile update period (ticks), drawn per stream: evaluate with tau * P, then blend 1/P .. 1/1
     preview: int = 250          # write preview + export every n iterations
     threads: int = 0            # torch threads, 0 = all
     duty: float = 1.0           # fraction of wall time spent training (sleeps in between); re-read live from config.toml

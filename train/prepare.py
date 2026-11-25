@@ -26,40 +26,9 @@ from torchvision.models.optical_flow import Raft_Small_Weights, raft_small
 from transformers import AutoModelForDepthEstimation
 
 from sunk.config import ROOT, load
+from sunk.video import chunks, probe, rays, read
 
 BATCH = 16
-
-
-def probe(path):
-    out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
-                          "stream=width,height,r_frame_rate:format=duration", "-of", "json", path],
-                         capture_output=True, text=True, check=True).stdout
-    info = json.loads(out)
-    stream = info["streams"][0]
-    num, den = map(int, stream["r_frame_rate"].split("/"))
-    return float(info["format"]["duration"]), num / den, stream["width"], stream["height"]
-
-
-def read(path, start, seconds, width, height):
-    raw = subprocess.run(["ffmpeg", "-v", "error", "-ss", str(start), "-i", path, "-t", str(seconds),
-                          "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], capture_output=True, check=True).stdout
-    return np.frombuffer(raw, np.uint8).reshape(-1, height, width, 3)
-
-
-def chunks(config):
-    """Stratified: split the total length into equal segments, one random chunk each."""
-    videos = sorted(config.frames_dir().glob("*.mp4"))
-    lengths = [probe(v)[0] - config.data.chunk for v in videos]
-    total = sum(lengths)
-    count = max(1, round(config.data.minutes * 60 / config.data.chunk))
-    rng = np.random.default_rng(config.data.seed)
-    for k in range(count):
-        at = (k + rng.random()) * total / count
-        for video, length in zip(videos, lengths):
-            if at < length:
-                yield video, at
-                break
-            at -= length
 
 
 class Models:
@@ -92,12 +61,6 @@ def sample(img, coords):
     h, w = img.shape[-2:]
     grid = torch.stack([(coords[..., 0] + 0.5) / w * 2 - 1, (coords[..., 1] + 0.5) / h * 2 - 1], -1)
     return F.grid_sample(img[None], grid[None], mode="bilinear", padding_mode="border", align_corners=False)[0]
-
-
-def rays(h, w, fov):
-    focal = w / 2 / np.tan(np.radians(fov) / 2)
-    y, x = torch.meshgrid(torch.arange(h) + 0.5, torch.arange(w) + 0.5, indexing="ij")
-    return torch.stack([(x - w / 2) / focal, -(y - h / 2) / focal, torch.ones_like(x)], -1)  # y up, looks +z
 
 
 def skew(v):

@@ -40,7 +40,7 @@ import torch
 import torch.nn.functional as F
 from PIL import Image
 
-from prepare import rays as make_rays
+from sunk.video import rays as make_rays
 from sunk.config import load
 from sunk.model import CERT, HID, INV, RGB, V2, VEL, Net, accumulate, init_from_v1, load_export, resolve, screen_motion, splat
 
