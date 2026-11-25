@@ -1,4 +1,5 @@
 """Compare a trained net with the push-pull fill alone: uv run evaluate.py runs/<name> [samples] [steps] [chunks] [--damage[=colour|depth|both]]
+(cube-v1 projects: train_cube.evaluate, at most 24 samples, no --damage)
 
 Free-running rollouts (no blend toward the real frames) on fixed samples; mean L1 of
 colour and depth per step, over all known pixels and over pixels that were holes
@@ -24,6 +25,11 @@ flags = [a for a in sys.argv[1:] if a.startswith("--damage")]
 damaged = flags[0].partition("=")[2] or "colour" if flags else None
 project = args[0]
 samples = int(args[1]) if len(args) > 1 else 64
+if load(project).net.layout == "cube-v1":  # the sphere pipeline: train_cube.evaluate
+    import train_cube
+    train_cube.evaluate(project, min(samples, 24), int(args[2]) if len(args) > 2 else None,
+                        int(args[3]) if len(args) > 3 else None)
+    sys.exit()
 torch.set_num_threads(2)
 config = load(project)
 if len(args) > 3:

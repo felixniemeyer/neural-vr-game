@@ -9,14 +9,16 @@
 Nets: train/runs/<run>/net (followed: the app restarts on new exports of that run) and
 loose exports such as nice-net/ at the repo root (pinned). Metrics from the run's
 log.txt, last validation: the free-running error over train.steps steps and over the
-long horizon, each next to push-pull alone (lower = better).
+long horizon, each next to push-pull alone (lower = better); cube-v1 also the error on
+texels back in view after being out of it (recall).
 """
 import json, re, sys, time
 from pathlib import Path
 
 TRAIN = Path(__file__).resolve().parent
 ROOT = TRAIN.parent
-ORDER = ["reproject-v2", "reproject-v1"]  # newest layout first
+ORDER = ["cube-v1", "reproject-v2", "reproject-v1"]  # newest layout first
+NO_RUNTIME = {"cube-v1"}  # torch only so far
 
 
 def problem(net_dir: Path):
@@ -27,6 +29,8 @@ def problem(net_dir: Path):
         return f"unreadable net.json ({e.__class__.__name__})"
     if spec.get("layout", "reproject-v1") not in ORDER:
         return f"layout {spec['layout']}"
+    if spec.get("layout") in NO_RUNTIME:
+        return "no runtime yet"
     for feature in ("cnn", "down"):
         if spec.get(feature):
             return f"net.{feature} (torch only)"
@@ -39,7 +43,8 @@ def problem(net_dir: Path):
 
 
 def metrics(run: Path):
-    """(steps val, push-pull, long val, push-pull, frames) from the last validation line."""
+    """(steps val, push-pull, frames, long val, push-pull, (recall, push-pull) or None)
+    from the last validation line."""
     try:
         lines = (run / "log.txt").read_text().splitlines()
     except OSError:
@@ -48,7 +53,9 @@ def metrics(run: Path):
         m = re.search(r"free-running val ([\d.]+) \(push-pull only ([\d.]+)\)(?:, over (\d+) frames ([\d.]+) \(push-pull only ([\d.]+)\))?", line)
         if m:
             val, pp, frames, long, long_pp = m.groups()
-            return float(val), float(pp), frames and int(frames), long and float(long), long_pp and float(long_pp)
+            r = re.search(r"recall ([\d.]+) \(push-pull only ([\d.]+)\)", line)
+            return (float(val), float(pp), frames and int(frames), long and float(long), long_pp and float(long_pp),
+                    r and (float(r.group(1)), float(r.group(2))))
     return None
 
 
@@ -71,7 +78,7 @@ def entries():
     return found
 
 
-HEADER = f"  {'net':<16} {'exported':<12}  {'short: net / push-pull':<22}  {'long: net / push-pull':<27}  notes"
+HEADER = f"  {'net':<16} {'exported':<12}  {'short: net / push-pull':<22}  {'long: net / push-pull':<27}  {'recall':<15}  notes"
 
 
 def describe(e):
@@ -79,14 +86,16 @@ def describe(e):
     over train.steps steps and over the long horizon (frames), each next to push-pull."""
     layout, name, kind, path, net, why, m, exported, training = e
     when = time.strftime("%d.%m. %H:%M", time.localtime(exported))
-    short = long = ""
+    short = long = recall = ""
     if m:
-        val, pp, frames, long_val, long_pp = m
+        val, pp, frames, long_val, long_pp, rec = m
+        if rec:
+            recall = f"{rec[0]:.4f} / {rec[1]:.4f}"
         short = f"{val:.4f} / {pp:.4f}"
         if frames:
             long = f"{long_val:.4f} / {long_pp:.4f} ({frames} fr)"
     notes = ["training" if training else "", f"can't run: {why}" if why else "", "pinned" if kind == "pin" else ""]
-    return f"  {name:<16} {when:<12}  {short:<22}  {long:<27}  {', '.join(n for n in notes if n)}"
+    return f"  {name:<16} {when:<12}  {short:<22}  {long:<27}  {recall:<15}  {', '.join(n for n in notes if n)}"
 
 
 def rows():
