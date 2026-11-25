@@ -1,0 +1,27 @@
+{
+  "id": "9ddc2077-e5cb-4ccb-bff0-a0d8e8e18932",
+  "text": "Loss by distance along the rollout: pixels near, statistics far, no observation late",
+  "description": "Felix's question (2026-11-25): compare repeated application of the net with the real footage. Training already rolls out 8 steps (BPTT) and carries state up to 96 frames, but observe = 0.3 blends the real frame in every step, and exact pixels stop making sense far out (a hallucination should diverge; L1 then rewards blur). Change rollout(): pixel weight decays along the rollout (dominant for ~0.5 s), train.style weight rises; observe -> 0 after the first steps. Judge with evaluate.py's sharpness/contrast on 96 free-running frames.",
+  "archived": false,
+  "color": "#7b4fa0",
+  "tags": [
+    "training",
+    "ideation"
+  ],
+  "supportingConnections": [],
+  "supportedIdeas": [
+    "105f30fe-11d7-42db-9eb5-beaa45112cd7"
+  ],
+  "committedIn": [],
+  "status": {
+    "state": "open",
+    "comment": "",
+    "date": 1795593846883
+  },
+  "intrinsicValue": 0,
+  "cost": 2,
+  "selfWeight": 1,
+  "duration": 1,
+  "costVariance": 0,
+  "valueVariance": 0
+}

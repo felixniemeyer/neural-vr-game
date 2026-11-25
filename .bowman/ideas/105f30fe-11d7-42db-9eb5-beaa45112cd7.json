@@ -8,7 +8,13 @@
     "ideation",
     "training"
   ],
-  "supportingConnections": [],
+  "supportingConnections": [
+    {
+      "ideaId": "9ddc2077-e5cb-4ccb-bff0-a0d8e8e18932",
+      "weight": 1,
+      "hypothesis": "Nets trained this way stay sharp and alive over long free-running rollouts instead of drifting to blur"
+    }
+  ],
   "supportedIdeas": [
     "003b71b2-fdb8-4e45-b46d-fd1b01cab5a2"
   ],
