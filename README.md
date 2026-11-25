@@ -76,6 +76,7 @@ Environment variables (on the Frame, set them in `native/frame/start.sh`):
 | `DUMP`, `DUMP_FRAME`, `DUMP_TAU` | unset, 60, 1 | Write eye 0's net input and output once, one update of `DUMP_TAU` ticks (for `train/parity.py`) |
 | `ZIP_ANYWHERE` | 1 | 1: the trigger also zips when the ray misses the blocks (toward a point 40 m along it); 0: only toward blocks |
 | `OVERSCAN` | 1.15    | Field-of-view margin for the compositor's reprojection |
+| `CUBE_SIZE` | 3/4 of `EYE_SIZE` | cube-v1 nets: texels per face of the sphere store (a multiple of 16, at least half of `EYE_SIZE`) |
 | `VALIDATE` | unset   | 1 = Vulkan validation layer |
 
 Controllers: point at a block and hold the trigger to zip toward it (it buzzes when it
@@ -115,6 +116,14 @@ Live controls (av-controls panel `sunk-city`, in tabs: net, scene, city, motion,
     5 mip levels, layers as in `net.json`, in float16 (needs `shaderFloat16`; weights in a
     uniform buffer, packed by `rule::pack`)
   - the fullscreen passes are compiled per eye (`TARGET`), so no per-texel eye switches
+  - cube-v1 nets (`cube.glsl`): the state is one head-centred sphere fixed to the world
+    (equi-angular cubemap, 6 faces in a 3×2 atlas) instead of per-eye images. On net
+    updates `cube_forward.frag` and `cube_pull.frag` pull it along with the head's
+    translation and the stored velocities (train/sunk/sphere.py), blending in the blocks
+    where an eye sees them; `net.frag` (LAYOUT 3) runs on the atlas with taps across face
+    edges; every frame `cube_display.frag` looks the eyes' rays up in it. Turning your head
+    costs nothing and what you looked away from stays. No collisions with the net's
+    geometry yet in this mode
 - `train/`: training on video (below)
 - `native/build.sh`, `native/build-frame.sh`: desktop and Steam Frame builds
 - `experiments/`: older experiments (submodule), not needed

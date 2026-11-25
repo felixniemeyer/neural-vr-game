@@ -18,7 +18,7 @@ from pathlib import Path
 TRAIN = Path(__file__).resolve().parent
 ROOT = TRAIN.parent
 ORDER = ["cube-v1", "reproject-v2", "reproject-v1"]  # newest layout first
-NO_RUNTIME = {"cube-v1"}  # torch only so far
+NO_RUNTIME = set()  # layouts the app cannot run (all run now)
 
 
 def problem(net_dir: Path):

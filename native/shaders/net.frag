@@ -4,6 +4,7 @@
 #extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
 #include "common.glsl"
 #include "state.glsl"
+#include "cube.glsl"
 
 // The trained per-pixel net, the same math as train/sunk/model.py Net.forward:
 //
@@ -25,6 +26,11 @@
 // min(w_t, 1)), (h), (motion, w_t), extra (1, tau, 0, 0); no gate, no certainty decay
 // (B.w passes w on, for the display).
 //
+// LAYOUT 3 (cube-v1, model.py forward_v2 with scale; cube.glsl): the same as LAYOUT 2 on
+// the cube atlas (cube mid A..D, written by cube_pull.frag): taps at face texel offsets,
+// mapped across face edges; extra (1, tau, scale, 0); the pulled weight is replaced by 1
+// (as in training: the next pull's coverage and consistency make the new weight).
+//
 // Weights (rule::pack): float16 in slots of 4; per layer 4x4 blocks (q outputs, k inputs)
 // of 4 slots, one per input holding its 4 outputs' weights, then the bias.
 // The layout is fixed per net and comes in as specialization constants, so every loop
@@ -45,7 +51,7 @@ layout(constant_id = 4) const int UNITS1 = 8;
 layout(constant_id = 5) const int UNITS2 = 8;
 layout(constant_id = 6) const int UNITS3 = 8;
 
-const int IN0 = 4 * ((1 + LAYOUT) * (1 + TAPS) + 1); // vec4s per position: 2 (v1) or 3 (v2)
+const int IN0 = 4 * ((LAYOUT == 1 ? 2 : 3) * (1 + TAPS) + 1); // vec4s per position: 2 (v1) or 3 (v2, cube)
 const int OFF0 = 0;
 const int OFF1 = OFF0 + (IN0 * UNITS0 + UNITS0) / 4;
 const int OFF2 = OFF1 + (UNITS0 * UNITS1 + UNITS1) / 4;
@@ -188,7 +194,82 @@ void mainV2() {
     stateC = clamp(s.c + d1, -4.0, 4.0);
 }
 
+Tap2 readCube(vec2 uv, float level) {
+    return unpremultiply(textureLod(cubeMidA, uv, level), textureLod(cubeMidB, uv, level),
+                         textureLod(cubeMidC, uv, level), textureLod(cubeMidD, uv, level));
+}
+
+void mainCube() {
+    ivec2 p = ivec2(gl_FragCoord.xy);
+    int f;
+    vec2 here;
+    atlasTexel(gl_FragCoord.xy, f, here);
+    vec2 size = atlasSize();
+    float near = u.net.z;
+    Tap2 s = unpremultiply(texelFetch(cubeMidA, p, 0), texelFetch(cubeMidB, p, 0), texelFetch(cubeMidC, p, 0), texelFetch(cubeMidD, p, 0));
+    float w = s.w;
+
+    // Continuous push-pull fill (as mainV2; the mip texels stay within the face).
+    float own = min(w, 1.0);
+    float total = own, need = 1.0 - own;
+    Tap2 g = Tap2(s.a * own, s.v * own, s.c * own, s.m * own, w);
+    [[unroll]] for (int level = 1; level < LEVELS; level++) {
+        Tap2 t = readCube(gl_FragCoord.xy / size, float(level));
+        float covered = min(t.w, 1.0);
+        float take = need * covered;
+        g.a += t.a * take;
+        g.v += t.v * take;
+        g.c += t.c * take;
+        g.m += t.m * take;
+        total += take;
+        need *= 1.0 - covered;
+    }
+    float k = 1.0 / max(total, 1e-6);
+    s = Tap2(g.a * k, g.v * k, g.c * k, g.m * k, w);
+    // What was missing takes the scene's depth and velocity where an eye sees it.
+    float missing = 1.0 - min(w, 1.0);
+    if (missing > 0.0) {
+        vec4 scene;
+        vec3 sceneVelocity;
+        float fade, sky;
+        vec2 centred;
+        if (sceneDir(faceDir(f, here), s.a.w > 1e-6 ? 1.0 / s.a.w : 20.0, scene, sceneVelocity, fade, sky, centred) && fade > 0.0) {
+            s.a.w = mix(s.a.w, scene.w, missing);
+            s.v = mix(s.v, sceneVelocity, missing);
+        }
+    }
+    float inv = s.a.w;
+    float tau = u.step.y;
+
+    [[unroll]] for (int q = 0; q < UNITS0 / 4; q++) hidden[q] = slot(OFF0 + UNITS0 * (IN0 / 4) + q);
+    feed(0, vec4(s.a.rgb, inv * near));
+    feed(1, s.c);
+    feed(2, vec4(s.m, w));
+    [[unroll]] for (int t = 0; t < TAPS; t++) {
+        vec4 tap = u.netTaps[t];
+        Tap2 v = readCube(cubeUV(f, here + tap.yz, tap.x), tap.x);
+        feed(3 + 3 * t, vec4(v.a.rgb, (v.a.w - inv) * near * min(v.w, 1.0)));
+        feed(4 + 3 * t, v.c);
+        feed(5 + 3 * t, vec4(v.m, v.w));
+    }
+    feed(3 + 3 * TAPS, vec4(1.0, tau * u.netRun.x, u.cube.z, 0.0));
+    if (LAYERS > 1) dense(OFF1, UNITS0, UNITS1);
+    if (LAYERS > 2) dense(OFF2, UNITS1, UNITS2);
+    if (LAYERS > 3) dense(OFF3, UNITS2, UNITS3);
+
+    float change = u.net.w * tau;
+    vec4 d0 = change * tanh(vec4(hidden[0]));
+    vec4 d1 = change * tanh(vec4(hidden[1]));
+    stateA = vec4(clamp(s.a.rgb + d0.rgb, 0.0, 1.5), inv * exp(d0.w));
+    stateB = vec4(s.v, 1.0);
+    stateC = clamp(s.c + d1, -4.0, 4.0);
+}
+
 void main() {
+    if (LAYOUT == 3) {
+        mainCube();
+        return;
+    }
     if (LAYOUT == 2) {
         mainV2();
         return;

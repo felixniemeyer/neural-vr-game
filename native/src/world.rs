@@ -15,6 +15,13 @@
 //! certainty (reproject-v1, D.x) or (screen motion, weight) (reproject-v2; then A, B, C,
 //! D are premultiplied by the splat weight, see shaders/resolve.frag), with mip levels.
 //! Scene G-buffer per eye: (sun shade, inverse distance, vertical velocity, id).
+//!
+//! cube-v1 (net layout 3, shaders/cube.glsl): the state is one head-centred sphere fixed
+//! to the world instead, an equi-angular cubemap in a 3 x 2 atlas of F x F faces. On the
+//! frames where the net runs: scene -> cube_forward (where each texel moves) + mips ->
+//! cube_pull (pull reprojection + scene blend, premultiplied like v2's resolve) + mips ->
+//! net (LAYOUT 3) -> per eye cube_display (a direction lookup). On the other frames only
+//! the display runs: the store is fixed to the world, so head rotation needs no update.
 
 use crate::gpu::{image_range, Resource, Resources, Shader};
 use crate::rule::{MAX_LAYERS, MAX_TAPS, RuleFrame};
@@ -44,6 +51,11 @@ const CREATURES_BINDING: u32 = WEIGHTS_BINDING + 1;
 /// smallest guaranteed maxUniformBufferRange on mobile GPUs. Uniform (not storage) so the
 /// weights are read through the constant path (AMD scalar cache, Adreno constant RAM).
 pub const WEIGHT_HALVES: usize = 32768;
+/// cube-v1 images (cube.glsl): prev A, B, C, next A, B, C, M, mid A..D at bindings
+/// CUBE_BINDING.. (all with the linear sampler).
+const CUBE_BINDING: u32 = CREATURES_BINDING + 1;
+const CUBE_IMAGES: u32 = 11;
+const LAST_BINDING: u32 = CUBE_BINDING + CUBE_IMAGES - 1;
 /// Pipelines capture the driver's statistics (VK_KHR_pipeline_executable_properties on).
 pub static CAPTURE_STATS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// How fast the display exposure follows its measurement (1/s).
@@ -104,8 +116,11 @@ struct Uniforms {
     player: [f32; 4],
     tone: [[f32; 4]; 3],
     gaze: [f32; 4],
+    cube: [f32; 4],
+    head: [f32; 4],
+    head_move: [f32; 4],
 }
-const _: () = assert!(size_of::<Uniforms>() == 480 + (2 + MAX_LAYERS + MAX_TAPS + 7) * 16);
+const _: () = assert!(size_of::<Uniforms>() == 480 + (2 + MAX_LAYERS + MAX_TAPS + 10) * 16);
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -188,6 +203,24 @@ pub struct World {
     parity: usize,
     frame: u32,
     pub mode: i32,
+    /// cube-v1: face size (texels), atlas extent, the forward pass (one target), pipelines.
+    cube_face: u32,
+    atlas: vk::Extent2D,
+    forward_pass: vk::RenderPass,
+    cube_forward: vk::Pipeline,
+    cube_pull: vk::Pipeline,
+    cube_net: vk::Pipeline,
+    cube_display: [vk::Pipeline; EYES],
+    /// cube_state[parity] = (A, B, C); M and mid A..D with mip levels.
+    cube_state: [[vk::Image; STATES]; 2],
+    cube_m: vk::Image,
+    cube_mid: [vk::Image; 4],
+    forward_target: vk::Framebuffer,
+    pull_target: vk::Framebuffer,
+    /// cube_net_targets[parity] writes cube_state[1 - parity].
+    cube_net_targets: [vk::Framebuffer; 2],
+    /// The store's centre: the head at the last update (None: no update yet).
+    cube_centre: Option<Vec3>,
 }
 
 /// Colour attachments plus an optional cleared, discarded depth attachment.
@@ -354,13 +387,17 @@ impl World {
         swapchains: [&[vk::Image]; EYES],
         spec: [i32; 8],
         weight_count: usize,
+        cube_face: u32,
     ) -> Result<Self> {
         let levels = spec[1] as u32;
+        anyhow::ensure!(cube_face % (1 << (levels - 1)) == 0, "CUBE_SIZE must be divisible by 2^(levels - 1)");
+        anyhow::ensure!(2 * cube_face >= size.width.max(size.height), "CUBE_SIZE must be at least half of EYE_SIZE");
+        let atlas = vk::Extent2D { width: 3 * cube_face, height: 2 * cube_face };
         use vk::ImageUsageFlags as Usage;
         let d = &r.gpu.device;
         let stages = vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT;
 
-        let bindings: Vec<_> = (0..=CREATURES_BINDING)
+        let bindings: Vec<_> = (0..=LAST_BINDING)
             .map(|i| {
                 vk::DescriptorSetLayoutBinding::default()
                     .binding(i)
@@ -404,7 +441,7 @@ impl World {
                 .descriptor_count(2),
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(2 * SAMPLED_BINDINGS),
+                .descriptor_count(2 * (SAMPLED_BINDINGS + CUBE_IMAGES)),
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::UNIFORM_BUFFER)
                 .descriptor_count(2),
@@ -469,7 +506,8 @@ impl World {
             vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
             false,
         )?;
-        let passes = [scene_pass, splat_pass, resolve_pass, net_pass, display_pass];
+        let forward_pass = render_pass(r, &[STATE], false, dont_care, read_layout, true)?;
+        let passes = [scene_pass, splat_pass, resolve_pass, net_pass, display_pass, forward_pass];
         let mut pipelines = Self::pipelines(&r.gpu.device, shaders, passes, layout, &spec)?
             .into_iter()
             .map(|p| r.keep(p, Resource::Pipeline));
@@ -478,6 +516,8 @@ impl World {
         let creatures = next();
         let splat = std::array::from_fn(|_| [next(), next()]);
         let [resolve, net, display] = std::array::from_fn(|_| [next(), next()]);
+        let (cube_forward, cube_pull, cube_net) = (next(), next(), next());
+        let cube_display = [next(), next()];
 
         // state[eye][parity] = (A, B, C)
         let state_usage = Usage::COLOR_ATTACHMENT | Usage::SAMPLED | Usage::TRANSFER_DST | Usage::TRANSFER_SRC;
@@ -546,12 +586,38 @@ impl World {
             }
         }
 
+        // cube-v1: the sphere's state (ping-pong), its motion field M and the pulled state
+        // (mid A..D), M and mid with the pyramid's levels.
+        let mut cube_state = [[vk::Image::null(); STATES]; 2];
+        let mut cube_state_views = [[vk::ImageView::null(); STATES]; 2];
+        for parity in 0..2 {
+            for i in 0..STATES {
+                (cube_state[parity][i], cube_state_views[parity][i]) = r.image(atlas, STATE, state_usage)?;
+            }
+        }
+        let (cube_m, m_target) = r.image_levels(atlas, STATE, mid_usage, levels)?;
+        let m_view = r.view_levels(cube_m, STATE, vk::ImageAspectFlags::COLOR, levels)?;
+        let mut cube_mid = [vk::Image::null(); 4];
+        let mut cube_mid_targets = [vk::ImageView::null(); 4];
+        let mut cube_mid_views = [vk::ImageView::null(); 4];
+        for i in 0..4 {
+            (cube_mid[i], cube_mid_targets[i]) = r.image_levels(atlas, STATE, mid_usage, levels)?;
+            cube_mid_views[i] = r.view_levels(cube_mid[i], STATE, vk::ImageAspectFlags::COLOR, levels)?;
+        }
+        let forward_target = r.framebuffer(forward_pass, atlas, &[m_target])?;
+        let pull_target = r.framebuffer(resolve_pass, atlas, &cube_mid_targets)?;
+        let cube_net_targets = [
+            r.framebuffer(net_pass, atlas, &cube_state_views[1])?,
+            r.framebuffer(net_pass, atlas, &cube_state_views[0])?,
+        ];
+
         // Zeroed initial contents; every field is plain f32 data.
         let initial: Uniforms = unsafe { std::mem::zeroed() };
         let (uniforms, mapped) = r.buffer(&[initial], vk::BufferUsageFlags::UNIFORM_BUFFER)?;
         let pixels = vec![[0u16; 4]; (size.width * size.height) as usize];
         let readback = r.buffer(&pixels, vk::BufferUsageFlags::TRANSFER_DST)?;
-        let dump = r.buffer(&vec![0u8; dump_bytes(size)], vk::BufferUsageFlags::TRANSFER_DST)?;
+        // Room for eye 0's images or the cube atlas (cube-v1), whichever is larger.
+        let dump = r.buffer(&vec![0u8; dump_bytes(size).max(dump_bytes(atlas))], vk::BufferUsageFlags::TRANSFER_DST)?;
         // The level about PROBE pixels wide (within the pyramid).
         let probe_level = (size.width / PROBE).max(1).ilog2().min(levels - 1);
         let probe_pixels = mip_extent(size, probe_level);
@@ -619,6 +685,22 @@ impl World {
                     .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                     .buffer_info(&storage),
             );
+            // cube-v1: prev, next (by parity), M, mid A..D.
+            let cube_views: Vec<_> = cube_state_views[parity]
+                .into_iter()
+                .chain(cube_state_views[next])
+                .chain([m_view])
+                .chain(cube_mid_views)
+                .map(|view| [vk::DescriptorImageInfo::default().image_view(view).sampler(linear).image_layout(read_layout)])
+                .collect();
+            assert_eq!(cube_views.len(), CUBE_IMAGES as usize);
+            writes.extend(cube_views.iter().enumerate().map(|(i, info)| {
+                vk::WriteDescriptorSet::default()
+                    .dst_set(set)
+                    .dst_binding(CUBE_BINDING + i as u32)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .image_info(info)
+            }));
             let creature_info = [vk::DescriptorBufferInfo::default().buffer(creature_buffer).range(vk::WHOLE_SIZE)];
             writes.push(
                 vk::WriteDescriptorSet::default()
@@ -673,6 +755,20 @@ impl World {
             parity: 0,
             frame: 0,
             mode: 0,
+            cube_face,
+            atlas,
+            forward_pass,
+            cube_forward,
+            cube_pull,
+            cube_net,
+            cube_display,
+            cube_state,
+            cube_m,
+            cube_mid,
+            forward_target,
+            pull_target,
+            cube_net_targets,
+            cube_centre: None,
         })
     }
 
@@ -695,7 +791,7 @@ impl World {
     fn pipelines(
         d: &Device,
         shaders: &Path,
-        [scene, splat, resolve, net, display]: [vk::RenderPass; 5],
+        [scene, splat, resolve, net, display, forward]: [vk::RenderPass; 6],
         layout: vk::PipelineLayout,
         spec: &[i32],
     ) -> Result<Vec<vk::Pipeline>> {
@@ -719,6 +815,18 @@ impl World {
                     })
                 }),
         )
+        // cube-v1: forward, pull, net (net.frag, LAYOUT from the net), display per eye.
+        .chain([
+            ("cube_forward.frag.spv", forward, 1, 0),
+            ("cube_pull.frag.spv", resolve, ACCS, 0),
+            ("net.frag.spv", net, STATES, 0),
+            ("cube_display.frag.spv", display, 1, 0),
+            ("cube_display.frag.spv", display, 1, 1),
+        ]
+        .into_iter()
+        .map(|(fragment, pass, targets, eye)| {
+            pipeline(d, shaders, ("fullscreen.vert.spv", fragment), pass, layout, targets, false, false, false, &with(&[eye]))
+        }))
         .collect()
     }
 
@@ -731,7 +839,7 @@ impl World {
     /// (a partial success leaks the new ones until exit, like replaced ones).
     /// Old pipelines are only destroyed at exit (they stay in `Resources`).
     pub fn reload(&mut self, r: &mut Resources<'_>, shaders: &Path) -> Result<()> {
-        let passes = [self.scene_pass, self.splat_pass, self.resolve_pass, self.net_pass, self.display_pass];
+        let passes = [self.scene_pass, self.splat_pass, self.resolve_pass, self.net_pass, self.display_pass, self.forward_pass];
         let new = Self::pipelines(&r.gpu.device, shaders, passes, self.layout, &self.spec)?;
         let mut new = new.into_iter().map(|p| r.keep(p, Resource::Pipeline));
         let mut next = || new.next().unwrap();
@@ -739,6 +847,8 @@ impl World {
         self.creatures = next();
         self.splat = std::array::from_fn(|_| [next(), next()]);
         [self.resolve, self.net, self.display] = std::array::from_fn(|_| [next(), next()]);
+        (self.cube_forward, self.cube_pull, self.cube_net) = (next(), next(), next());
+        self.cube_display = [next(), next()];
         Ok(())
     }
 
@@ -756,6 +866,9 @@ impl World {
             return Err(error);
         }
         self.weight_count = weight_count;
+        if (old[7] == 3) != (spec[7] == 3) {
+            self.cube_centre = None; // a new store starts where the head is
+        }
         Ok(())
     }
 
@@ -774,8 +887,27 @@ impl World {
         settings: Settings,
     ) {
         if self.previous.is_none() {
-            clear_to_read(d, cmd, &self.state_images);
+            clear_to_read(d, cmd, &self.state_images, 1);
+            clear_to_read(d, cmd, self.cube_state.as_flattened(), 1);
+            // Pyramids too: a layout's passes never write the other layout's images, and
+            // the descriptors expect every image readable.
+            let pyramids: Vec<_> = self.mid_images.as_flattened().iter().chain(&self.d_images).chain([&self.cube_m]).chain(&self.cube_mid).copied().collect();
+            clear_to_read(d, cmd, &pyramids, self.levels);
         }
+        // cube-v1: the store updates on the frames where the net runs; it moves with the head.
+        let cube = self.spec[7] == 3;
+        let update = cube && settings.tau > 0.;
+        let head = (cameras[0].position + cameras[1].position) * 0.5;
+        let head_move = match (update, self.cube_centre) {
+            (true, Some(centre)) => head - centre,
+            _ => Vec3::ZERO,
+        };
+        if update {
+            self.cube_centre = Some(head);
+        }
+        let centre = self.cube_centre.unwrap_or(head);
+        let texel_angle = std::f32::consts::FRAC_PI_2 / self.cube_face as f32;
+        let arcmin = (1f32 / 60.).to_radians();
         let (previous, last_time) = self.previous.replace((cameras, time)).unwrap_or((cameras, time));
         let dt = (time - last_time).clamp(0., 0.1);
         // Exposure glides toward the last measurement every frame (no steps when measured).
@@ -823,12 +955,12 @@ impl World {
                 let [l, r] = [at(&cameras[0]), at(&cameras[1])];
                 [l[0], l[1], r[0], r[1]]
             },
+            // Net time of this update (tau ticks at the net's rate), the scale input
+            // (model.py scale_code), the texel angle.
+            cube: [self.cube_face as f32, settings.tau / rule.run[2].max(1e-3), (texel_angle / arcmin).log2() / 4., texel_angle],
+            head: centre.extend(1.).to_array(),
+            head_move: head_move.extend(0.).to_array(),
         };
-        let area = vk::Rect2D::default().extent(self.size);
-        let viewport = vk::Viewport::default()
-            .width(self.size.width as f32)
-            .height(self.size.height as f32)
-            .max_depth(1.);
         let zero = [vk::ClearValue {
             color: vk::ClearColorValue { float32: [0.; 4] },
         }; ACCS];
@@ -853,8 +985,13 @@ impl World {
                 &[self.sets[self.parity]],
                 &[],
             );
-            let begin = |pass, framebuffer| {
+            let begin_sized = |pass, framebuffer, extent: vk::Extent2D| {
                 let clears: &[vk::ClearValue] = if pass == self.scene_pass { &scene_clear } else { &zero };
+                let area = vk::Rect2D::default().extent(extent);
+                let viewport = vk::Viewport::default()
+                    .width(extent.width as f32)
+                    .height(extent.height as f32)
+                    .max_depth(1.);
                 let info = vk::RenderPassBeginInfo::default()
                     .render_pass(pass)
                     .framebuffer(framebuffer)
@@ -864,6 +1001,7 @@ impl World {
                 d.cmd_set_viewport(cmd, 0, &[viewport]);
                 d.cmd_set_scissor(cmd, 0, &[area]);
             };
+            let begin = |pass, framebuffer| begin_sized(pass, framebuffer, self.size);
             let push = |target: usize, source: usize, mode: i32| {
                 let p = Push {
                     target: target as i32,
@@ -875,7 +1013,8 @@ impl World {
             let stamp = |index: u32| {
                 d.cmd_write_timestamp(cmd, vk::PipelineStageFlags::BOTTOM_OF_PIPE, queries, index)
             };
-            // Scene first: rendered before the reprojection, composited by resolve.
+            // Scene first: rendered before the reprojection, composited by resolve (cube:
+            // by cube_pull and net on update frames; the display's scene view every frame).
             for eye in 0..EYES {
                 begin(self.scene_pass, self.scene_targets[eye]);
                 d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.scene);
@@ -895,6 +1034,56 @@ impl World {
                 d.cmd_end_render_pass(cmd);
             }
             stamp(1);
+            if cube {
+                let fullscreen = |pass, target, pipeline| {
+                    begin_sized(pass, target, self.atlas);
+                    d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipeline);
+                    push(0, 0, 0);
+                    d.cmd_draw(cmd, 3, 1, 0, 0);
+                    d.cmd_end_render_pass(cmd);
+                };
+                if update {
+                    fullscreen(self.forward_pass, self.forward_target, self.cube_forward);
+                    build_mips(d, cmd, &[self.cube_m], self.atlas, self.levels);
+                    stamp(2);
+                    fullscreen(self.resolve_pass, self.pull_target, self.cube_pull);
+                    build_mips(d, cmd, &self.cube_mid, self.atlas, self.levels);
+                    stamp(3);
+                    fullscreen(self.net_pass, self.cube_net_targets[self.parity], self.cube_net);
+                    stamp(4);
+                } else {
+                    stamp(2);
+                    stamp(3);
+                    stamp(4);
+                }
+                for eye in 0..EYES {
+                    begin(self.display_pass, self.outputs[eye][images[eye]]);
+                    d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.cube_display[eye]);
+                    push(eye, update as usize, self.mode); // source 1: this update's state (next)
+                    d.cmd_draw(cmd, 3, 1, 0, 0);
+                    d.cmd_end_render_pass(cmd);
+                }
+                stamp(5);
+                // The latest state: written this frame (next), else the one from before (prev).
+                let latest = if update { 1 - self.parity } else { self.parity };
+                if self.capture {
+                    // Exposure: the top-left eye-sized part of the atlas (faces +x, -x, +y).
+                    copy_to_buffer(d, cmd, self.cube_state[latest][0], self.size, 0, self.readback.0, 0);
+                }
+                if self.dumping && update {
+                    // The net's input (mid A..D) and output (the new A, B, C) on the atlas.
+                    let bytes = 8 * (self.atlas.width * self.atlas.height) as u64;
+                    let images = self.cube_mid.iter().chain(&self.cube_state[latest]);
+                    for (i, &image) in images.enumerate() {
+                        copy_to_buffer(d, cmd, image, self.atlas, 0, self.dump.0, i as u64 * bytes);
+                    }
+                }
+                if update {
+                    self.parity = 1 - self.parity;
+                }
+                self.frame += 1;
+                return;
+            }
             for eye in 0..EYES {
                 begin(self.splat_pass, self.acc_targets[eye]);
                 // Own previous state, then the other eye's (cross-eye splat).
@@ -965,12 +1154,20 @@ impl World {
     /// The dump of the last frame with `dumping` set (after its commands finished):
     /// eye 0's resolved A, B, C, D, new A, B, C (all RGBA16F).
     pub fn dumped(&self) -> &[u8] {
-        unsafe { std::slice::from_raw_parts(self.dump.1, dump_bytes(self.size)) }
+        unsafe { std::slice::from_raw_parts(self.dump.1, dump_bytes(self.dump_extent())) }
+    }
+
+    /// The dumped images' size: eye 0's, or the cube atlas (cube-v1: 3 x 2 faces).
+    pub fn dump_extent(&self) -> vk::Extent2D {
+        if self.spec[7] == 3 { self.atlas } else { self.size }
     }
 
     /// World points of the image's geometry around both eyes, from the last frame's
     /// probe (call after its commands finished): one per covered probe pixel.
     pub fn surroundings(&self) -> Vec<Vec3> {
+        if self.spec[7] == 3 {
+            return Vec::new(); // cube-v1: no probe of the sphere yet (no collisions)
+        }
         let size = mip_extent(self.size, self.probe_level);
         let (w, h) = (size.width as usize, size.height as usize);
         let probe = unsafe { std::slice::from_raw_parts(self.probe.1, EYES * 2 * w * h) };
@@ -1204,9 +1401,9 @@ fn mip_extent(size: vk::Extent2D, level: u32) -> vk::Extent2D {
 }
 
 /// Zero all state images (no depth = nothing to splat, certainty 0) and make them readable.
-fn clear_to_read(d: &Device, cmd: vk::CommandBuffer, images: &[vk::Image]) {
+fn clear_to_read(d: &Device, cmd: vk::CommandBuffer, images: &[vk::Image], levels: u32) {
     use vk::{AccessFlags as A, ImageLayout as L, PipelineStageFlags as S};
-    let range = image_range(vk::ImageAspectFlags::COLOR);
+    let range = image_range(vk::ImageAspectFlags::COLOR).level_count(levels);
     let barriers = |old, new, src, dst| -> Vec<_> {
         images
             .iter()

@@ -20,7 +20,7 @@
 //                      A = (rgb, inv) w, B = (velocity w, w), C = h w, D = (motion w, w),
 //                      value = mip / (mip weight + 1e-3) (see resolve.frag).
 
-layout(constant_id = 7) const int LAYOUT = 1; // the net's layout: 1 = reproject-v1, 2 = reproject-v2
+layout(constant_id = 7) const int LAYOUT = 1; // the net's layout: 1 = reproject-v1, 2 = reproject-v2, 3 = cube-v1 (cube.glsl)
 layout(constant_id = 8) const int TARGET = 0;
 layout(constant_id = 9) const int SOURCE = 0; // splat: the eye whose state it reprojects
 

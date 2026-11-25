@@ -18,6 +18,11 @@ layout(set = 0, binding = 0) uniform Frame {
     vec4 player;     // ground position x, z now (xy) and in the previous frame (zw)
     vec4 tone[3];    // display exposure per channel: pow(max(rgb * tone[0] + tone[1], 0), tone[2])
     vec4 gaze;       // focus centre per eye (x right, y down, -1..1): left xy, right zw; 0 = view centre
+    // cube-v1 (cube.glsl): face texels F, seconds of net time this update covers (dt), scale input
+    // (log2(texel angle / 1 arcmin) / 4), texel angle (rad)
+    vec4 cube;
+    vec4 head;       // head position (the store's centre), xyz
+    vec4 headMove;   // the head's translation since the last update, xyz (a static point p becomes p - move)
 } u;
 
 // Pixel convention: integer pixel centres, origin top-left, y down.

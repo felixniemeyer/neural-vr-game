@@ -6,7 +6,8 @@
 //! on); nets from before (no rate) trained on 10 fps steps without seeing tau.
 //!
 //! Layout: net.json "layout" (train/sunk/model.py), reproject-v1 (default: nets from
-//! before it existed) or reproject-v2; the shaders branch on it (LAYOUT, 1 or 2). Nets
+//! before it existed), reproject-v2 or cube-v1 (the sphere store, world.rs); the shaders
+//! branch on it (LAYOUT, 1, 2 or 3). Nets
 //! using features the shaders do not implement (down, copy, background, cnn) are refused.
 //!
 //! `WEIGHTS=dir` loads a trained net; without it the default layout runs with random
@@ -35,7 +36,7 @@ pub struct Rule {
     pub rate: f32,
     pub max_tau: f32,
     tau_input: bool,
-    /// 1 = reproject-v1, 2 = reproject-v2.
+    /// 1 = reproject-v1, 2 = reproject-v2, 3 = cube-v1.
     pub layout: i32,
     /// The certainty gate the net trained with (net.json "gate"; nets from before the
     /// gate trained without it: 0); None for random weights.
@@ -100,6 +101,7 @@ impl Rule {
                 let layout = match json.get("layout").and_then(Value::as_str).unwrap_or("reproject-v1") {
                     "reproject-v1" => 1,
                     "reproject-v2" => 2,
+                    "cube-v1" => 3,
                     other => anyhow::bail!("unknown net layout {other}"),
                 };
                 for feature in ["down", "cnn"] {
@@ -125,7 +127,7 @@ impl Rule {
         };
         ensure!(taps.len() <= MAX_TAPS && layers.len() <= MAX_LAYERS, "net too large for the shader");
         // vec4s per position: v1 (rgb, inv), h; v2 also (motion, weight). Plus one extra.
-        let groups = if layout == 2 { 3 } else { 2 };
+        let groups = if layout == 1 { 2 } else { 3 };
         ensure!(layers[0].0 == 4 * (groups * (1 + taps.len()) + 1), "layer 1 inputs do not match the taps");
         ensure!(layers.last().unwrap().1 == 8, "the net must output 8 values");
         for &(i, o) in &layers {
@@ -137,6 +139,15 @@ impl Rule {
             .collect();
         let (rate, max_tau, tau_input) = time;
         Ok(Self { taps, layers, near, max_change, rate, max_tau, tau_input, layout, gate, trained, bases })
+    }
+
+    /// The layout's name (net.json "layout").
+    pub fn layout_name(&self) -> &'static str {
+        match self.layout {
+            1 => "reproject-v1",
+            2 => "reproject-v2",
+            _ => "cube-v1",
+        }
     }
 
     pub fn trained(&self) -> bool {

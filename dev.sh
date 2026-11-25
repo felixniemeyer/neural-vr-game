@@ -12,8 +12,8 @@
 #   MONADO_WORKSPACE (sway): where Monado's windows go, default 5
 #   plus the app's variables: EYE_SIZE=256 VIEW=... MOVE=4 ...
 #   WEIGHTS=dir pins a net (e.g. WEIGHTS=nice-net, WEIGHTS=random for random weights).
-#   Unset, on a terminal: a picker (train/zoo.py) lists the nets by layout (reproject-v2,
-#   reproject-v1) with their metrics. Picking a run follows its exports (train/runs/<run>/net,
+#   Unset, on a terminal: a picker (train/zoo.py) lists the nets by layout (cube-v1,
+#   reproject-v2, reproject-v1) with their metrics. Picking a run follows its exports (train/runs/<run>/net,
 #   rewritten every train.preview iterations); a loose export (nice-net) is pinned; "newest"
 #   follows the newest export of any run (also without a terminal). p in this terminal
 #   opens the picker again. Nets switch live: dev.sh writes the net's path to

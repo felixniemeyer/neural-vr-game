@@ -628,13 +628,19 @@ fn run(shaders: &Path) -> Result<()> {
     // WEIGHTS=dir: a trained net (train/runs/<name>/net); without it random weights.
     let mut rule = rule::Rule::load(env::var_os("WEIGHTS").map(PathBuf::from).as_deref())?;
     println!(
-        "Net: {} reproject-v{} ({} weights, {} mip levels)",
+        "Net: {} {} ({} weights, {} mip levels)",
         if rule.trained() { "trained" } else { "random" },
-        rule.layout,
+        rule.layout_name(),
         rule.len(),
         rule.levels()
     );
     ensure!(edge % (1 << (rule.levels() - 1)) == 0, "EYE_SIZE must be divisible by 2^(levels - 1)");
+    // CUBE_SIZE: texels per face of cube-v1's sphere store (world.rs), default 3/4 of the
+    // eye size (about the eyes' texel density at a ~100 degree view), a multiple of 16.
+    let cube_face = env::var("CUBE_SIZE")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or((edge * 3 / 4).div_ceil(16) * 16);
     let mut weights = vec![0f32; rule.len()];
     let mut packed = vec![0u16; rule.len()];
     let mut world = World::new(
@@ -645,6 +651,7 @@ fn run(shaders: &Path) -> Result<()> {
         [&images[0], &images[1]],
         rule.specialization(),
         rule.len(),
+        cube_face,
     )?;
     print_stats(&gpu, &world);
     world.mode = match env::var("VIEW").as_deref() {
@@ -870,7 +877,7 @@ fn run(shaders: &Path) -> Result<()> {
                             rule = next;
                             weights = vec![0f32; rule.len()];
                             packed = vec![0u16; rule.len()];
-                            println!("Net: {} (reproject-v{}, {} weights), switched live", dir.display(), rule.layout, rule.len());
+                            println!("Net: {} ({}, {} weights), switched live", dir.display(), rule.layout_name(), rule.len());
                         }
                         Err(error) => println!("Net switch to {} failed, keeping the current one: {error:#}", dir.display()),
                     }
@@ -995,8 +1002,8 @@ fn run(shaders: &Path) -> Result<()> {
             std::fs::write(
                 dir.join("dump.json"),
                 format!(
-                    "{{\"size\": {edge}, \"tau\": {}, \"wild\": {}, \"net_layout\": {}, \"layout\": \"mid A, B, C, D (rgba16f), next A, B, C (rgba16f)\"}}\n",
-                    settings.tau, settings.wild, rule.layout
+                    "{{\"size\": {edge}, \"width\": {}, \"height\": {}, \"tau\": {}, \"wild\": {}, \"net_layout\": {}, \"layout\": \"mid A, B, C, D (rgba16f), next A, B, C (rgba16f)\"}}\n",
+                    world.dump_extent().width, world.dump_extent().height, settings.tau, settings.wild, rule.layout
                 ),
             )?;
             println!("Dumped to {}", dir.display());
