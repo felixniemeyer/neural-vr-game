@@ -279,6 +279,9 @@ pub fn run(shaders: &Path) -> Result<()> {
         .unwrap_or(((std::f32::consts::FRAC_PI_2 / pixel / step as f32).round() as u32).max(1) * step);
     let mut world = World::new(&mut resources, shaders, size, format, [&eyes[0], &eyes[1]], rule.specialization(), rule.len(), face)?;
     world.splat_nearness = rule.splat;
+    // The update split over frames (World::advance): the window keeps its rate.
+    world.split = true;
+    world.capture = true;
     println!("Cube: {face} texels per face ({:.2} arcmin); eyes {edge} px, {:.0} deg", (std::f32::consts::FRAC_PI_2 / face as f32).to_degrees() * 60., fov.to_degrees());
 
     // The picture: room for the dome's square; the equirect uses its top half.
@@ -327,6 +330,10 @@ pub fn run(shaders: &Path) -> Result<()> {
             .with_inner_size(winit::dpi::LogicalSize::new(width, if dome { width } else { width / 2 })),
     )?;
     let mut screen = Screen::new(&gpu, display, &window)?;
+    // The window's frame rate: the monitor's (60 if unknown); a video's fixed clock: DT.
+    let refresh = window.current_monitor().and_then(|m| m.refresh_rate_millihertz()).map_or(60., |m| m as f32 / 1000.);
+    let period = if ffmpeg.is_some() { DT } else { 1. / refresh.clamp(24., 240.) };
+    println!("Desktop: {refresh:.0} Hz window; the cube updates as fast as the GPU allows, split over frames");
     let mut events = Events::default();
 
     let limit: Option<u64> = env::var("FRAMES").ok().and_then(|v| v.parse().ok());
@@ -342,6 +349,12 @@ pub fn run(shaders: &Path) -> Result<()> {
     // Collisions (fabric-artwork's sensor push, from the sphere's own depth): the camera's
     // offset from where the autopilot and the controller put it.
     let (mut pushed, mut last_origin) = (Vec3::ZERO, None::<Vec3>);
+    // Net time owed to the cube (ticks while an update is in flight wait for the next),
+    // the last two updates' finish times (the display blends between their states), and
+    // the frame rates of the window and the cube (exponential moving averages).
+    let mut owed = 0f32;
+    let (mut finished, mut before) = (0f32, 0f32);
+    let (mut window_fps, mut cube_fps) = (refresh, 0f32);
     println!("Desktop: a window ({}; Tab switches, Esc closes){}", if dome { "domemaster" } else { "equirect" }, env::var("VIDEO").map(|v| format!(", video to {v}")).unwrap_or_default());
 
     while !quit.load(Ordering::SeqCst) && limit.is_none_or(|n| frames < n) {
@@ -367,7 +380,7 @@ pub fn run(shaders: &Path) -> Result<()> {
         }
 
         // Time: the wall clock live, a fixed 90 Hz clock for a video (whatever the GPU's speed).
-        let seconds = if ffmpeg.is_some() { frames as f32 * DT } else { start.elapsed().as_secs_f32() };
+        let seconds = if ffmpeg.is_some() { frames as f32 * period } else { start.elapsed().as_secs_f32() };
         let dt = (seconds - std::mem::replace(&mut last, seconds)).clamp(0., 0.1);
         let city = city::City {
             cell: controls.get("cell"),
@@ -401,7 +414,10 @@ pub fn run(shaders: &Path) -> Result<()> {
         let settings = Settings {
             wild: controls.get("wild"),
             gate: controls.get("gate"),
-            tau: clock.tick(seconds, controls.get("timescale"), controls.get("netfps"), &rule, false),
+            tau: {
+                owed = (owed + clock.tick(seconds, controls.get("timescale"), controls.get("netfps"), &rule, false)).min(rule.max_tau);
+                if world.updating() { 0. } else { std::mem::take(&mut owed) }
+            },
             color: per_second(controls.get("color")),
             depth: per_second(controls.get("depth")),
             sky: controls.get("sky"),
@@ -441,11 +457,17 @@ pub fn run(shaders: &Path) -> Result<()> {
         push[8..11].copy_from_slice(&axes.z_axis.to_array());
         push[12..16].copy_from_slice(&[controls.get("attention").to_radians(), dome_angle, dome as u8 as f32, 0.]);
         push[16..20].copy_from_slice(&[shape.width as f32, shape.height as f32, 0., width as f32]);
+        // From the state before into the latest over one update's time; the rates (or hidden).
+        push[3] = if finished > before { (seconds - finished) / (finished - before) } else { 1. };
+        let show_fps = controls.on("fps");
+        push[7] = if show_fps { window_fps } else { -1. };
+        push[11] = cube_fps;
         // Letterboxed into the window.
         let fit = (screen.extent.width as f32 / shape.width as f32).min(screen.extent.height as f32 / shape.height as f32);
         let (w, h) = ((shape.width as f32 * fit) as i32, (shape.height as f32 * fit) as i32);
         let (x0, y0) = ((screen.extent.width as i32 - w) / 2, (screen.extent.height as i32 - h) / 2);
-        let record_video = ffmpeg.is_some() && settings.tau > 0.;
+        let starting = settings.tau > 0.;
+        let mut done = false;
 
         unsafe {
             use vk::{AccessFlags as A, ImageLayout as L, PipelineStageFlags as S};
@@ -456,12 +478,26 @@ pub fn run(shaders: &Path) -> Result<()> {
             let frame_rule = rule.frame();
             rule.weights(seconds, settings.wild, &mut weights);
             rule::pack(&rule.layers, &weights, &mut packed);
-            world.capture = frames % 8 == 0;
-            world.draw(d, cmd, queries, cameras, [0, 0], seconds, &frame_rule, &packed, settings);
+            if starting {
+                // A new update: the scene and the splat now, the rest in the next frames.
+                world.draw(d, cmd, queries, cameras, [0, 0], seconds, &frame_rule, &packed, settings);
+            } else if world.updating() {
+                done = world.advance(d, cmd, queries);
+            } else {
+                for stamp in 1..5 {
+                    d.cmd_write_timestamp(cmd, S::BOTTOM_OF_PIPE, queries, stamp);
+                }
+            }
+            if done {
+                (before, finished) = (finished, seconds);
+                push[3] = 0.;
+            }
             world.draw_panorama(d, cmd, picture_target, shape, push);
+            d.cmd_write_timestamp(cmd, S::BOTTOM_OF_PIPE, queries, 5);
             let read = L::TRANSFER_SRC_OPTIMAL;
             barrier(d, cmd, picture, (L::COLOR_ATTACHMENT_OPTIMAL, read), (A::COLOR_ATTACHMENT_WRITE, A::TRANSFER_READ), (S::COLOR_ATTACHMENT_OUTPUT, S::TRANSFER));
             let layers = vk::ImageSubresourceLayers::default().aspect_mask(vk::ImageAspectFlags::COLOR).layer_count(1);
+            let record_video = ffmpeg.is_some() && done;
             if record_video {
                 let copy = vk::BufferImageCopy::default()
                     .image_subresource(layers)
@@ -522,15 +558,23 @@ pub fn run(shaders: &Path) -> Result<()> {
                 }
             }
         }
-        if world.capture {
+        let record_video = ffmpeg.is_some() && done;
+        if done {
             if controls.on("exposure") {
                 world.calibrate(controls.get("mid"), controls.get("clip"), controls.get("black"), controls.get("tint"));
             } else {
                 world.expose_plainly();
             }
         }
-        if settings.tau > 0. {
+        // The rates: each frame's (and each update's) interval, averaged over about half a
+        // second (two seconds for the cube).
+        let interval = frame_start.elapsed().as_secs_f32().max(period * 0.5);
+        if done {
             updates += 1;
+            let between = finished - before;
+            if before > 0. && between > 0. {
+                cube_fps += (1. / between - cube_fps) * (1. - (-between / 2.).exp());
+            }
         }
         // Every point of the sphere within reach (the body plus 0.15 s of the camera's
         // speed, so it brakes before it touches) pushes the camera straight away from it by
@@ -562,8 +606,10 @@ pub fn run(shaders: &Path) -> Result<()> {
         // Live: paced to 90 Hz (as the headset), not as fast as the GPU goes (the whole
         // system would lag); a video renders as fast as it can on its fixed clock.
         if ffmpeg.is_none() {
-            std::thread::sleep(Duration::from_secs_f32(DT).saturating_sub(frame_start.elapsed()));
+            std::thread::sleep(Duration::from_secs_f32(period).saturating_sub(frame_start.elapsed()));
         }
+        let interval = frame_start.elapsed().as_secs_f32().max(interval);
+        window_fps += (1. / interval - window_fps) * (1. - (-interval / 0.5).exp());
         frames += 1;
         if frames % 90 == 0 {
             let rate = 90. / std::mem::replace(&mut since, Instant::now()).elapsed().as_secs_f64();
@@ -571,10 +617,10 @@ pub fn run(shaders: &Path) -> Result<()> {
             let [scene, forward_ms, pull, net, display] = gpu_ms.map(|ms| ms / 90.);
             let total = scene + forward_ms + pull + net + display;
             println!(
-                "{frames} frames ({seconds:.1} s, {rate:.1} frames/s, {updates} updates): GPU {total:.2} ms/frame (scene {scene:.2} forward {forward_ms:.2} pull {pull:.2} net {net:.2} display {display:.2}), at ({:.1}, {:.1}, {:.1}) looking ({:.2}, {:.2}, {:.2}), probe {probe_points} points, nearest {nearest:.1} m, pushed {:.2} m",
+                "{frames} frames ({seconds:.1} s, {rate:.1} frames/s, {updates} updates, cube {cube_fps:.1}/s): GPU {total:.2} ms/frame (scene {scene:.2} forward {forward_ms:.2} pull {pull:.2} net {net:.2} display {display:.2}), at ({:.1}, {:.1}, {:.1}) looking ({:.2}, {:.2}, {:.2}), probe {probe_points} points, nearest {nearest:.1} m, pushed {:.2} m",
                 origin.x, origin.y, origin.z, forward.x, forward.y, forward.z, pushed.length()
             );
-            window.set_title(&format!("Sunk City: {} {rate:.0} fps, GPU {total:.1} ms", if dome { "dome" } else { "equirect" }));
+            window.set_title(&format!("Sunk City: {} {rate:.0} fps, cube {cube_fps:.1}/s, GPU {total:.1} ms", if dome { "dome" } else { "equirect" }));
             gpu_ms = [0.; world::STAMPS as usize - 1];
         }
     }

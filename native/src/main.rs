@@ -644,6 +644,7 @@ fn panel(rule: &rule::Rule, desktop: bool) -> av_controls::Controls {
             .fader_with("rotationSpeed", 0.5, 10., initial("rotationSpeed", 4.), 1)
             .fader_with("attention", 0., 90., initial("attention", 30.), 0)
             .switch("collide", initial("collide", 1.) > 0.5)
+            .switch("fps", initial("fps", 1.) > 0.5)
     } else {
         panel
     };

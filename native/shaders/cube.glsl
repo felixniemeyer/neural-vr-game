@@ -20,6 +20,7 @@
 //                C = (h0..h3): the state before and after this update (ping-pong)
 //   M            the forward motion of each prev texel: (moved direction - direction, 1) * alive,
 //                with mips (the premultiplied pyramid the pull searches)
+//   old A, B     split updates only: the state before the latest (World::advance)
 //   acc A..D, W  splat reprojection only (net.json reproject "splat"): cube_splat.vert's
 //                sums, folded into mid A..D by cube_fold.frag
 //   mid A..D     the pulled state, premultiplied by its weight w like v2's resolved images:
@@ -44,6 +45,9 @@ layout(set = 0, binding = 47) uniform sampler2D cubeAccB; // (velocity w n c, w 
 layout(set = 0, binding = 48) uniform sampler2D cubeAccC; // h w n c
 layout(set = 0, binding = 49) uniform sampler2D cubeAccD; // (motion w n c, w n)
 layout(set = 0, binding = 50) uniform sampler2D cubeAccW; // w
+// Split updates (the desktop): the state before the latest (A, B), for the display's blend.
+layout(set = 0, binding = 51) uniform sampler2D cubeOldA;
+layout(set = 0, binding = 52) uniform sampler2D cubeOldB;
 
 const float QUARTER = 0.78539816339;
 const float CUBE_EPS = 1e-3; // model.py EPS: values = premultiplied sums / (weight + EPS)
@@ -124,8 +128,9 @@ ivec2 cubeTexel(int f, ivec2 c) {
 }
 
 // The state (image 0 A, 1 B, 2 C) at an atlas texel: source 1 = next (this update's
-// output), 0 = prev.
+// output), 0 = prev, 2 = old (split updates: the state before prev; A and B only).
 vec4 cubeFetch(int source, int image, ivec2 p) {
+    if (source == 2) return image == 0 ? texelFetch(cubeOldA, p, 0) : texelFetch(cubeOldB, p, 0);
     if (source == 1) {
         if (image == 0) return texelFetch(cubeNextA, p, 0);
         if (image == 1) return texelFetch(cubeNextB, p, 0);

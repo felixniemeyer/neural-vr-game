@@ -60,7 +60,7 @@ pub const WEIGHT_HALVES: usize = 32768;
 /// cube-v1 images (cube.glsl): prev A, B, C, next A, B, C, M, mid A..D, the splat
 /// accumulators A..D, W at bindings CUBE_BINDING.. (all with the linear sampler).
 const CUBE_BINDING: u32 = CREATURES_BINDING + 1;
-const CUBE_IMAGES: u32 = 11 + CUBE_ACCS as u32;
+const CUBE_IMAGES: u32 = 13 + CUBE_ACCS as u32;
 const LAST_BINDING: u32 = CUBE_BINDING + CUBE_IMAGES - 1;
 /// Pipelines capture the driver's statistics (VK_KHR_pipeline_executable_properties on).
 pub static CAPTURE_STATS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -75,6 +75,8 @@ const CUBE_PROBE: u32 = 24;
 const PROBE: u32 = 32;
 /// GPU timestamps per frame: start, after scene, splat, resolve, net, display.
 pub const STAMPS: u32 = 6;
+/// Split updates (World::split): the net pass in this many bands of rows, one per frame.
+const NET_BANDS: u32 = 3;
 
 /// Live settings (av-controls faders).
 #[derive(Clone, Copy)]
@@ -237,6 +239,14 @@ pub struct World {
     cube_fold: vk::Pipeline,
     /// The net's reprojection: Some(nearness) = splat (net.json reproject), None = pull.
     pub splat_nearness: Option<f32>,
+    /// Split cube updates (the desktop): `draw` records only the scene and the splat (or
+    /// forward motion); `advance` records the rest, a stage per frame (fold, then the net in
+    /// NET_BANDS bands), so the window keeps its frame rate while the cube updates slowly.
+    pub split: bool,
+    /// The split update in flight: its next stage (1 fold / pull, 2.. net bands).
+    stage: Option<u32>,
+    /// The net pass that keeps what it doesn't draw (a band of rows).
+    cube_band_pass: vk::RenderPass,
     cube: Cube,
     /// Clear the cube's images before the next frame (new or resized).
     cube_clear: bool,
@@ -272,6 +282,10 @@ struct Cube {
     probe_level: u32,
     /// net_targets[parity] writes state[1 - parity].
     net_targets: [vk::Framebuffer; 2],
+    /// Split updates: the state before the latest (A, B), copied when an update finishes,
+    /// so the display can blend into the latest while the next update overwrites it.
+    old: [vk::Image; 2],
+    old_views: [vk::ImageView; 2],
 }
 
 impl Cube {
@@ -301,6 +315,10 @@ impl Cube {
             mid_views[i] = r.view_levels(mid[i], STATE, vk::ImageAspectFlags::COLOR, levels)?;
         }
         let acc_usage = Usage::COLOR_ATTACHMENT | Usage::SAMPLED;
+        let (mut old, mut old_views) = ([vk::Image::null(); 2], [vk::ImageView::null(); 2]);
+        for i in 0..2 {
+            (old[i], old_views[i]) = r.image(atlas, STATE, Usage::SAMPLED | Usage::TRANSFER_DST)?;
+        }
         let probe_level = (face / CUBE_PROBE).max(1).ilog2().min(levels - 1);
         let probe_texels = mip_extent(atlas, probe_level);
         let probe = r.buffer(&vec![[0u16; 4]; 2 * (probe_texels.width * probe_texels.height) as usize], vk::BufferUsageFlags::TRANSFER_DST)?;
@@ -325,6 +343,8 @@ impl Cube {
             probe_level,
             acc_views,
             net_targets: [r.framebuffer(net, atlas, &state_views[1])?, r.framebuffer(net, atlas, &state_views[0])?],
+            old,
+            old_views,
         })
     }
 
@@ -337,6 +357,7 @@ impl Cube {
                 .chain([self.m_view])
                 .chain(self.mid_views)
                 .chain(self.acc_views)
+                .chain(self.old_views)
                 .map(|view| {
                     [vk::DescriptorImageInfo::default()
                         .image_view(view)
@@ -362,7 +383,7 @@ impl Cube {
 
     /// Every image with its mip level count.
     fn images(&self, levels: u32) -> Vec<(vk::Image, u32)> {
-        self.state.as_flattened().iter().map(|&i| (i, 1)).chain([self.m].into_iter().chain(self.mid).map(|i| (i, levels))).collect()
+        self.state.as_flattened().iter().chain(&self.old).map(|&i| (i, 1)).chain([self.m].into_iter().chain(self.mid).map(|i| (i, levels))).collect()
     }
 }
 
@@ -384,6 +405,7 @@ fn render_pass(
                 .samples(vk::SampleCountFlags::TYPE_1)
                 .load_op(load)
                 .store_op(vk::AttachmentStoreOp::STORE)
+                .initial_layout(if load == vk::AttachmentLoadOp::LOAD { final_layout } else { vk::ImageLayout::UNDEFINED })
                 .final_layout(final_layout)
         })
         .collect();
@@ -649,6 +671,7 @@ impl World {
         )?;
         let forward_pass = render_pass(r, &[STATE], false, dont_care, read_layout, true)?;
         let cube_splat_pass = render_pass(r, &[ACC, ACC, ACC, ACC, ACC_SINGLE], false, clear, read_layout, true)?;
+        let cube_band_pass = render_pass(r, &[STATE; STATES], false, vk::AttachmentLoadOp::LOAD, read_layout, true)?;
         let passes = [scene_pass, splat_pass, resolve_pass, net_pass, display_pass, forward_pass, cube_splat_pass];
         let mut pipelines = Self::pipelines(&r.gpu.device, shaders, passes, layout, &spec)?
             .into_iter()
@@ -869,6 +892,9 @@ impl World {
             cube_net,
             cube_display,
             cube_splat_pass,
+            split: false,
+            stage: None,
+            cube_band_pass,
             cube_splat,
             cube_fold,
             splat_nearness: None,
@@ -1220,7 +1246,8 @@ impl World {
                     d.cmd_draw(cmd, 3, 1, 0, 0);
                     d.cmd_end_render_pass(cmd);
                 };
-                if update && self.splat_nearness.is_some() {
+                let splat = self.splat_nearness.is_some();
+                if update && splat {
                     // Splat: every face texel a point into the accumulators, then the fold.
                     begin_sized(self.cube_splat_pass, self.cube.splat_target, self.cube.atlas);
                     d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.cube_splat);
@@ -1228,22 +1255,28 @@ impl World {
                     d.cmd_draw(cmd, 6 * self.cube.face * self.cube.face, 1, 0, 0);
                     d.cmd_end_render_pass(cmd);
                     stamp(2);
-                    fullscreen(self.resolve_pass, self.cube.pull_target, self.cube_fold);
-                    build_mips(d, cmd, &self.cube.mid, self.cube.atlas, self.levels);
-                    stamp(3);
-                    fullscreen(self.net_pass, self.cube.net_targets[self.parity], self.cube_net);
-                    stamp(4);
                 } else if update {
                     fullscreen(self.forward_pass, self.cube.forward_target, self.cube_forward);
                     build_mips(d, cmd, &[self.cube.m], self.cube.atlas, self.levels);
                     stamp(2);
-                    fullscreen(self.resolve_pass, self.cube.pull_target, self.cube_pull);
+                } else {
+                    stamp(2);
+                }
+                if self.split {
+                    // The rest in `advance`, a stage per frame; the window draws the panorama.
+                    stamp(3);
+                    stamp(4);
+                    self.stage = update.then_some(1);
+                    self.frame += 1;
+                    return;
+                }
+                if update {
+                    fullscreen(self.resolve_pass, self.cube.pull_target, if splat { self.cube_fold } else { self.cube_pull });
                     build_mips(d, cmd, &self.cube.mid, self.cube.atlas, self.levels);
                     stamp(3);
                     fullscreen(self.net_pass, self.cube.net_targets[self.parity], self.cube_net);
                     stamp(4);
                 } else {
-                    stamp(2);
                     stamp(3);
                     stamp(4);
                 }
@@ -1255,30 +1288,10 @@ impl World {
                     d.cmd_end_render_pass(cmd);
                 }
                 stamp(5);
-                // The latest state: written this frame (next), else the one from before (prev).
-                let latest = if update { 1 - self.parity } else { self.parity };
-                let fits = self.cube.atlas.width >= self.size.width && self.cube.atlas.height >= self.size.height;
-                if self.capture && fits {
-                    // Exposure: the top-left eye-sized part of the atlas (faces +x, -x, +y).
-                    copy_to_buffer(d, cmd, self.cube.state[latest][0], self.size, 0, self.readback.0, 0);
-                }
-                if self.dumping && update {
-                    // The net's input (mid A..D) and output (the new A, B, C) on the atlas.
-                    let bytes = 8 * (self.cube.atlas.width * self.cube.atlas.height) as u64;
-                    let images = self.cube.mid.iter().chain(&self.cube.state[latest]);
-                    for (i, &image) in images.enumerate() {
-                        copy_to_buffer(d, cmd, image, self.cube.atlas, 0, self.dump.0, i as u64 * bytes);
-                    }
-                }
                 if update {
-                    // The probe: this update's pulled/splatted state (scene blended in) at a coarse level.
-                    let level = self.cube.probe_level;
-                    let texels = mip_extent(self.cube.atlas, level);
-                    let bytes = 8 * (texels.width * texels.height) as u64;
-                    for (i, &image) in self.cube.mid[..2].iter().enumerate() {
-                        copy_to_buffer(d, cmd, image, self.cube.atlas, level, self.cube.probe.0, i as u64 * bytes);
-                    }
-                    self.parity = 1 - self.parity;
+                    self.finish_update(d, cmd);
+                } else if self.capture && self.capture_fits() {
+                    copy_to_buffer(d, cmd, self.cube.state[self.parity][0], self.size, 0, self.readback.0, 0);
                 }
                 self.frame += 1;
                 return;
@@ -1348,6 +1361,99 @@ impl World {
         self.probe_cameras = cameras;
         self.parity = 1 - self.parity;
         self.frame += 1;
+    }
+
+    /// Whether a split update is in flight (`advance` has stages left).
+    pub fn updating(&self) -> bool {
+        self.stage.is_some()
+    }
+
+    /// Split updates: record the next stage of the update in flight (after the caller's
+    /// timestamp 0; writes 1 to 4): the fold (or pull) and the net's mips, then the net in
+    /// NET_BANDS bands of rows. True when this stage finished the update (the parity has
+    /// flipped: the panorama shows the new state).
+    pub fn advance(&mut self, d: &Device, cmd: vk::CommandBuffer, queries: vk::QueryPool) -> bool {
+        let Some(stage) = self.stage else { return false };
+        let stages = vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT;
+        let atlas = self.cube.atlas;
+        let stamp = |index: u32| unsafe { d.cmd_write_timestamp(cmd, vk::PipelineStageFlags::BOTTOM_OF_PIPE, queries, index) };
+        // A fullscreen pass over the rows `rows` (the viewport stays the whole atlas).
+        let pass = |pass, framebuffer, pipeline, rows: (u32, u32)| unsafe {
+            let area = vk::Rect2D {
+                offset: vk::Offset2D { x: 0, y: rows.0 as i32 },
+                extent: vk::Extent2D { width: atlas.width, height: rows.1 - rows.0 },
+            };
+            let viewport = vk::Viewport::default().width(atlas.width as f32).height(atlas.height as f32).max_depth(1.);
+            let info = vk::RenderPassBeginInfo::default().render_pass(pass).framebuffer(framebuffer).render_area(area);
+            d.cmd_begin_render_pass(cmd, &info, vk::SubpassContents::INLINE);
+            d.cmd_set_viewport(cmd, 0, &[viewport]);
+            d.cmd_set_scissor(cmd, 0, &[area]);
+            d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipeline);
+            d.cmd_draw(cmd, 3, 1, 0, 0);
+            d.cmd_end_render_pass(cmd);
+        };
+        unsafe {
+            d.cmd_bind_descriptor_sets(cmd, vk::PipelineBindPoint::GRAPHICS, self.layout, 0, &[self.sets[self.parity]], &[]);
+            d.cmd_push_constants(cmd, self.layout, stages, 0, &Push { target: 0, source: 0, mode: 0 }.bytes());
+        }
+        stamp(1);
+        stamp(2);
+        if stage == 1 {
+            let pipeline = if self.splat_nearness.is_some() { self.cube_fold } else { self.cube_pull };
+            pass(self.resolve_pass, self.cube.pull_target, pipeline, (0, atlas.height));
+            build_mips(d, cmd, &self.cube.mid, atlas, self.levels);
+            stamp(3);
+            stamp(4);
+            self.stage = Some(2);
+            return false;
+        }
+        stamp(3);
+        let band = stage - 2;
+        let rows = (atlas.height * band / NET_BANDS, atlas.height * (band + 1) / NET_BANDS);
+        pass(self.cube_band_pass, self.cube.net_targets[self.parity], self.cube_net, rows);
+        stamp(4);
+        if band + 1 < NET_BANDS {
+            self.stage = Some(stage + 1);
+            return false;
+        }
+        self.stage = None;
+        self.finish_update(d, cmd);
+        true
+    }
+
+    fn capture_fits(&self) -> bool {
+        self.cube.atlas.width >= self.size.width && self.cube.atlas.height >= self.size.height
+    }
+
+    /// After a cube update's net: the exposure capture, dump and probe read back, the state
+    /// before (split: kept as `old` for the display's blend), and the parity flipped.
+    fn finish_update(&mut self, d: &Device, cmd: vk::CommandBuffer) {
+        let latest = 1 - self.parity;
+        if self.capture && self.capture_fits() {
+            // Exposure: the top-left eye-sized part of the atlas (faces +x, -x, +y).
+            copy_to_buffer(d, cmd, self.cube.state[latest][0], self.size, 0, self.readback.0, 0);
+        }
+        if self.dumping {
+            // The net's input (mid A..D) and output (the new A, B, C) on the atlas.
+            let bytes = 8 * (self.cube.atlas.width * self.cube.atlas.height) as u64;
+            let images = self.cube.mid.iter().chain(&self.cube.state[latest]);
+            for (i, &image) in images.enumerate() {
+                copy_to_buffer(d, cmd, image, self.cube.atlas, 0, self.dump.0, i as u64 * bytes);
+            }
+        }
+        // The probe: this update's pulled/splatted state (scene blended in) at a coarse level.
+        let level = self.cube.probe_level;
+        let texels = mip_extent(self.cube.atlas, level);
+        let bytes = 8 * (texels.width * texels.height) as u64;
+        for (i, &image) in self.cube.mid[..2].iter().enumerate() {
+            copy_to_buffer(d, cmd, image, self.cube.atlas, level, self.cube.probe.0, i as u64 * bytes);
+        }
+        if self.split {
+            for i in 0..2 {
+                copy_image(d, cmd, self.cube.state[self.parity][i], self.cube.old[i], self.cube.atlas);
+            }
+        }
+        self.parity = latest;
     }
 
     /// The dump of the last frame with `dumping` set (after its commands finished):
@@ -1585,6 +1691,44 @@ fn build_mips(d: &Device, cmd: vk::CommandBuffer, images: &[vk::Image], size: vk
 
 /// Copy a shader-readable colour image (level 0) into a buffer at `offset` bytes,
 /// leaving it shader-readable.
+/// Copy a whole single-level colour image into another of the same size; both are
+/// shader-readable before and after.
+fn copy_image(d: &Device, cmd: vk::CommandBuffer, from: vk::Image, to: vk::Image, size: vk::Extent2D) {
+    use vk::{AccessFlags as A, ImageLayout as L, PipelineStageFlags as S};
+    let barrier = |image, old, new, src, dst| {
+        vk::ImageMemoryBarrier::default()
+            .image(image)
+            .subresource_range(image_range(vk::ImageAspectFlags::COLOR))
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .old_layout(old)
+            .new_layout(new)
+            .src_access_mask(src)
+            .dst_access_mask(dst)
+    };
+    let read = L::SHADER_READ_ONLY_OPTIMAL;
+    let layers = vk::ImageSubresourceLayers { aspect_mask: vk::ImageAspectFlags::COLOR, mip_level: 0, base_array_layer: 0, layer_count: 1 };
+    let region = vk::ImageCopy::default()
+        .src_subresource(layers)
+        .dst_subresource(layers)
+        .extent(vk::Extent3D { width: size.width, height: size.height, depth: 1 });
+    let none = vk::DependencyFlags::empty();
+    let shaders = S::VERTEX_SHADER | S::FRAGMENT_SHADER;
+    unsafe {
+        let before = [
+            barrier(from, read, L::TRANSFER_SRC_OPTIMAL, A::COLOR_ATTACHMENT_WRITE | A::SHADER_READ, A::TRANSFER_READ),
+            barrier(to, read, L::TRANSFER_DST_OPTIMAL, A::SHADER_READ, A::TRANSFER_WRITE),
+        ];
+        d.cmd_pipeline_barrier(cmd, shaders | S::COLOR_ATTACHMENT_OUTPUT, S::TRANSFER, none, &[], &[], &before);
+        d.cmd_copy_image(cmd, from, L::TRANSFER_SRC_OPTIMAL, to, L::TRANSFER_DST_OPTIMAL, &[region]);
+        let after = [
+            barrier(from, L::TRANSFER_SRC_OPTIMAL, read, A::TRANSFER_READ, A::SHADER_READ),
+            barrier(to, L::TRANSFER_DST_OPTIMAL, read, A::TRANSFER_WRITE, A::SHADER_READ),
+        ];
+        d.cmd_pipeline_barrier(cmd, S::TRANSFER, shaders, none, &[], &[], &after);
+    }
+}
+
 fn copy_to_buffer(
     d: &Device,
     cmd: vk::CommandBuffer,
