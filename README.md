@@ -29,6 +29,17 @@ Open the printed controller URL and pick the panel **sunk-city** to get live fad
 Shader edits reload live; Rust edits rebuild and restart the app. The broker, controller
 and Monado logs go to `build/dev/`.
 
+Without OpenXR at all (no Monado): `DESKTOP=1` renders a cube-v1 net's sphere store from
+two virtual eyes on the autopilot (fixed 90 Hz clock) and writes it as an equirectangular
+panorama after every net update (`native/src/desktop.rs`):
+
+```sh
+native/build.sh
+cd native && DESKTOP=1 WEIGHTS=../train/runs/cube-wide/net VIDEO=../build/desktop/run.mp4 \
+  FRAMES=2700 ../build/native/sunk-city ../build/native
+# the latest panorama: build/desktop/panorama.ppm (PANORAMA, PANORAMA_WIDTH, FOV, FRAMES)
+```
+
 ## Steam Frame
 
 ```sh

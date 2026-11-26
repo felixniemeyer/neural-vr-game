@@ -1,4 +1,5 @@
 mod creatures;
+mod desktop;
 mod swarm;
 mod city;
 mod gpu;
@@ -60,62 +61,12 @@ fn init_gpu(instance: &xr::Instance, system: xr::SystemId) -> Result<Gpu> {
         let setup = (|| -> Result<_> {
             let physical = instance.vulkan_graphics_device(system, raw)?;
             let physical_handle = vk::PhysicalDevice::from_raw(physical as u64);
-            let family = vulkan
-                .get_physical_device_queue_family_properties(physical_handle)
-                .iter()
-                .position(|p| {
-                    p.queue_count > 0
-                        && p.queue_flags
-                            .contains(vk::QueueFlags::GRAPHICS | vk::QueueFlags::COMPUTE)
-                })
-                .context("No Vulkan graphics and compute queue")? as u32;
-            let queues = [vk::DeviceQueueCreateInfo::default()
-                .queue_family_index(family)
-                .queue_priorities(&[1.])];
-            // shaderFloat16: the net runs in float16 (net.frag, packed math).
-            let mut half = vk::PhysicalDeviceShaderFloat16Int8Features::default();
-            vulkan.get_physical_device_features2(
-                physical_handle,
-                &mut vk::PhysicalDeviceFeatures2::default().push_next(&mut half),
-            );
-            ensure!(half.shader_float16 == vk::TRUE, "The GPU lacks shaderFloat16");
-            let mut half = vk::PhysicalDeviceShaderFloat16Int8Features::default().shader_float16(true);
-            let mut extensions = vec![ash::khr::shader_float16_int8::NAME.as_ptr()];
-            // The driver's statistics (registers, instructions) per pipeline, if it has them.
-            let stats = vulkan
-                .enumerate_device_extension_properties(physical_handle)?
-                .iter()
-                .any(|e| e.extension_name_as_c_str() == Ok(ash::khr::pipeline_executable_properties::NAME));
-            let mut executable = vk::PhysicalDevicePipelineExecutablePropertiesFeaturesKHR::default()
-                .pipeline_executable_info(true);
-            if stats {
-                extensions.push(ash::khr::pipeline_executable_properties::NAME.as_ptr());
-            }
-            // largePoints: the splat draws each previous pixel as a 2x2 point sprite.
-            let features = vk::PhysicalDeviceFeatures::default().large_points(true);
-            let info = vk::DeviceCreateInfo::default()
-                .queue_create_infos(&queues)
-                .enabled_extension_names(&extensions)
-                .enabled_features(&features)
-                .push_next(&mut half);
-            let info = if stats { info.push_next(&mut executable) } else { info };
-            let raw = instance
-                .create_vulkan_device(
-                    system,
-                    get_proc,
-                    physical,
-                    (&info as *const vk::DeviceCreateInfo).cast(),
-                )?
-                .map_err(vk::Result::from_raw)?;
-            let device = ash::Device::load(vulkan.fp_v1_0(), vk::Device::from_raw(raw as u64));
-            let queue = device.get_device_queue(family, 0);
-            let properties = vulkan.get_physical_device_properties(physical_handle);
-            println!(
-                "Vulkan GPU: {}",
-                CStr::from_ptr(properties.device_name.as_ptr()).to_string_lossy()
-            );
-            world::CAPTURE_STATS.store(stats, std::sync::atomic::Ordering::Relaxed);
-            let stats = stats.then(|| ash::khr::pipeline_executable_properties::Device::new(&vulkan, &device));
+            let (device, queue, family, stats) = make_device(&vulkan, physical_handle, |info| {
+                let raw = instance
+                    .create_vulkan_device(system, get_proc, physical, (info as *const vk::DeviceCreateInfo).cast())?
+                    .map_err(vk::Result::from_raw)?;
+                Ok(ash::Device::load(vulkan.fp_v1_0(), vk::Device::from_raw(raw as u64)))
+            })?;
             Ok((physical_handle, device, queue, family, stats))
         })();
         match setup {
@@ -133,6 +84,67 @@ fn init_gpu(instance: &xr::Instance, system: xr::SystemId) -> Result<Gpu> {
                 Err(error)
             }
         }
+    }
+}
+
+/// The logical device on `physical`: a graphics + compute queue, shaderFloat16, large
+/// points, the pipeline statistics where offered. `create` makes the device from the info
+/// (OpenXR's create_vulkan_device, or plain Vulkan in desktop.rs).
+unsafe fn make_device(
+    vulkan: &ash::Instance,
+    physical: vk::PhysicalDevice,
+    create: impl FnOnce(&vk::DeviceCreateInfo) -> Result<ash::Device>,
+) -> Result<(ash::Device, vk::Queue, u32, Option<ash::khr::pipeline_executable_properties::Device>)> {
+    unsafe {
+        let family = vulkan
+            .get_physical_device_queue_family_properties(physical)
+            .iter()
+            .position(|p| {
+                p.queue_count > 0
+                    && p.queue_flags
+                        .contains(vk::QueueFlags::GRAPHICS | vk::QueueFlags::COMPUTE)
+            })
+            .context("No Vulkan graphics and compute queue")? as u32;
+        let queues = [vk::DeviceQueueCreateInfo::default()
+            .queue_family_index(family)
+            .queue_priorities(&[1.])];
+        // shaderFloat16: the net runs in float16 (net.frag, packed math).
+        let mut half = vk::PhysicalDeviceShaderFloat16Int8Features::default();
+        vulkan.get_physical_device_features2(
+            physical,
+            &mut vk::PhysicalDeviceFeatures2::default().push_next(&mut half),
+        );
+        ensure!(half.shader_float16 == vk::TRUE, "The GPU lacks shaderFloat16");
+        let mut half = vk::PhysicalDeviceShaderFloat16Int8Features::default().shader_float16(true);
+        let mut extensions = vec![ash::khr::shader_float16_int8::NAME.as_ptr()];
+        // The driver's statistics (registers, instructions) per pipeline, if it has them.
+        let stats = vulkan
+            .enumerate_device_extension_properties(physical)?
+            .iter()
+            .any(|e| e.extension_name_as_c_str() == Ok(ash::khr::pipeline_executable_properties::NAME));
+        let mut executable = vk::PhysicalDevicePipelineExecutablePropertiesFeaturesKHR::default()
+            .pipeline_executable_info(true);
+        if stats {
+            extensions.push(ash::khr::pipeline_executable_properties::NAME.as_ptr());
+        }
+        // largePoints: the splat draws each previous pixel as a 2x2 point sprite.
+        let features = vk::PhysicalDeviceFeatures::default().large_points(true);
+        let info = vk::DeviceCreateInfo::default()
+            .queue_create_infos(&queues)
+            .enabled_extension_names(&extensions)
+            .enabled_features(&features)
+            .push_next(&mut half);
+        let info = if stats { info.push_next(&mut executable) } else { info };
+        let device = create(&info)?;
+        let queue = device.get_device_queue(family, 0);
+        let properties = vulkan.get_physical_device_properties(physical);
+        println!(
+            "Vulkan GPU: {}",
+            CStr::from_ptr(properties.device_name.as_ptr()).to_string_lossy()
+        );
+        world::CAPTURE_STATS.store(stats, std::sync::atomic::Ordering::Relaxed);
+        let stats = stats.then(|| ash::khr::pipeline_executable_properties::Device::new(&vulkan, &device));
+        Ok((device, queue, family, stats))
     }
 }
 
@@ -517,7 +529,11 @@ impl Zip {
                 }
             }
         }
-        // Keep the head out of the blocks: push it out, and drop the velocity into the walls.
+        self.keep_out(city, eye, body);
+    }
+
+    /// Keep the head out of the blocks: push it out, and drop the velocity into the walls.
+    fn keep_out(&mut self, city: &city::City, eye: Vec3, body: f32) {
         let (free, normals) = city.collide(self.position + eye, body);
         self.position = free - eye;
         for normal in normals {
@@ -529,6 +545,90 @@ impl Zip {
             self.velocity.y = self.velocity.y.max(0.);
         }
     }
+
+    /// The autopilot alone (no controllers): one step of `dt` seconds (desktop.rs).
+    fn fly(&mut self, dt: f32, eye: Vec3, city: &city::City, speed: f32, body: f32) {
+        let eye = self.turn() * eye;
+        self.autopilot(dt, eye, city.height, speed);
+        self.position += self.velocity * dt;
+        self.keep_out(city, eye, body);
+    }
+}
+
+/// The live faders (av-controls).
+fn panel(rule: &rule::Rule) -> av_controls::Controls {
+    // Live settings from the av-controls broker (CONTROLS, default wss://localhost:8080);
+    // without a broker the defaults below stay.
+    // FADERS="wild=0.5,color=0.3": other initial fader values (e.g. without a broker).
+    let overrides = env::var("FADERS").unwrap_or_default();
+    let initial = |name: &str, default: f32| -> f32 {
+        overrides
+            .split(',')
+            .filter_map(|pair| pair.split_once('='))
+            .find(|(key, _)| key.trim() == name)
+            .and_then(|(_, value)| value.trim().parse().ok())
+            .unwrap_or(default)
+    };
+    av_controls::Panel::new("sunk-city")
+        .section("net")
+        .fader("wild", 0., 1., initial("wild", 0.))
+        // Certainty gate: the net's change per pixel times 1 - gate * certainty, so
+        // well-observed pixels drift less (train net.gate; 1 = full gate). Starts at the
+        // value the net trained with (random weights: 1); reproject-v2 has no gate.
+        .fader_with("gate", 0., 1., initial("gate", rule.gate.unwrap_or(1.)), 2)
+        .fader("timescale", 0., 4., initial("timescale", 1.))
+        .fader_with("netfps", 5., 90., initial("netfps", 24.), 0)
+        // How much of the scene's colour and depth goes into the state per frame (at
+        // 90 Hz; applied per second, so other frame rates look the same).
+        .section("scene")
+        .fader_with("color", 0., 0.1, initial("color", 0.01), 3)
+        .fader_with("depth", 0., 0.3, initial("depth", 0.05), 3)
+        // Where nothing is rendered: the sky's distance (m), blended in like depth; 0 = off.
+        .fader_with("sky", 0., 1000., initial("sky", 150.), 0)
+        // Looking uncovers detail: the scene blends in up to 1 + focus times faster at the view centre.
+        .fader_with("focus", 0., 20., initial("focus", 0.), 1)
+        // The planet spins fast: seconds per day (0 = fixed sun); night is another world.
+        .fader_with("day", 0., 300., initial("day", 0.), 0)
+        // Scenes, one tab each, switched on and off independently.
+        .section("city")
+        .switch("city", initial("city", 1.) > 0.5)
+        .fader_with("blocks", 4., 64., initial("blocks", 24.), 0)
+        .fader_with("cell", 1., 10., initial("cell", 4.), 1)
+        .fader_with("height", 1., 25., initial("height", 7.), 1)
+        // Twisted crystals: the fraction of cells whose block is a twisted hexagonal prism.
+        .fader_with("crystals", 0., 1., initial("crystals", 0.), 2)
+        // Sea creatures (David's Aquarium) as particle soft bodies (swarm.rs).
+        .section("creatures")
+        .switch("creatures", initial("creatures", 0.) > 0.5)
+        .fader_with("count", 1., 100., initial("count", 8.), 0)
+        .fader_with("scale", 0.1, 4., initial("scale", 1.), 2)
+        .fader_with("hold", 0., 40., initial("hold", 4.), 1)
+        .fader_with("link", 0., 400., initial("link", 120.), 0)
+        .fader_with("damp", 0., 10., initial("damp", 1.5), 2)
+        .fader_with("flow", 0., 20., initial("flow", 2.), 1)
+        .fader_with("swirl", 0.5, 30., initial("swirl", 6.), 1)
+        .fader_with("dot", 0.01, 0.5, initial("dot", 0.08), 2)
+        .section("motion")
+        .switch("auto", initial("auto", 0.) > 0.5)
+        .fader_with("speed", 0., 15., initial("speed", 3.), 1)
+        .fader_with("pull", 0., 60., initial("pull", 25.), 1)
+        .fader_with("drag", 0., 6., initial("drag", 2.5), 2)
+        // Swing instead of zip: the trigger holds a rope (gravity on, `reel` m/s reeling in).
+        .switch("swing", initial("swing", 0.) > 0.5)
+        .fader_with("reel", 0., 10., initial("reel", 2.), 1)
+        // The player's collision sphere around the head (radius, m).
+        .fader_with("body", 0.05, 5., initial("body", 0.3), 2)
+        // Braking distance (m) to the net's own geometry (the image's depth), 0 = off.
+        .fader_with("brake", 0., 5., initial("brake", 1.5), 2)
+        // exposure off: the state's colour shown 1:1 (a trained net stays in the video's
+        // range); on: automatic per-channel exposure (mid, clip, black, tint).
+        .section("display")
+        .switch("exposure", initial("exposure", 0.) > 0.5)
+        .fader("mid", 0., 1., initial("mid", 0.5))
+        .fader_with("clip", 0., 0.2, initial("clip", 0.03), 3)
+        .fader_with("black", 0., 0.3, initial("black", 0.05), 3)
+        .fader("tint", 0., 1., initial("tint", 0.3))
+        .connect(&env::var("CONTROLS").unwrap_or_else(|_| "wss://localhost:8080".into()))
 }
 
 fn run(shaders: &Path) -> Result<()> {
@@ -728,78 +828,7 @@ fn run(shaders: &Path) -> Result<()> {
     // The image's geometry around the player, from the last frame (for the brake).
     let mut walls: Vec<Vec3> = Vec::new();
     let mut zip = Zip { position: Vec3::new(0., START_HEIGHT, 0.), anywhere: env::var("ZIP_ANYWHERE").map_or(true, |v| v != "0"), ..Zip::default() };
-    // Live settings from the av-controls broker (CONTROLS, default wss://localhost:8080);
-    // without a broker the defaults below stay.
-    // FADERS="wild=0.5,color=0.3": other initial fader values (e.g. without a broker).
-    let overrides = env::var("FADERS").unwrap_or_default();
-    let initial = |name: &str, default: f32| -> f32 {
-        overrides
-            .split(',')
-            .filter_map(|pair| pair.split_once('='))
-            .find(|(key, _)| key.trim() == name)
-            .and_then(|(_, value)| value.trim().parse().ok())
-            .unwrap_or(default)
-    };
-    let controls = av_controls::Panel::new("sunk-city")
-        .section("net")
-        .fader("wild", 0., 1., initial("wild", 0.))
-        // Certainty gate: the net's change per pixel times 1 - gate * certainty, so
-        // well-observed pixels drift less (train net.gate; 1 = full gate). Starts at the
-        // value the net trained with (random weights: 1); reproject-v2 has no gate.
-        .fader_with("gate", 0., 1., initial("gate", rule.gate.unwrap_or(1.)), 2)
-        .fader("timescale", 0., 4., initial("timescale", 1.))
-        .fader_with("netfps", 5., 90., initial("netfps", 24.), 0)
-        // How much of the scene's colour and depth goes into the state per frame (at
-        // 90 Hz; applied per second, so other frame rates look the same).
-        .section("scene")
-        .fader_with("color", 0., 0.1, initial("color", 0.01), 3)
-        .fader_with("depth", 0., 0.3, initial("depth", 0.05), 3)
-        // Where nothing is rendered: the sky's distance (m), blended in like depth; 0 = off.
-        .fader_with("sky", 0., 1000., initial("sky", 150.), 0)
-        // Looking uncovers detail: the scene blends in up to 1 + focus times faster at the view centre.
-        .fader_with("focus", 0., 20., initial("focus", 0.), 1)
-        // The planet spins fast: seconds per day (0 = fixed sun); night is another world.
-        .fader_with("day", 0., 300., initial("day", 0.), 0)
-        // Scenes, one tab each, switched on and off independently.
-        .section("city")
-        .switch("city", initial("city", 1.) > 0.5)
-        .fader_with("blocks", 4., 64., initial("blocks", 24.), 0)
-        .fader_with("cell", 1., 10., initial("cell", 4.), 1)
-        .fader_with("height", 1., 25., initial("height", 7.), 1)
-        // Twisted crystals: the fraction of cells whose block is a twisted hexagonal prism.
-        .fader_with("crystals", 0., 1., initial("crystals", 0.), 2)
-        // Sea creatures (David's Aquarium) as particle soft bodies (swarm.rs).
-        .section("creatures")
-        .switch("creatures", initial("creatures", 0.) > 0.5)
-        .fader_with("count", 1., 100., initial("count", 8.), 0)
-        .fader_with("scale", 0.1, 4., initial("scale", 1.), 2)
-        .fader_with("hold", 0., 40., initial("hold", 4.), 1)
-        .fader_with("link", 0., 400., initial("link", 120.), 0)
-        .fader_with("damp", 0., 10., initial("damp", 1.5), 2)
-        .fader_with("flow", 0., 20., initial("flow", 2.), 1)
-        .fader_with("swirl", 0.5, 30., initial("swirl", 6.), 1)
-        .fader_with("dot", 0.01, 0.5, initial("dot", 0.08), 2)
-        .section("motion")
-        .switch("auto", initial("auto", 0.) > 0.5)
-        .fader_with("speed", 0., 15., initial("speed", 3.), 1)
-        .fader_with("pull", 0., 60., initial("pull", 25.), 1)
-        .fader_with("drag", 0., 6., initial("drag", 2.5), 2)
-        // Swing instead of zip: the trigger holds a rope (gravity on, `reel` m/s reeling in).
-        .switch("swing", initial("swing", 0.) > 0.5)
-        .fader_with("reel", 0., 10., initial("reel", 2.), 1)
-        // The player's collision sphere around the head (radius, m).
-        .fader_with("body", 0.05, 5., initial("body", 0.3), 2)
-        // Braking distance (m) to the net's own geometry (the image's depth), 0 = off.
-        .fader_with("brake", 0., 5., initial("brake", 1.5), 2)
-        // exposure off: the state's colour shown 1:1 (a trained net stays in the video's
-        // range); on: automatic per-channel exposure (mid, clip, black, tint).
-        .section("display")
-        .switch("exposure", initial("exposure", 0.) > 0.5)
-        .fader("mid", 0., 1., initial("mid", 0.5))
-        .fader_with("clip", 0., 0.2, initial("clip", 0.03), 3)
-        .fader_with("black", 0., 0.3, initial("black", 0.05), 3)
-        .fader("tint", 0., 1., initial("tint", 0.3))
-        .connect(&env::var("CONTROLS").unwrap_or_else(|_| "wss://localhost:8080".into()));
+    let controls = panel(&rule);
     // MOVE scales head translation: 0 rotation only (default), 1 real scale, more =
     // giant steps (e.g. to cross the city with Monado's slow qwerty WASD).
     let stride: f32 = env::var("MOVE").ok().and_then(|v| v.parse().ok()).unwrap_or(0.);
@@ -1098,5 +1127,9 @@ fn main() -> Result<()> {
             .expect("Executable has a parent directory")
             .to_path_buf()
     });
+    // DESKTOP=1: no OpenXR (desktop.rs): virtual eyes, the cube rendered as panoramas.
+    if env::var_os("DESKTOP").is_some() {
+        return desktop::run(&shaders);
+    }
     run(&shaders)
 }
