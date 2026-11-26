@@ -1,5 +1,11 @@
+// Parallel arrays indexed together (eyes, hands, channels) and Vulkan recording with many
+// handles: these two lints would make the code longer, not clearer.
+#![allow(clippy::needless_range_loop, clippy::too_many_arguments)]
+
+mod collide;
 mod creatures;
 mod desktop;
+mod shared;
 mod swarm;
 mod city;
 mod gpu;
@@ -11,20 +17,18 @@ mod world;
 use anyhow::{ensure, Context, Result};
 use ash::vk::{self, Handle};
 use glam::{Mat4, Quat, Vec3, Vec4};
-use gpu::{Gpu, Resource, Resources};
+use gpu::{Gpu, Resources};
 use openxr as xr;
+use shared::env_or;
 use std::{
     env,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    },
+    sync::atomic::Ordering,
     ffi::CStr,
     path::{Path, PathBuf},
     thread,
     time::Duration,
 };
-use world::{EyeCamera, Settings, World, EYES};
+use world::{EyeCamera, World, EYES};
 
 const STEREO: xr::ViewConfigurationType = xr::ViewConfigurationType::PRIMARY_STEREO;
 /// Where the player starts (m above the ground); only the zip moves them.
@@ -145,7 +149,7 @@ unsafe fn make_device(
             CStr::from_ptr(properties.device_name.as_ptr()).to_string_lossy()
         );
         world::CAPTURE_STATS.store(stats, std::sync::atomic::Ordering::Relaxed);
-        let stats = stats.then(|| ash::khr::pipeline_executable_properties::Device::new(&vulkan, &device));
+        let stats = stats.then(|| ash::khr::pipeline_executable_properties::Device::new(vulkan, &device));
         Ok((device, queue, family, stats))
     }
 }
@@ -435,7 +439,6 @@ impl Zip {
 
     /// pull (m/s²), drag (1/s), body: the collision sphere's radius (m); `eye` the tracked eye centre after the head
     /// scaling (tracking space).
-    #[allow(clippy::too_many_arguments)]
     fn update(
         &mut self,
         held: &[Held; 2],
@@ -718,10 +721,7 @@ fn run(shaders: &Path) -> Result<()> {
     let views = instance.enumerate_view_configuration_views(system, STEREO)?;
     ensure!(views.len() == EYES, "Expected two stereo views");
     // Square per-eye resolution; EYE_SIZE (default 256) is clamped to the runtime maximum.
-    let edge = env::var("EYE_SIZE")
-        .ok()
-        .and_then(|v| v.parse::<u32>().ok())
-        .unwrap_or(256)
+    let edge = env_or("EYE_SIZE", 256u32)
         .min(views[0].max_image_rect_width)
         .min(views[0].max_image_rect_height);
     let size = vk::Extent2D {
@@ -752,13 +752,7 @@ fn run(shaders: &Path) -> Result<()> {
     let mut resources = Resources::new(&gpu);
     // WEIGHTS=dir: a trained net (train/runs/<name>/net); without it random weights.
     let mut rule = rule::Rule::load(env::var_os("WEIGHTS").map(PathBuf::from).as_deref())?;
-    println!(
-        "Net: {} {} ({} weights, {} mip levels)",
-        if rule.trained() { "trained" } else { "random" },
-        rule.layout_name(),
-        rule.len(),
-        rule.levels()
-    );
+    shared::print_net(&rule);
     ensure!(edge % (1 << (rule.levels() - 1)) == 0, "EYE_SIZE must be divisible by 2^(levels - 1)");
     // CUBE_SIZE: texels per face of cube-v1's sphere store (world.rs). Unset: chosen from
     // the first located views so that a texel is about an eye pixel at the view centre (the
@@ -788,49 +782,13 @@ fn run(shaders: &Path) -> Result<()> {
         Ok("scene") => 6,
         _ => 0,
     };
-    let pool_info = vk::CommandPoolCreateInfo::default()
-        .queue_family_index(gpu.family)
-        .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
-    let pool = resources.keep(
-        unsafe { d.create_command_pool(&pool_info, None)? },
-        Resource::Commands,
-    );
-    let cmd = unsafe {
-        d.allocate_command_buffers(
-            &vk::CommandBufferAllocateInfo::default()
-                .command_pool(pool)
-                .command_buffer_count(1),
-        )?
-    }[0];
-    let fence = resources.keep(
-        unsafe { d.create_fence(&vk::FenceCreateInfo::default(), None)? },
-        Resource::Fence,
-    );
-    let queries = resources.keep(
-        unsafe {
-            d.create_query_pool(
-                &vk::QueryPoolCreateInfo::default()
-                    .query_type(vk::QueryType::TIMESTAMP)
-                    .query_count(world::STAMPS),
-                None,
-            )?
-        },
-        Resource::Queries,
-    );
-    let tick_ns = unsafe {
-        gpu.instance
-            .get_physical_device_properties(gpu.physical)
-            .limits
-            .timestamp_period
-    } as f64;
+    let [cmd] = shared::command_buffers::<1>(&mut resources)?;
+    let fence = shared::fence(&mut resources)?;
+    let (queries, tick_ns) = shared::timestamps(&mut resources)?;
 
     // Ctrl+C / SIGTERM: end the OpenXR session cleanly instead of dying mid-frame,
     // which leaves Monado waiting on a dead client.
-    let quit = Arc::new(AtomicBool::new(false));
-    {
-        let quit = quit.clone();
-        ctrlc::set_handler(move || quit.store(true, Ordering::SeqCst))?;
-    }
+    let quit = shared::quit_flag()?;
     let mut exit_requested = false;
     let mut stamp = shaders_stamp(shaders);
     // NET_FILE=file: holds a net directory (dev.sh writes it: picker, new exports of the
@@ -857,17 +815,14 @@ fn run(shaders: &Path) -> Result<()> {
     let controls = panel(&rule, false);
     // MOVE scales head translation: 0 rotation only (default), 1 real scale, more =
     // giant steps (e.g. to cross the city with Monado's slow qwerty WASD).
-    let stride: f32 = env::var("MOVE").ok().and_then(|v| v.parse().ok()).unwrap_or(0.);
-    let overscan = env::var("OVERSCAN")
-        .ok()
-        .and_then(|v| v.parse::<f32>().ok())
-        .unwrap_or(1.15);
+    let stride = env_or("MOVE", 0f32);
+    let overscan = env_or("OVERSCAN", 1.15f32);
     // SNAPSHOT=file.ppm: write the left eye's colour every 300 frames (debugging).
     let snapshot = env::var_os("SNAPSHOT").map(PathBuf::from);
     // DUMP=dir: after DUMP_FRAME (60) frames write eye 0's resolved and new state once (dump.bin +
     // dump.json) for train/parity.py, which runs the torch net on the same input.
     let dump = env::var_os("DUMP").map(PathBuf::from);
-    let dump_frame: u64 = env::var("DUMP_FRAME").ok().and_then(|v| v.parse().ok()).unwrap_or(60);
+    let dump_frame = env_or("DUMP_FRAME", 60u64);
     println!("Sunk City session created ({edge}x{edge} per eye)");
 
     loop {
@@ -964,8 +919,7 @@ fn run(shaders: &Path) -> Result<()> {
                 .flat_map(|v| [v.fov.angle_right.tan() - v.fov.angle_left.tan(), v.fov.angle_up.tan() - v.fov.angle_down.tan()])
                 .fold(f32::MAX, f32::min)
                 / edge as f32;
-            let step = 1u32 << (rule.levels() - 1);
-            let face = ((std::f32::consts::FRAC_PI_2 / pixel / step as f32).round() as u32).max(1) * step;
+            let face = shared::cube_face(pixel, rule.levels());
             unsafe { d.device_wait_idle()? };
             world.set_cube_face(&mut resources, face)?;
             let arcmin = |radians: f32| radians.to_degrees() * 60.;
@@ -980,15 +934,8 @@ fn run(shaders: &Path) -> Result<()> {
         let head = (vector(views[0].pose.position) + vector(views[1].pose.position)) * 0.5 * (1. - stride);
         // The tracked eye centre that remains after the head scaling (MOVE).
         let eye = (vector(views[0].pose.position) + vector(views[1].pose.position)) * 0.5 - head;
-        let city = city::City {
-            cell: controls.get("cell"),
-            height: controls.get("height"),
-            blocks: controls.get("blocks").round().max(1.) as u32,
-            player: {
-                let p = zip.position + zip.turn() * eye;
-                glam::Vec2::new(p.x, p.z)
-            },
-        };
+        let player = zip.position + zip.turn() * eye;
+        let city = shared::city(&controls, glam::Vec2::new(player.x, player.z));
         let held = hands.sync(&session, &space, time)?;
         let frame_dt = (seconds - last_seconds.replace(seconds).unwrap_or(seconds)).clamp(0., 0.1);
         let stopped = time_stop.update(held.iter().any(|h| h.stop), frame_dt);
@@ -998,40 +945,11 @@ fn run(shaders: &Path) -> Result<()> {
         let (origin, turn) = (zip.position, zip.turn());
         let cameras = [camera(&views[0], head, origin, turn), camera(&views[1], head, origin, turn)];
         let dumping = dump.is_some() && frames == dump_frame;
-        let settings = Settings {
-            wild: controls.get("wild"),
-            gate: controls.get("gate"),
-            tau: clock.tick(seconds, controls.get("timescale") * stopped, controls.get("netfps"), &rule, dumping),
-            color: per_second(controls.get("color")),
-            depth: per_second(controls.get("depth")),
-            sky: controls.get("sky"),
-            focus: controls.get("focus"),
-            day: (controls.get("day") > 0.).then(|| (seconds / controls.get("day") + 0.25).fract()),
-            // A point 50 m along the gaze in the world (as the hands' rays, zip.update).
-            gaze: hands.gaze(&space, time).map(|(from, dir)| origin + turn * (from - head) + turn * dir * 50.),
-            blocks: controls.get("blocks").round().max(1.) as u32,
-            cell: controls.get("cell"),
-            height: controls.get("height"),
-            crystals: controls.get("crystals"),
-            city: controls.on("city"),
-            dot: controls.get("dot"),
-        };
-        if controls.on("creatures") {
-            let params = swarm::Params {
-                count: controls.get("count").round().max(1.) as usize,
-                scale: controls.get("scale"),
-                hold: controls.get("hold"),
-                link: controls.get("link"),
-                drag: controls.get("damp"),
-                flow: controls.get("flow"),
-                swirl: controls.get("swirl"),
-                follow: 10.,
-            };
-            swarm.update(params, seconds, frame_dt.max(1e-3), zip.position + zip.turn() * eye);
-            world.upload_creatures(&swarm.out);
-        } else {
-            world.upload_creatures(&[]);
-        }
+        let tau = clock.tick(seconds, controls.get("timescale") * stopped, controls.get("netfps"), &rule, dumping);
+        // A point 50 m along the gaze in the world (as the hands' rays, zip.update).
+        let gaze = hands.gaze(&space, time).map(|(from, dir)| origin + turn * (from - head) + turn * dir * 50.);
+        let settings = shared::settings(&controls, seconds, tau, gaze);
+        shared::update_creatures(&controls, &mut swarm, &mut world, seconds, frame_dt.max(1e-3), zip.position + zip.turn() * eye);
         let mut indices = [0; EYES];
         for (swapchain, index) in swapchains.iter_mut().zip(&mut indices) {
             *index = swapchain.acquire_image()? as usize;
@@ -1086,11 +1004,7 @@ fn run(shaders: &Path) -> Result<()> {
         }
         walls = world.surroundings();
         if world.capture {
-            if controls.on("exposure") {
-                world.calibrate(controls.get("mid"), controls.get("clip"), controls.get("black"), controls.get("tint"));
-            } else {
-                world.expose_plainly();
-            }
+            shared::expose(&controls, &mut world);
             if let (true, Some(path)) = (frames % 296 == 0, &snapshot) {
                 std::fs::write(path, world.snapshot_ppm())?;
             }

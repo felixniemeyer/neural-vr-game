@@ -1509,11 +1509,9 @@ impl World {
         points
     }
 
-    /// cube-v1: the sphere's mean inverse depth (1/m) around the store's centre, from the
-    /// probe: the weighted mean the coarsest mip level would hold (holes don't count, sky
-    /// counts as about 0), so 1/it is the harmonic mean distance. None without coverage.
-    pub fn mean_inverse_depth(&self) -> Option<f32> {
-        self.cube_centre?;
+    /// cube-v1: the sphere probe's face texels (gutters skipped): (face, x, y within the
+    /// face in probe texels, inverse depth times weight (A.w), weight (B.w)).
+    fn cube_probe(&self) -> impl Iterator<Item = (usize, i32, i32, f32, f32)> + '_ {
         let cube = &self.cube;
         let texels = mip_extent(cube.atlas, cube.probe_level);
         let (w, h) = (texels.width as usize, texels.height as usize);
@@ -1521,13 +1519,23 @@ impl World {
         let (a, b) = probe.split_at(w * h);
         let step = 1u32 << cube.probe_level;
         let (cell, gutter, face) = ((cube.face + 2 * cube.gutter) / step, cube.gutter / step, cube.face / step);
-        let (mut inv, mut weight) = (0f32, 0f32);
-        for (i, (a, b)) in a.iter().zip(b).enumerate() {
-            let (lx, ly) = ((i % w) as u32 % cell, (i / w) as u32 % cell);
-            if lx < gutter || ly < gutter || lx >= gutter + face || ly >= gutter + face {
-                continue; // gutter
+        a.iter().zip(b).enumerate().filter_map(move |(i, (a, b))| {
+            let (x, y) = ((i % w) as u32, (i / w) as u32);
+            let (lx, ly) = ((x % cell) as i32 - gutter as i32, (y % cell) as i32 - gutter as i32);
+            if lx < 0 || ly < 0 || lx >= face as i32 || ly >= face as i32 {
+                return None; // gutter
             }
-            let (a, b) = (half_to_f32(a[3]), half_to_f32(b[3]));
+            Some(((x / cell + 3 * (y / cell)) as usize, lx, ly, half_to_f32(a[3]), half_to_f32(b[3])))
+        })
+    }
+
+    /// cube-v1: the sphere's mean inverse depth (1/m) around the store's centre, from the
+    /// probe: the weighted mean the coarsest mip level would hold (holes don't count, sky
+    /// counts as about 0), so 1/it is the harmonic mean distance. None without coverage.
+    pub fn mean_inverse_depth(&self) -> Option<f32> {
+        self.cube_centre?;
+        let (mut inv, mut weight) = (0f32, 0f32);
+        for (_, _, _, a, b) in self.cube_probe() {
             if a.is_finite() && b.is_finite() && b > 0. {
                 (inv, weight) = (inv + a.max(0.), weight + b);
             }
@@ -1539,36 +1547,22 @@ impl World {
     /// as world points, one per face texel of the probe level with weight >= 0.3.
     fn cube_surroundings(&self) -> Vec<Vec3> {
         let Some(centre) = self.cube_centre else { return Vec::new() };
-        let cube = &self.cube;
-        let level = cube.probe_level;
-        let texels = mip_extent(cube.atlas, level);
-        let (w, h) = (texels.width as usize, texels.height as usize);
-        let probe = unsafe { std::slice::from_raw_parts(cube.probe.1, 2 * w * h) };
-        let (a, b) = probe.split_at(w * h);
-        let step = 1u32 << level;
-        let (cell, gutter, face) = ((cube.face + 2 * cube.gutter) / step, cube.gutter / step, cube.face / step);
-        let angle = std::f32::consts::FRAC_PI_2 / cube.face as f32;
-        let mut points = Vec::new();
-        for (i, (a, b)) in a.iter().zip(b).enumerate() {
-            let (x, y) = ((i % w) as u32, (i / w) as u32);
-            let (lx, ly) = ((x % cell) as i32 - gutter as i32, (y % cell) as i32 - gutter as i32);
-            if lx < 0 || ly < 0 || lx >= face as i32 || ly >= face as i32 {
-                continue; // gutter
-            }
-            let weight = half_to_f32(b[3]);
-            let inv = half_to_f32(a[3]) / weight;
-            if !(weight >= 0.3 && inv > 0.) {
-                continue;
-            }
-            let f = (x / cell + 3 * (y / cell)) as usize;
-            // cube.glsl faceDir at the coarse texel's centre in fine texel coords.
-            let fine = |l: i32| (l as f32 + 0.5) * step as f32 - 0.5;
-            let t = Vec2::new(fine(lx), fine(ly)).map(|c| ((c + 0.5) * angle - std::f32::consts::FRAC_PI_4).tan());
-            let (forward, up) = (CUBE_FORWARD[f], CUBE_UP[f]);
-            let dir = (forward.cross(up) * t.x - up * t.y + forward).normalize();
-            points.push(centre + dir / inv);
-        }
-        points
+        let step = (1u32 << self.cube.probe_level) as f32;
+        let angle = std::f32::consts::FRAC_PI_2 / self.cube.face as f32;
+        self.cube_probe()
+            .filter_map(|(f, lx, ly, a, weight)| {
+                let inv = a / weight;
+                if !(weight >= 0.3 && inv > 0.) {
+                    return None;
+                }
+                // cube.glsl faceDir at the coarse texel's centre in fine texel coords.
+                let fine = |l: i32| (l as f32 + 0.5) * step - 0.5;
+                let t = Vec2::new(fine(lx), fine(ly)).map(|c| ((c + 0.5) * angle - std::f32::consts::FRAC_PI_4).tan());
+                let (forward, up) = (CUBE_FORWARD[f], CUBE_UP[f]);
+                let dir = (forward.cross(up) * t.x - up * t.y + forward).normalize();
+                Some(centre + dir / inv)
+            })
+            .collect()
     }
 
     fn captured(&self) -> &[[u16; 4]] {

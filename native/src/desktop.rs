@@ -24,9 +24,10 @@
 //! camera (the cube's harmonic mean depth); reset (or R in the window): the cube starts
 //! over and the push is zero.
 
-use crate::gpu::{Gpu, Resource, Resources};
-use crate::world::{self, Settings, World, EYES, PANORAMA_PUSH};
-use crate::{camera, city, panel, per_second, rule, swarm, NetClock, Zip, START_HEIGHT};
+use crate::gpu::{Gpu, Resources};
+use crate::shared::{self, env_or};
+use crate::world::{self, World, EYES, PANORAMA_PUSH};
+use crate::{camera, collide, panel, rule, swarm, NetClock, Zip, START_HEIGHT};
 use anyhow::{bail, ensure, Context, Result};
 use ash::vk;
 use glam::{Mat3, Quat, Vec3};
@@ -37,10 +38,7 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    },
+    sync::atomic::Ordering,
     time::{Duration, Instant},
 };
 use winit::{
@@ -191,6 +189,92 @@ impl Screen {
         }
         Ok(())
     }
+
+    /// `shape` of `picture` (in TRANSFER_SRC_OPTIMAL) letterboxed into a window image, if
+    /// one is free now (hidden or minimised: skipped), recorded into `cmd`; returns when
+    /// the blit has finished (the next picture overwrites what it reads). False when the
+    /// swapchain is out of date (rebuild it).
+    fn present(&self, queue: vk::Queue, cmd: vk::CommandBuffer, done: vk::Fence, picture: vk::Image, shape: vk::Extent2D) -> Result<bool> {
+        use vk::{AccessFlags as A, ImageLayout as L, PipelineStageFlags as S};
+        let d = &self.device;
+        let image = match unsafe { self.swapchains.acquire_next_image(self.swapchain, 0, self.acquired, vk::Fence::null()) } {
+            Ok((image, _)) => image,
+            Err(vk::Result::TIMEOUT | vk::Result::NOT_READY) => return Ok(true),
+            Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => return Ok(false),
+            Err(error) => return Err(error.into()),
+        };
+        let fit = (self.extent.width as f32 / shape.width as f32).min(self.extent.height as f32 / shape.height as f32);
+        let (w, h) = ((shape.width as f32 * fit) as i32, (shape.height as f32 * fit) as i32);
+        let (x0, y0) = ((self.extent.width as i32 - w) / 2, (self.extent.height as i32 - h) / 2);
+        let target = self.images[image as usize];
+        let layers = vk::ImageSubresourceLayers::default().aspect_mask(vk::ImageAspectFlags::COLOR).layer_count(1);
+        let (read, write) = (L::TRANSFER_SRC_OPTIMAL, L::TRANSFER_DST_OPTIMAL);
+        unsafe {
+            d.reset_command_buffer(cmd, vk::CommandBufferResetFlags::empty())?;
+            d.begin_command_buffer(cmd, &vk::CommandBufferBeginInfo::default())?;
+            barrier(d, cmd, target, (L::UNDEFINED, write), (A::empty(), A::TRANSFER_WRITE), (S::TRANSFER, S::TRANSFER));
+            let range = vk::ImageSubresourceRange::default().aspect_mask(vk::ImageAspectFlags::COLOR).level_count(1).layer_count(1);
+            d.cmd_clear_color_image(cmd, target, write, &vk::ClearColorValue { float32: [0., 0., 0., 1.] }, &[range]);
+            barrier(d, cmd, target, (write, write), (A::TRANSFER_WRITE, A::TRANSFER_WRITE), (S::TRANSFER, S::TRANSFER));
+            let blit = vk::ImageBlit::default()
+                .src_subresource(layers)
+                .src_offsets([vk::Offset3D::default(), vk::Offset3D { x: shape.width as i32, y: shape.height as i32, z: 1 }])
+                .dst_subresource(layers)
+                .dst_offsets([vk::Offset3D { x: x0, y: y0, z: 0 }, vk::Offset3D { x: x0 + w, y: y0 + h, z: 1 }]);
+            d.cmd_blit_image(cmd, picture, read, target, write, &[blit], vk::Filter::LINEAR);
+            barrier(d, cmd, target, (write, L::PRESENT_SRC_KHR), (A::TRANSFER_WRITE, A::empty()), (S::TRANSFER, S::BOTTOM_OF_PIPE));
+            d.end_command_buffer(cmd)?;
+            d.reset_fences(&[done])?;
+            let waits = [self.acquired];
+            let stages = [S::TRANSFER];
+            let signals = [self.rendered[image as usize]];
+            let commands = [cmd];
+            let submit = vk::SubmitInfo::default().wait_semaphores(&waits).wait_dst_stage_mask(&stages).command_buffers(&commands).signal_semaphores(&signals);
+            d.queue_submit(queue, &[submit], done)?;
+            let swapchains = [self.swapchain];
+            let indices = [image];
+            let present = vk::PresentInfoKHR::default().wait_semaphores(&signals).swapchains(&swapchains).image_indices(&indices);
+            let current = match self.swapchains.queue_present(queue, &present) {
+                Ok(false) => true,
+                Ok(true) | Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => false,
+                Err(error) => return Err(error.into()),
+            };
+            d.wait_for_fences(&[done], true, u64::MAX)?;
+            Ok(current)
+        }
+    }
+}
+
+/// Adaptive speed (camera tab): the controller's movement scaled by the distance around
+/// the camera (the cube's harmonic mean, 1/its mean inverse depth), smoothed in ln(d):
+/// half the remaining way every 2 s. At keySpeed 1 the camera moves about 0.3 of that
+/// distance per second. The collision body scales alike.
+#[derive(Default)]
+struct Adaptive {
+    ln_distance: Option<f32>,
+    /// The controller's position, accumulated scaled, and its last raw position.
+    moved: Vec3,
+    last_pose: Option<Vec3>,
+}
+
+impl Adaptive {
+    /// The distance around the camera (m; 1 until the cube has some).
+    fn distance(&self) -> f32 {
+        self.ln_distance.map_or(1., f32::exp)
+    }
+
+    /// Follow the cube's `inverse_depth` over `dt` and the controller to `position`: the
+    /// scale (1 when `on` is off) and the controller's position in scaled metres.
+    fn update(&mut self, inverse_depth: Option<f32>, position: Vec3, dt: f32, on: bool) -> (f32, Vec3) {
+        if let Some(target) = inverse_depth.filter(|inv| inv.is_finite()).map(|inv| -inv.max(1e-4).ln()) {
+            let ln = self.ln_distance.get_or_insert(target);
+            *ln += (target - *ln) * (1. - 0.5f32.powf(dt / 2.));
+        }
+        let scale = if on { (0.3 * self.distance()).clamp(0.1, 50.) } else { 1. };
+        self.moved += (position - self.last_pose.unwrap_or(position)) * scale;
+        self.last_pose = Some(position);
+        (scale, self.moved)
+    }
 }
 
 impl Drop for Screen {
@@ -271,19 +355,17 @@ pub fn run(shaders: &Path) -> Result<()> {
     if rule.layout != 3 {
         bail!("DESKTOP renders the cube-v1 sphere store: WEIGHTS must be a cube-v1 net (this is {})", rule.layout_name());
     }
-    println!("Net: {} {} ({} weights, {} mip levels, {} reprojection)", if rule.trained() { "trained" } else { "random" }, rule.layout_name(), rule.len(), rule.levels(), if rule.splat.is_some() { "splat" } else { "pull" });
-    let edge: u32 = env::var("EYE_SIZE").ok().and_then(|v| v.parse().ok()).unwrap_or(256);
+    shared::print_net(&rule);
+    let edge: u32 = env_or("EYE_SIZE", 256);
     ensure!(edge % (1 << (rule.levels() - 1)) == 0, "EYE_SIZE must be divisible by 2^(levels - 1)");
     let size = vk::Extent2D { width: edge, height: edge };
-    let fov = env::var("FOV").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(90.).to_radians();
+    let fov = env_or("FOV", 90f32).to_radians();
     let format = vk::Format::R8G8B8A8_UNORM;
     let usage = vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_SRC;
     let eyes: Vec<Vec<vk::Image>> = (0..EYES).map(|_| Ok(vec![resources.image(size, format, usage)?.0])).collect::<Result<_>>()?;
     // A texel = an eye pixel at the view centre (as main.rs from the located views).
-    let step = 1u32 << (rule.levels() - 1);
     let pixel = 2. * (fov / 2.).tan() / edge as f32;
-    let face = env::var("CUBE_SIZE").ok().and_then(|v| v.parse::<u32>().ok())
-        .unwrap_or(((std::f32::consts::FRAC_PI_2 / pixel / step as f32).round() as u32).max(1) * step);
+    let face = env_or("CUBE_SIZE", shared::cube_face(pixel, rule.levels()));
     let mut world = World::new(&mut resources, shaders, size, format, [&eyes[0], &eyes[1]], rule.specialization(), rule.len(), face)?;
     world.splat_nearness = rule.splat;
     // The update split over frames (World::advance): the window keeps its rate.
@@ -292,37 +374,22 @@ pub fn run(shaders: &Path) -> Result<()> {
     println!("Cube: {face} texels per face ({:.2} arcmin); eyes {edge} px, {:.0} deg", (std::f32::consts::FRAC_PI_2 / face as f32).to_degrees() * 60., fov.to_degrees());
 
     // The picture: room for the dome's square; the equirect uses its top half.
-    let width: u32 = env::var("PANORAMA_WIDTH").ok().and_then(|v| v.parse().ok()).unwrap_or(1024);
+    let width: u32 = env_or("PANORAMA_WIDTH", 1024);
     let picture_size = vk::Extent2D { width, height: width };
     let picture_usage = vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_SRC;
     let (picture, picture_view) = resources.image(picture_size, PICTURE, picture_usage)?;
     let picture_pass = world.enable_panorama(&mut resources, shaders, PICTURE)?;
     let picture_target = resources.framebuffer(picture_pass, picture_size, &[picture_view])?;
-    let degrees = |name: &str, default: f32| env::var(name).ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(default).to_radians();
-    let dome_angle = degrees("DOME_FOV", 180.);
+    let dome_angle = env_or("DOME_FOV", 180f32).to_radians();
     let mut dome = env::var("DOME").is_ok_and(|v| v != "0");
 
-    let pool = resources.keep(
-        unsafe { d.create_command_pool(&vk::CommandPoolCreateInfo::default().queue_family_index(gpu.family).flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER), None)? },
-        Resource::Commands,
-    );
     // Two command buffers: the world and its picture (never waits for the window), then
     // the picture blitted into a window image (waits for that image only).
-    let [cmd, show]: [vk::CommandBuffer; 2] = unsafe { d.allocate_command_buffers(&vk::CommandBufferAllocateInfo::default().command_pool(pool).command_buffer_count(2))? }
-        .try_into()
-        .unwrap();
-    let fence = resources.keep(unsafe { d.create_fence(&vk::FenceCreateInfo::default(), None)? }, Resource::Fence);
-    let shown = resources.keep(unsafe { d.create_fence(&vk::FenceCreateInfo::default(), None)? }, Resource::Fence);
-    let queries = resources.keep(
-        unsafe { d.create_query_pool(&vk::QueryPoolCreateInfo::default().query_type(vk::QueryType::TIMESTAMP).query_count(world::STAMPS), None)? },
-        Resource::Queries,
-    );
+    let [cmd, show] = shared::command_buffers::<2>(&mut resources)?;
+    let (fence, shown) = (shared::fence(&mut resources)?, shared::fence(&mut resources)?);
+    let (queries, tick_ns) = shared::timestamps(&mut resources)?;
 
-    let quit = Arc::new(AtomicBool::new(false));
-    {
-        let quit = quit.clone();
-        ctrlc::set_handler(move || quit.store(true, Ordering::SeqCst))?;
-    }
+    let quit = shared::quit_flag()?;
     let controls = panel(&rule, true);
     let mut ffmpeg = match env::var_os("VIDEO") {
         Some(path) => Some(video(Path::new(&path), width, if dome { width } else { width / 2 }, controls.get("netfps").round().max(1.))?),
@@ -350,7 +417,6 @@ pub fn run(shaders: &Path) -> Result<()> {
     let (mut weights, mut packed) = (vec![0f32; rule.len()], vec![0u16; rule.len()]);
     let (mut frames, mut updates, mut since) = (0u64, 0u64, Instant::now());
     let mut gpu_ms = [0f64; world::STAMPS as usize - 1]; // per stage (world.rs stamps)
-    let tick_ns = unsafe { gpu.instance.get_physical_device_properties(gpu.physical).limits.timestamp_period } as f64;
     let start = Instant::now();
     let mut last = 0f32;
     // Collisions (fabric-artwork's sensor push, from the sphere's own depth): the camera's
@@ -360,11 +426,7 @@ pub fn run(shaders: &Path) -> Result<()> {
     let (mut pushed, mut last_intended) = (Vec3::ZERO, None::<Vec3>);
     // The reset switch (camera tab): flipping it either way resets, like R in the window.
     let mut reset_switch = controls.on("reset");
-    // Adaptive speed (camera tab): the controller's movement scaled by the distance around
-    // the camera (the cube's harmonic mean, 1/its mean inverse depth), smoothed in ln(d):
-    // half the remaining way every 2 s. At keySpeed 1 the camera moves about 0.3 of that
-    // distance per second. moved: the controller's position, accumulated scaled.
-    let (mut ln_distance, mut moved, mut last_pose) = (None::<f32>, Vec3::ZERO, None::<Vec3>);
+    let mut adaptive = Adaptive::default();
     // Net time owed to the cube (ticks while an update is in flight wait for the next),
     // the last two updates' finish times (the display blends between their states), and
     // the frame rates of the window and the cube (exponential moving averages).
@@ -411,31 +473,18 @@ pub fn run(shaders: &Path) -> Result<()> {
         // Time: the wall clock live, a fixed 90 Hz clock for a video (whatever the GPU's speed).
         let seconds = if ffmpeg.is_some() { frames as f32 * period } else { start.elapsed().as_secs_f32() };
         let dt = (seconds - std::mem::replace(&mut last, seconds)).clamp(0., 0.1);
-        let city = city::City {
-            cell: controls.get("cell"),
-            height: controls.get("height"),
-            blocks: controls.get("blocks").round().max(1.) as u32,
-            player: glam::Vec2::new(zip.position.x, zip.position.z),
-        };
+        let city = shared::city(&controls, glam::Vec2::new(zip.position.x, zip.position.z));
         if controls.on("auto") {
             zip.fly(dt, Vec3::ZERO, &city, controls.get("speed"), controls.get("body"));
         }
         // The camera (controller) on top of the autopilot: its position in the autopilot's
-        // heading, its orientation as a head's.
+        // heading (scaled by the adaptive speed), its orientation as a head's.
         let pose = controls.pose("camera");
         let [x, y, z, w] = pose.rotation;
         let look = Quat::from_xyzw(x, y, z, w);
         let look = if look.length_squared() > 1e-6 { look.normalize() } else { Quat::IDENTITY };
         let turn = zip.turn();
-        if let Some(target) = world.mean_inverse_depth().filter(|inv| inv.is_finite()).map(|inv| -inv.max(1e-4).ln()) {
-            let ln = ln_distance.get_or_insert(target);
-            *ln += (target - *ln) * (1. - 0.5f32.powf(dt / 2.));
-        }
-        let distance = ln_distance.map_or(1., f32::exp);
-        let scale = if controls.on("adaptive") { (0.3 * distance).clamp(0.1, 50.) } else { 1. };
-        let position = Vec3::from(pose.position);
-        moved += (position - last_pose.unwrap_or(position)) * scale;
-        last_pose = Some(position);
+        let (scale, moved) = adaptive.update(world.mean_inverse_depth(), Vec3::from(pose.position), dt, controls.on("adaptive"));
         let intended = zip.position + turn * moved;
         let origin = intended + pushed;
         let half = fov / 2.;
@@ -450,42 +499,10 @@ pub fn run(shaders: &Path) -> Result<()> {
             fov: xr::Fovf { angle_left: -half, angle_right: half, angle_up: half, angle_down: -half },
         });
         let cameras = [camera(&views[0], Vec3::ZERO, origin, turn), camera(&views[1], Vec3::ZERO, origin, turn)];
-        let settings = Settings {
-            wild: controls.get("wild"),
-            gate: controls.get("gate"),
-            tau: {
-                owed = (owed + clock.tick(seconds, controls.get("timescale"), controls.get("netfps"), &rule, false)).min(rule.max_tau);
-                if world.updating() { 0. } else { std::mem::take(&mut owed) }
-            },
-            color: per_second(controls.get("color")),
-            depth: per_second(controls.get("depth")),
-            sky: controls.get("sky"),
-            focus: controls.get("focus"),
-            day: (controls.get("day") > 0.).then(|| (seconds / controls.get("day") + 0.25).fract()),
-            gaze: None,
-            blocks: city.blocks,
-            cell: city.cell,
-            height: city.height,
-            crystals: controls.get("crystals"),
-            city: controls.on("city"),
-            dot: controls.get("dot"),
-        };
-        if controls.on("creatures") {
-            let params = swarm::Params {
-                count: controls.get("count").round().max(1.) as usize,
-                scale: controls.get("scale"),
-                hold: controls.get("hold"),
-                link: controls.get("link"),
-                drag: controls.get("damp"),
-                flow: controls.get("flow"),
-                swirl: controls.get("swirl"),
-                follow: 10.,
-            };
-            swarm.update(params, seconds, dt, zip.position);
-            world.upload_creatures(&swarm.out);
-        } else {
-            world.upload_creatures(&[]);
-        }
+        owed = (owed + clock.tick(seconds, controls.get("timescale"), controls.get("netfps"), &rule, false)).min(rule.max_tau);
+        let tau = if world.updating() { 0. } else { std::mem::take(&mut owed) };
+        let settings = shared::settings(&controls, seconds, tau, None);
+        shared::update_creatures(&controls, &mut swarm, &mut world, seconds, dt, zip.position);
 
         // The picture: the camera's axes in the world, the dome's attention.
         let axes = Mat3::from_quat(turn * look);
@@ -498,17 +515,12 @@ pub fn run(shaders: &Path) -> Result<()> {
         push[16..20].copy_from_slice(&[shape.width as f32, shape.height as f32, 0., width as f32]);
         // From the state before into the latest over one update's time; the rates (or hidden).
         push[3] = if finished > before { (seconds - finished) / (finished - before) } else { 1. };
-        let show_fps = controls.on("fps");
-        push[7] = if show_fps { window_fps } else { -1. };
+        push[7] = if controls.on("fps") { window_fps } else { -1. };
         push[11] = cube_fps;
-        // Letterboxed into the window.
-        let fit = (screen.extent.width as f32 / shape.width as f32).min(screen.extent.height as f32 / shape.height as f32);
-        let (w, h) = ((shape.width as f32 * fit) as i32, (shape.height as f32 * fit) as i32);
-        let (x0, y0) = ((screen.extent.width as i32 - w) / 2, (screen.extent.height as i32 - h) / 2);
         let starting = settings.tau > 0.;
         let mut done = false;
 
-        unsafe {
+        let record_video = unsafe {
             use vk::{AccessFlags as A, ImageLayout as L, PipelineStageFlags as S};
             d.reset_command_buffer(cmd, vk::CommandBufferResetFlags::empty())?;
             d.begin_command_buffer(cmd, &vk::CommandBufferBeginInfo::default())?;
@@ -544,11 +556,10 @@ pub fn run(shaders: &Path) -> Result<()> {
             d.cmd_write_timestamp(cmd, S::BOTTOM_OF_PIPE, queries, 5);
             let read = L::TRANSFER_SRC_OPTIMAL;
             barrier(d, cmd, picture, (L::COLOR_ATTACHMENT_OPTIMAL, read), (A::COLOR_ATTACHMENT_WRITE, A::TRANSFER_READ), (S::COLOR_ATTACHMENT_OUTPUT, S::TRANSFER));
-            let layers = vk::ImageSubresourceLayers::default().aspect_mask(vk::ImageAspectFlags::COLOR).layer_count(1);
             let record_video = ffmpeg.is_some() && done;
             if record_video {
                 let copy = vk::BufferImageCopy::default()
-                    .image_subresource(layers)
+                    .image_subresource(vk::ImageSubresourceLayers::default().aspect_mask(vk::ImageAspectFlags::COLOR).layer_count(1))
                     .image_extent(vk::Extent3D { width: shape.width, height: shape.height, depth: 1 });
                 d.cmd_copy_image_to_buffer(cmd, picture, read, video_buffer, &[copy]);
             }
@@ -558,46 +569,8 @@ pub fn run(shaders: &Path) -> Result<()> {
             d.queue_submit(gpu.queue, &[vk::SubmitInfo::default().command_buffers(&commands)], fence)?;
             d.wait_for_fences(&[fence], true, u64::MAX)?;
 
-            // Into the window, if it has an image free now (hidden or minimised: skipped).
-            match screen.swapchains.acquire_next_image(screen.swapchain, 0, screen.acquired, vk::Fence::null()) {
-                Ok((image, _)) => {
-                    let target = screen.images[image as usize];
-                    d.reset_command_buffer(show, vk::CommandBufferResetFlags::empty())?;
-                    d.begin_command_buffer(show, &vk::CommandBufferBeginInfo::default())?;
-                    let write = L::TRANSFER_DST_OPTIMAL;
-                    barrier(d, show, target, (L::UNDEFINED, write), (A::empty(), A::TRANSFER_WRITE), (S::TRANSFER, S::TRANSFER));
-                    let range = vk::ImageSubresourceRange::default().aspect_mask(vk::ImageAspectFlags::COLOR).level_count(1).layer_count(1);
-                    d.cmd_clear_color_image(show, target, write, &vk::ClearColorValue { float32: [0., 0., 0., 1.] }, &[range]);
-                    barrier(d, show, target, (write, write), (A::TRANSFER_WRITE, A::TRANSFER_WRITE), (S::TRANSFER, S::TRANSFER));
-                    let blit = vk::ImageBlit::default()
-                        .src_subresource(layers)
-                        .src_offsets([vk::Offset3D::default(), vk::Offset3D { x: shape.width as i32, y: shape.height as i32, z: 1 }])
-                        .dst_subresource(layers)
-                        .dst_offsets([vk::Offset3D { x: x0, y: y0, z: 0 }, vk::Offset3D { x: x0 + w, y: y0 + h, z: 1 }]);
-                    d.cmd_blit_image(show, picture, read, target, write, &[blit], vk::Filter::LINEAR);
-                    barrier(d, show, target, (write, L::PRESENT_SRC_KHR), (A::TRANSFER_WRITE, A::empty()), (S::TRANSFER, S::BOTTOM_OF_PIPE));
-                    d.end_command_buffer(show)?;
-                    d.reset_fences(&[shown])?;
-                    let waits = [screen.acquired];
-                    let stages = [S::TRANSFER];
-                    let signals = [screen.rendered[image as usize]];
-                    let commands = [show];
-                    let submit = vk::SubmitInfo::default().wait_semaphores(&waits).wait_dst_stage_mask(&stages).command_buffers(&commands).signal_semaphores(&signals);
-                    d.queue_submit(gpu.queue, &[submit], shown)?;
-                    let swapchains = [screen.swapchain];
-                    let indices = [image];
-                    let present = vk::PresentInfoKHR::default().wait_semaphores(&signals).swapchains(&swapchains).image_indices(&indices);
-                    match screen.swapchains.queue_present(gpu.queue, &present) {
-                        Ok(false) => {}
-                        Ok(true) | Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => events.resized = true,
-                        Err(error) => return Err(error.into()),
-                    }
-                    // The next picture overwrites what this blit reads.
-                    d.wait_for_fences(&[shown], true, u64::MAX)?;
-                }
-                Err(vk::Result::TIMEOUT | vk::Result::NOT_READY) => {}
-                Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => events.resized = true,
-                Err(error) => return Err(error.into()),
+            if !screen.present(gpu.queue, show, shown, picture, shape)? {
+                events.resized = true;
             }
             let mut stamps = [0u64; world::STAMPS as usize];
             if d.get_query_pool_results(queries, 0, &mut stamps, vk::QueryResultFlags::TYPE_64).is_ok() {
@@ -613,51 +586,29 @@ pub fn run(shaders: &Path) -> Result<()> {
                 }
                 panorama_ms += (span(4, 5) - panorama_ms) * 0.2;
             }
-        }
-        let record_video = ffmpeg.is_some() && done;
-        if done {
-            if controls.on("exposure") {
-                world.calibrate(controls.get("mid"), controls.get("clip"), controls.get("black"), controls.get("tint"));
-            } else {
-                world.expose_plainly();
-            }
-        }
+            record_video
+        };
         // The rates: each frame's (and each update's) interval, averaged over about half a
         // second (two seconds for the cube).
         let interval = frame_start.elapsed().as_secs_f32().max(period * 0.5);
         if done {
+            shared::expose(&controls, &mut world);
             updates += 1;
             let between = finished - before;
             if before > 0. && between > 0. {
                 cube_fps += (1. / between - cube_fps) * (1. - (-between / 2.).exp());
             }
         }
-        // Every point of the sphere within reach (the body plus 0.15 s of the camera's
-        // speed, so it brakes before it touches) pushes the camera straight away from it by
-        // its penetration; the push is their mean, so the probe's density doesn't matter.
         let speed = last_intended.map_or(0., |p: Vec3| p.distance(intended) / dt.max(1e-3));
         last_intended = Some(intended);
         let surroundings = world.surroundings();
-        let probe_points = surroundings.len();
         let nearest = surroundings.iter().map(|p| p.distance(origin)).fold(f32::INFINITY, f32::min);
         // Once per update: the probe is that update's (pushing on every frame in between
-        // would push the same penetration several times).
+        // would push the same penetration several times). The reach: the body (scaled with
+        // the adaptive speed: a camera that moves 10x faster keeps 10x the distance) plus
+        // 0.15 s of the camera's speed, so it brakes before it touches.
         if controls.on("collide") && done {
-            // Adaptive speed scales the body too: a camera that moves 10x faster keeps 10x
-            // the distance (else it brakes too late in open space, or not at all up close).
-            let reach = controls.get("body") * scale + speed * 0.15;
-            let (mut push, mut hits) = (Vec3::ZERO, 0);
-            for point in surroundings {
-                let to = point - origin;
-                let distance = to.length();
-                if distance < reach && distance > 1e-3 {
-                    push -= to / distance * (reach - distance).min(0.5 * reach);
-                    hits += 1;
-                }
-            }
-            if hits > 0 {
-                pushed += push / hits as f32;
-            }
+            pushed += collide::push(&surroundings, origin, controls.get("body") * scale + speed * 0.15);
             if !pushed.is_finite() {
                 pushed = Vec3::ZERO;
             }
@@ -666,8 +617,8 @@ pub fn run(shaders: &Path) -> Result<()> {
             let bytes = unsafe { std::slice::from_raw_parts(video_pixels, 4 * (shape.width * shape.height) as usize) };
             child.stdin.as_mut().context("ffmpeg stdin")?.write_all(bytes)?;
         }
-        // Live: paced to 90 Hz (as the headset), not as fast as the GPU goes (the whole
-        // system would lag); a video renders as fast as it can on its fixed clock.
+        // Live: paced to the window's rate, not as fast as the GPU goes (the whole system
+        // would lag); a video renders as fast as it can on its fixed clock.
         if ffmpeg.is_none() {
             std::thread::sleep(Duration::from_secs_f32(period).saturating_sub(frame_start.elapsed()));
         }
@@ -680,8 +631,8 @@ pub fn run(shaders: &Path) -> Result<()> {
             let [scene, splat, stages, _, display] = gpu_ms.map(|ms| ms / 90.);
             let total = scene + splat + stages + display;
             println!(
-                "{frames} frames ({seconds:.1} s, {rate:.1} frames/s, {updates} updates, cube {cube_fps:.1}/s): GPU {total:.2} ms/frame (scene {scene:.2} first stage {splat:.2} other stages {stages:.2} panorama {display:.2}; stages {first_ms:.1} ms first, then {stage_ms:.1} ms each), at ({:.1}, {:.1}, {:.1}) looking ({:.2}, {:.2}, {:.2}), probe {probe_points} points, nearest {nearest:.1} m, around {distance:.1} m (speed x{scale:.2}), pushed {:.2} m",
-                origin.x, origin.y, origin.z, forward.x, forward.y, forward.z, pushed.length()
+                "{frames} frames ({seconds:.1} s, {rate:.1} frames/s, {updates} updates, cube {cube_fps:.1}/s): GPU {total:.2} ms/frame (scene {scene:.2} first stage {splat:.2} other stages {stages:.2} panorama {display:.2}; stages {first_ms:.1} ms first, then {stage_ms:.1} ms each), at ({:.1}, {:.1}, {:.1}) looking ({:.2}, {:.2}, {:.2}), probe {} points, nearest {nearest:.1} m, around {:.1} m (speed x{scale:.2}), pushed {:.2} m",
+                origin.x, origin.y, origin.z, forward.x, forward.y, forward.z, surroundings.len(), adaptive.distance(), pushed.length()
             );
             window.set_title(&format!("Sunk City: {} {rate:.0} fps, cube {cube_fps:.1}/s, GPU {total:.1} ms", if dome { "dome" } else { "equirect" }));
             gpu_ms = [0.; world::STAMPS as usize - 1];
