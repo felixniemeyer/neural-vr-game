@@ -20,6 +20,8 @@
 //                C = (h0..h3): the state before and after this update (ping-pong)
 //   M            the forward motion of each prev texel: (moved direction - direction, 1) * alive,
 //                with mips (the premultiplied pyramid the pull searches)
+//   acc A..D, W  splat reprojection only (net.json reproject "splat"): cube_splat.vert's
+//                sums, folded into mid A..D by cube_fold.frag
 //   mid A..D     the pulled state, premultiplied by its weight w like v2's resolved images:
 //                A = (rgb, inv) w, B = (velocity w, w), C = h w, D = (motion, w): motion =
 //                (texels moved, change of log distance) per tick; with mips (the net's pyramid)
@@ -35,6 +37,13 @@ layout(set = 0, binding = 42) uniform sampler2D cubeMidA;
 layout(set = 0, binding = 43) uniform sampler2D cubeMidB;
 layout(set = 0, binding = 44) uniform sampler2D cubeMidC;
 layout(set = 0, binding = 45) uniform sampler2D cubeMidD;
+// Splat reprojection (cube_splat, cube_fold): the accumulators (atlas size, float32), sums of
+// w n c (value), w n c, w n (cube_splat.frag), and the coverage W = sum w.
+layout(set = 0, binding = 46) uniform sampler2D cubeAccA; // (rgb, inv) w n c
+layout(set = 0, binding = 47) uniform sampler2D cubeAccB; // (velocity w n c, w n c)
+layout(set = 0, binding = 48) uniform sampler2D cubeAccC; // h w n c
+layout(set = 0, binding = 49) uniform sampler2D cubeAccD; // (motion w n c, w n)
+layout(set = 0, binding = 50) uniform sampler2D cubeAccW; // w
 
 const float QUARTER = 0.78539816339;
 const float CUBE_EPS = 1e-3; // model.py EPS: values = premultiplied sums / (weight + EPS)

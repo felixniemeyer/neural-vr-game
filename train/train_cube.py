@@ -2,7 +2,7 @@
 
 The runtime's state will be one head-centred sphere (an equi-angular cubemap) fixed to
 the world: turning the head moves nothing, only translation (parallax) and objects move
-content, by pull reprojection (sunk/sphere.py). Training puts a patch of that sphere,
+content, by pull or splat reprojection (sunk/sphere.py, net.reproject). Training puts a patch of that sphere,
 a canvas, into ordinary video:
 
   clips (sunk/clips.py)  footage at a random scale; the canvas is a rectangle of a
@@ -37,7 +37,7 @@ import torch.nn.functional as F
 from sunk.clips import ClipPool, Clips, focal_of
 from sunk.config import load
 from sunk.model import CERT, HID, INV, RGB, VEL, Net, init_from, load_export, scale_code
-from sunk.sphere import directions, pull
+from sunk.sphere import directions, pull, splat
 from train import Footage, damage, gradients, on_mains, pixel_weight, preview, style
 
 FLAGS = 2  # carried after the net's channels: seen (ever known), missed (out of view since);
@@ -216,8 +216,12 @@ def rollout(net, config, batch, observe, start=None, ages=None, periods=None, ti
         if periods is not None:
             parts.append(ring(batch, k, state[:, channels + FLAGS:], t.context_weight, ctx, channels))
         source = torch.cat(parts, 1)
-        pulled, displacement, log_change = pull(source, batch["angle"], batch["origin"] - ctx, batch["delta"][:, k],
-                                                batch["dt"], levels=net.levels, inner=inner)
+        if net.reproject == "splat":
+            pulled, displacement, log_change = splat(source, batch["angle"], batch["origin"] - ctx, batch["delta"][:, k],
+                                                     batch["dt"], inner=inner, nearness=net.nearness)
+        else:
+            pulled, displacement, log_change = pull(source, batch["angle"], batch["origin"] - ctx, batch["delta"][:, k],
+                                                    batch["dt"], levels=net.levels, inner=inner)
         weight = pulled[:, CERT:CERT + 1]
         hole = (weight < 0.01).float()
         flags = (pulled[:, channels:channels + FLAGS] > 0.5).float()

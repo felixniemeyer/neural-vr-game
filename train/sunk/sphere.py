@@ -25,6 +25,10 @@ import torch.nn.functional as F
 from sunk.model import CERT, EPS, INV, VEL
 
 QUARTER = math.pi / 4
+# splat: nearness (clamped inverse distance * NEAR_SCALE) ** nearness; inverse distances
+# 0.01 .. 20 (100 m .. 5 cm) map to 0.022 .. 45, so at nearness 2 the GPU's half-float
+# sums stay within 5e-4 .. 2e3. SPLAT_EPS: the normalisations' guard (holes: 0 / eps).
+NEAR_SCALE, SPLAT_EPS = math.sqrt(5.0), 1e-6
 
 
 def directions(angle, origin, h, w):
@@ -155,6 +159,64 @@ def pull(state, angle, origin, delta, dt, levels=5, sigma=0.5, inner=None):
     return out, (here - x).permute(0, 3, 1, 2), log_change
 
 
+def splat(state, angle, origin, delta, dt, inner=None, nearness=2.0):
+    """One step of splat reprojection on a canvas: pull's signature and returns.
+
+    Every source texel moves forward (its point after this step's motion, as in pull) and
+    lands as a 2x2 tent (weights w) on the targets around it. Overlaps: each point also
+    weighs its certainty c and its nearness n = (inverse distance after the move) **
+    nearness, so the foreground wins and unseen texels don't dilute seen ones:
+        values      = sum(w n c v) / sum(w n c)
+        certainty   = min(sum(w), 1) * sum(w n c) / sum(w n)
+    sum(w) is the plain coverage: where nothing lands the certainty is 0 (an honest hole).
+    Each point carries its own displacement (target - source, texels) and change of log
+    distance. Sources: the whole canvas; targets: `inner` (points landing outside are
+    lost). Positions carry no gradients, the splatted values do (as pull's read).
+    native/shaders/cube_splat.vert + cube_fold.frag do the same on the sphere."""
+    b, c, h, w = state.shape
+    y0, y1, x0, x1 = inner or (0, h, 0, w)
+    hi, wi = y1 - y0, x1 - x0
+    step = torch.as_tensor(dt, dtype=state.dtype).reshape(-1, 1, 1, 1)
+    inv, cert = state[:, INV], state[:, CERT].clamp_min(0)
+    dirs = directions(angle, origin, h, w).expand(b, -1, -1, -1)
+    j, i = torch.meshgrid(torch.arange(h, dtype=state.dtype), torch.arange(w, dtype=state.dtype), indexing="ij")
+    grid = torch.stack([i, j], -1)[None]
+    # The moved point, with gradients (its distance is a value), and its landing place without.
+    q = dirs / inv.clamp_min(1e-6)[..., None] + state[:, VEL].permute(0, 2, 3, 1) * step - delta[:, None, None]
+    distance = q.norm(dim=-1).clamp_min(0.05)
+    seen = (inv > 1e-6).float()
+    with torch.no_grad():
+        alive = seen * (q[..., 2] > 1e-3).float()
+        target = texel_of(q.detach(), angle, origin)
+        near = ((1 / distance.detach()).clamp(0.01, 20.0) * NEAR_SCALE) ** nearness
+        cx, cy = target[..., 0] - x0, target[..., 1] - y0
+    moved = state.clone()
+    moved[:, INV] = seen / distance
+    displacement = (target - grid).permute(0, 3, 1, 2) * seen[:, None]
+    log_change = (torch.log(distance * inv.clamp_min(1e-6)) * seen)[:, None]
+    # Channels: values * c, then c (-> sum w n c), 1 (-> sum w n); all times w n.
+    values = torch.cat([moved * cert[:, None], displacement * cert[:, None], log_change * cert[:, None],
+                        cert[:, None], torch.ones_like(cert)[:, None]], 1).flatten(2)
+    k = values.shape[1]
+    acc = torch.zeros(b, k, hi * wi, dtype=state.dtype)
+    cover = torch.zeros(b, 1, hi * wi, dtype=state.dtype)
+    xf, yf = cx.floor(), cy.floor()
+    for ox in (0, 1):
+        for oy in (0, 1):
+            x, y = xf + ox, yf + oy
+            tent = (1 - (cx - x).abs()) * (1 - (cy - y).abs()) * alive
+            tent = tent * ((x >= 0) & (x < wi) & (y >= 0) & (y < hi)).float()
+            index = (y.clamp(0, hi - 1) * wi + x.clamp(0, wi - 1)).long().flatten(1)[:, None]
+            acc = acc.scatter_add(2, index.expand(-1, k, -1), values * (tent * near).flatten(1)[:, None])
+            cover = cover.scatter_add(2, index, tent.flatten(1)[:, None])
+    acc, cover = acc.view(b, k, hi, wi), cover.view(b, 1, hi, wi)
+    sum_c, sum_n = acc[:, -2:-1], acc[:, -1:]
+    mean = acc[:, :-2] / (sum_c + SPLAT_EPS)
+    out = mean[:, :c].clone()
+    out[:, CERT:CERT + 1] = cover.clamp_max(1) * sum_c / (sum_n + SPLAT_EPS)
+    return out, mean[:, c:c + 2], mean[:, c + 2:c + 3]
+
+
 def look_at(d):
     """Rotation [3, 3] taking the unit direction d to +z with no roll (x stays horizontal)."""
     z = F.normalize(d, dim=0)
@@ -200,6 +262,34 @@ def _check():
     inner = out[:, CERT, 4:-4, 4:-4]
     print("weight inside (consistency)", inner.min().item())
     assert inner.min() > 0.9, "fixed point converged"
+
+    # splat: identity, the same translation, and occlusion (a near patch moving over a
+    # static far background wins where it lands; where it left, a hole).
+    out, disp, logc = splat(state, angle, origin, torch.zeros(b, 3), torch.zeros(b))
+    core = (slice(None), slice(None), slice(2, -2), slice(2, -2))
+    assert (out[:, :3] - state[:, :3])[core].abs().max() < 1e-3 and (out[:, CERT] - 1)[:, 2:-2, 2:-2].abs().max() < 1e-3, "identity splat"
+    assert disp.abs().max() < 1e-4 and logc.abs().max() < 1e-4
+    out, disp, _ = splat(plane, angle, origin, delta, torch.zeros(b))
+    centre = disp[:, 0, h // 2 - 4:h // 2 + 4, w // 2 - 4:w // 2 + 4].mean((1, 2))
+    print("splat plane shift texels", centre.tolist(), "expected", expect.tolist())
+    assert (centre - expect).abs().max() < 0.02 * expect.abs().max(), "splat translation"
+    scene = torch.zeros(1, 12, h, w)
+    scene[:, 0] = 1.0  # far background: red, 20 m, still
+    scene[:, INV] = 1 / 20.0
+    scene[:, CERT] = 1
+    patch = (slice(None), slice(None), slice(8, 16), slice(4, 10))
+    scene[patch] = 0.0
+    scene[:, 2, 8:16, 4:10] = 1.0  # near patch: blue, 2 m, moving right 3 texels this step
+    scene[:, INV, 8:16, 4:10] = 1 / 2.0
+    scene[:, CERT, 8:16, 4:10] = 1
+    scene[:, VEL.start, 8:16, 4:10] = 0.06 * 3  # m/s: 3 texels (0.03 rad at 2 m = 0.06 m) in dt = 1/3 s
+    out, _, _ = splat(scene, angle[:1], origin[:1], torch.zeros(1, 3), torch.tensor([1 / 3]))
+    landed = out[0, :, 9:15, 9:12]  # covered by the patch's new place, over background
+    print("occlusion: blue where the patch lands", landed[2].mean().item(), "red", landed[0].mean().item())
+    assert landed[2].min() > 0.95 and landed[0].max() < 0.05, "nearer wins"
+    left = out[0, CERT, 9:15, 4:6]
+    print("hole where it left: certainty", left.max().item())
+    assert left.max() < 0.05, "honest hole"
     print("sphere checks ok")
 
 

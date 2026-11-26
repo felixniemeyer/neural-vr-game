@@ -763,6 +763,7 @@ fn run(shaders: &Path) -> Result<()> {
         rule.len(),
         cube_face,
     )?;
+    world.splat_nearness = rule.splat;
     print_stats(&gpu, &world);
     world.mode = match env::var("VIEW").as_deref() {
         Ok("certainty") => 1,
@@ -909,6 +910,7 @@ fn run(shaders: &Path) -> Result<()> {
                     let switched = rule::Rule::load(Some(&dir)).and_then(|next| {
                         unsafe { d.device_wait_idle()? };
                         world.set_net(&mut resources, shaders, next.specialization(), next.len())?;
+                        world.splat_nearness = next.splat;
                         Ok(next)
                     });
                     match switched {

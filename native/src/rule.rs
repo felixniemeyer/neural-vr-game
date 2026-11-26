@@ -41,6 +41,8 @@ pub struct Rule {
     /// The certainty gate the net trained with (net.json "gate"; nets from before the
     /// gate trained without it: 0); None for random weights.
     pub gate: Option<f32>,
+    /// cube-v1 reprojection (net.json "reproject"): Some(nearness) = splat, None = pull.
+    pub splat: Option<f32>,
     trained: Option<Vec<f32>>,
     bases: Vec<Vec<f32>>,
 }
@@ -76,6 +78,7 @@ fn wave(time: f32, period: f32, phase: f32) -> f32 {
 
 impl Rule {
     pub fn load(dir: Option<&Path>) -> Result<Self> {
+        let mut splat = None;
         let (taps, layers, near, max_change, trained, time, layout, gate) = match dir {
             None => {
                 let taps = default_taps();
@@ -113,6 +116,11 @@ impl Rule {
                     ensure!(!used, "the net uses net.{feature}, which the shaders do not implement");
                 }
                 let gate = Some(json.get("gate").map(number).transpose()?.unwrap_or(0.));
+                splat = match json.get("reproject").and_then(Value::as_str).unwrap_or("pull") {
+                    "pull" => None,
+                    "splat" => Some(json.get("nearness").map(number).transpose()?.unwrap_or(2.)),
+                    other => anyhow::bail!("unknown reprojection {other}"),
+                };
                 let bytes = std::fs::read(dir.join("weights.bin"))?;
                 let weights: Vec<f32> =
                     bytes.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect();
@@ -138,7 +146,7 @@ impl Rule {
             .map(|_| (0..count).map(|_| (rand::random::<f32>() * 2. - 1.) * 3f32.sqrt()).collect())
             .collect();
         let (rate, max_tau, tau_input) = time;
-        Ok(Self { taps, layers, near, max_change, rate, max_tau, tau_input, layout, gate, trained, bases })
+        Ok(Self { taps, layers, near, max_change, rate, max_tau, tau_input, layout, gate, splat, trained, bases })
     }
 
     /// The layout's name (net.json "layout").

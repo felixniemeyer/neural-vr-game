@@ -44,6 +44,9 @@ class Net:
     gate: float = 0.0           # the update is scaled by 1 - gate * certainty: well-observed pixels drift less
     copy: float = 0.0           # infilling vectors: holes copy the filled state from a predicted offset (<= copy px); 0 = off
     down: bool = False          # learned downsampling: coarse levels' hidden channels get a 1x1 conv over 2x2 children
+    reproject: str = "pull"     # cube-v1 reprojection (sunk/sphere.py): "pull" (search each texel's source) or
+                                # "splat" (each texel moves forward as a 2x2 tent; nearer points win overlaps)
+    nearness: float = 2.0       # splat: overlapping points weigh inverse distance ** nearness (the certainty doesn't)
     cnn: list = field(default_factory=list)  # CNN pyramid (torch only): feature widths of levels 1.. (multiples of 4, e.g. [8, 8, 16, 16]); the taps read them too
 
 

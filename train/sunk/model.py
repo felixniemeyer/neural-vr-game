@@ -160,6 +160,7 @@ class Net(nn.Module):
         self.gate = n.gate
         self.copy = n.copy
         self.layout = n.layout
+        self.reproject, self.nearness = n.reproject, n.nearness
         assert self.layout in (V1, V2, CUBE), f"net.layout: {V1}, {V2} or {CUBE}"
         if self.layout in (V2, CUBE):
             assert not (n.gate or n.background or n.copy or n.down or n.cnn), \
@@ -358,6 +359,7 @@ class Net(nn.Module):
             "taps": [list(t) for t in self.taps], "levels": self.levels,
             "hidden_state": config.net.hidden_state, "near": self.near, "max_change": self.max_change,
             "layout": self.layout, "rate": self.rate, "max_tau": max_tau, "background": self.background, "gate": self.gate, "copy": self.copy,
+            "reproject": self.reproject, "nearness": self.nearness,
             "down": [[c.in_channels, c.out_channels] for c in self.down] if self.down is not None else [],
             "cnn": self.cnn,  # torch only: weights.bin leaves the encoder out, the app cannot run it
         }, indent=1))
@@ -437,6 +439,8 @@ def load_export(folder: Path) -> Net:
     config.net.background = spec.get("background", 0.0)
     config.net.gate = spec.get("gate", 0.0)
     config.net.copy = spec.get("copy", 0.0)
+    config.net.reproject = spec.get("reproject", "pull")
+    config.net.nearness = spec.get("nearness", 2.0)
     net = Net(config)
     net.tau_input = "rate" in spec
     assert [list(t) for t in net.taps] == [list(t) for t in spec["taps"]], "tap layout differs"

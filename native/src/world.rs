@@ -32,6 +32,12 @@ use std::{mem::size_of, path::Path};
 
 pub const EYES: usize = 2;
 const STATE: vk::Format = vk::Format::R16G16B16A16_SFLOAT;
+/// cube-v1 splat accumulators (cube_splat.frag): float32, the nearness-weighted sums of
+/// HDR colours would overflow half floats.
+const ACC: vk::Format = vk::Format::R32G32B32A32_SFLOAT;
+const ACC_SINGLE: vk::Format = vk::Format::R32_SFLOAT;
+/// cube-v1 splat accumulators: four sums (cube.glsl cubeAccA..D) and the coverage.
+const CUBE_ACCS: usize = 5;
 const SINGLE: vk::Format = vk::Format::R16_SFLOAT;
 const DEPTH: vk::Format = vk::Format::D32_SFLOAT;
 /// Vertices per scene instance: a crystal (scene.vert: 6 sides x 6 rings x 6 + 6 x 3 tip).
@@ -51,10 +57,10 @@ const CREATURES_BINDING: u32 = WEIGHTS_BINDING + 1;
 /// smallest guaranteed maxUniformBufferRange on mobile GPUs. Uniform (not storage) so the
 /// weights are read through the constant path (AMD scalar cache, Adreno constant RAM).
 pub const WEIGHT_HALVES: usize = 32768;
-/// cube-v1 images (cube.glsl): prev A, B, C, next A, B, C, M, mid A..D at bindings
-/// CUBE_BINDING.. (all with the linear sampler).
+/// cube-v1 images (cube.glsl): prev A, B, C, next A, B, C, M, mid A..D, the splat
+/// accumulators A..D, W at bindings CUBE_BINDING.. (all with the linear sampler).
 const CUBE_BINDING: u32 = CREATURES_BINDING + 1;
-const CUBE_IMAGES: u32 = 11;
+const CUBE_IMAGES: u32 = 11 + CUBE_ACCS as u32;
 const LAST_BINDING: u32 = CUBE_BINDING + CUBE_IMAGES - 1;
 /// Pipelines capture the driver's statistics (VK_KHR_pipeline_executable_properties on).
 pub static CAPTURE_STATS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -220,6 +226,12 @@ pub struct World {
     cube_pull: vk::Pipeline,
     cube_net: vk::Pipeline,
     cube_display: [vk::Pipeline; EYES],
+    /// Splat reprojection: its pass (CUBE_ACCS additive targets), the points and the fold.
+    cube_splat_pass: vk::RenderPass,
+    cube_splat: vk::Pipeline,
+    cube_fold: vk::Pipeline,
+    /// The net's reprojection: Some(nearness) = splat (net.json reproject), None = pull.
+    pub splat_nearness: Option<f32>,
     cube: Cube,
     /// Clear the cube's images before the next frame (new or resized).
     cube_clear: bool,
@@ -245,13 +257,17 @@ struct Cube {
     mid_views: [vk::ImageView; 4],
     forward_target: vk::Framebuffer,
     pull_target: vk::Framebuffer,
+    /// Splat reprojection (net.json reproject "splat"): the accumulators, cleared by the
+    /// splat pass and folded into mid A..D by cube_fold.
+    acc_views: [vk::ImageView; CUBE_ACCS],
+    splat_target: vk::Framebuffer,
     /// net_targets[parity] writes state[1 - parity].
     net_targets: [vk::Framebuffer; 2],
 }
 
 impl Cube {
-    /// passes: forward (M), pull (mid A..D; the resolve pass), net (A, B, C).
-    fn new(r: &mut Resources<'_>, face: u32, levels: u32, [forward, pull, net]: [vk::RenderPass; 3]) -> Result<Self> {
+    /// passes: forward (M), pull (mid A..D; the resolve pass), net (A, B, C), splat (accumulators).
+    fn new(r: &mut Resources<'_>, face: u32, levels: u32, [forward, pull, net, splat]: [vk::RenderPass; 4]) -> Result<Self> {
         use vk::ImageUsageFlags as Usage;
         anyhow::ensure!(face % (1 << (levels - 1)) == 0, "the cube face size must be divisible by 2^(levels - 1)");
         let gutter = 1 << (levels - 1);
@@ -275,6 +291,11 @@ impl Cube {
             (mid[i], mid_targets[i]) = r.image_levels(atlas, STATE, mid_usage, levels)?;
             mid_views[i] = r.view_levels(mid[i], STATE, vk::ImageAspectFlags::COLOR, levels)?;
         }
+        let acc_usage = Usage::COLOR_ATTACHMENT | Usage::SAMPLED;
+        let mut acc_views = [vk::ImageView::null(); CUBE_ACCS];
+        for (i, view) in acc_views.iter_mut().enumerate() {
+            *view = r.image(atlas, if i < 4 { ACC } else { ACC_SINGLE }, acc_usage)?.1;
+        }
         Ok(Self {
             face,
             gutter,
@@ -287,6 +308,8 @@ impl Cube {
             mid_views,
             forward_target: r.framebuffer(forward, atlas, &[m_target])?,
             pull_target: r.framebuffer(pull, atlas, &mid_targets)?,
+            splat_target: r.framebuffer(splat, atlas, &acc_views)?,
+            acc_views,
             net_targets: [r.framebuffer(net, atlas, &state_views[1])?, r.framebuffer(net, atlas, &state_views[0])?],
         })
     }
@@ -299,6 +322,7 @@ impl Cube {
                 .chain(self.state_views[1 - parity])
                 .chain([self.m_view])
                 .chain(self.mid_views)
+                .chain(self.acc_views)
                 .map(|view| {
                     [vk::DescriptorImageInfo::default()
                         .image_view(view)
@@ -610,7 +634,8 @@ impl World {
             false,
         )?;
         let forward_pass = render_pass(r, &[STATE], false, dont_care, read_layout, true)?;
-        let passes = [scene_pass, splat_pass, resolve_pass, net_pass, display_pass, forward_pass];
+        let cube_splat_pass = render_pass(r, &[ACC, ACC, ACC, ACC, ACC_SINGLE], false, clear, read_layout, true)?;
+        let passes = [scene_pass, splat_pass, resolve_pass, net_pass, display_pass, forward_pass, cube_splat_pass];
         let mut pipelines = Self::pipelines(&r.gpu.device, shaders, passes, layout, &spec)?
             .into_iter()
             .map(|p| r.keep(p, Resource::Pipeline));
@@ -621,6 +646,7 @@ impl World {
         let [resolve, net, display] = std::array::from_fn(|_| [next(), next()]);
         let (cube_forward, cube_pull, cube_net) = (next(), next(), next());
         let cube_display = [next(), next()];
+        let (cube_splat, cube_fold) = (next(), next());
 
         // state[eye][parity] = (A, B, C)
         let state_usage = Usage::COLOR_ATTACHMENT | Usage::SAMPLED | Usage::TRANSFER_DST | Usage::TRANSFER_SRC;
@@ -689,7 +715,7 @@ impl World {
             }
         }
 
-        let cube = Cube::new(r, cube_face, levels, [forward_pass, resolve_pass, net_pass])?;
+        let cube = Cube::new(r, cube_face, levels, [forward_pass, resolve_pass, net_pass, cube_splat_pass])?;
 
         // Zeroed initial contents; every field is plain f32 data.
         let initial: Uniforms = unsafe { std::mem::zeroed() };
@@ -828,6 +854,10 @@ impl World {
             cube_pull,
             cube_net,
             cube_display,
+            cube_splat_pass,
+            cube_splat,
+            cube_fold,
+            splat_nearness: None,
             cube,
             cube_clear: true,
             cube_centre: None,
@@ -855,7 +885,7 @@ impl World {
     fn pipelines(
         d: &Device,
         shaders: &Path,
-        [scene, splat, resolve, net, display, forward]: [vk::RenderPass; 6],
+        [scene, splat, resolve, net, display, forward, cube_splat]: [vk::RenderPass; 7],
         layout: vk::PipelineLayout,
         spec: &[i32],
     ) -> Result<Vec<vk::Pipeline>> {
@@ -891,6 +921,11 @@ impl World {
         .map(|(fragment, pass, targets, eye)| {
             pipeline(d, shaders, ("fullscreen.vert.spv", fragment), pass, layout, targets, false, false, false, &with(&[eye]))
         }))
+        // cube-v1 splat reprojection: the points (additive), the fold into mid A..D.
+        .chain([
+            pipeline(d, shaders, ("cube_splat.vert.spv", "cube_splat.frag.spv"), cube_splat, layout, CUBE_ACCS, true, false, true, &with(&[0])),
+            pipeline(d, shaders, ("fullscreen.vert.spv", "cube_fold.frag.spv"), resolve, layout, ACCS, false, false, false, &with(&[0])),
+        ])
         .collect()
     }
 
@@ -903,7 +938,7 @@ impl World {
     /// (a partial success leaks the new ones until exit, like replaced ones).
     /// Old pipelines are only destroyed at exit (they stay in `Resources`).
     pub fn reload(&mut self, r: &mut Resources<'_>, shaders: &Path) -> Result<()> {
-        let passes = [self.scene_pass, self.splat_pass, self.resolve_pass, self.net_pass, self.display_pass, self.forward_pass];
+        let passes = [self.scene_pass, self.splat_pass, self.resolve_pass, self.net_pass, self.display_pass, self.forward_pass, self.cube_splat_pass];
         let new = Self::pipelines(&r.gpu.device, shaders, passes, self.layout, &self.spec)?;
         let mut new = new.into_iter().map(|p| r.keep(p, Resource::Pipeline));
         let mut next = || new.next().unwrap();
@@ -913,6 +948,7 @@ impl World {
         [self.resolve, self.net, self.display] = std::array::from_fn(|_| [next(), next()]);
         (self.cube_forward, self.cube_pull, self.cube_net) = (next(), next(), next());
         self.cube_display = [next(), next()];
+        (self.cube_splat, self.cube_fold) = (next(), next());
         if let Some(panorama) = &self.panorama {
             let pipeline = self.panorama_pipeline(r, shaders, panorama.pass)?;
             self.panorama.as_mut().unwrap().pipeline = pipeline;
@@ -984,7 +1020,7 @@ impl World {
         if face == self.cube.face {
             return Ok(());
         }
-        let cube = Cube::new(r, face, self.levels, [self.forward_pass, self.resolve_pass, self.net_pass])?;
+        let cube = Cube::new(r, face, self.levels, [self.forward_pass, self.resolve_pass, self.net_pass, self.cube_splat_pass])?;
         if dump_bytes(cube.atlas) > self.dump_capacity {
             self.dump_capacity = dump_bytes(cube.atlas);
             self.dump = r.buffer(&vec![0u8; self.dump_capacity], vk::BufferUsageFlags::TRANSFER_DST)?;
@@ -1057,7 +1093,7 @@ impl World {
                 time,
                 (self.frame % 65536) as f32,
             ],
-            step: [dt, settings.tau, settings.day.unwrap_or(-1.), 0.],
+            step: [dt, settings.tau, settings.day.unwrap_or(-1.), self.splat_nearness.unwrap_or(0.)],
             net: rule.net,
             net_run: [rule.run[0], settings.gate, rule.run[2], 0.],
             net_layers: rule.layers,
@@ -1091,7 +1127,7 @@ impl World {
         };
         let zero = [vk::ClearValue {
             color: vk::ClearColorValue { float32: [0.; 4] },
-        }; ACCS];
+        }; CUBE_ACCS]; // enough for every pass that clears (extra values are ignored)
         let scene_clear = [
             zero[0],
             zero[1],
@@ -1170,7 +1206,20 @@ impl World {
                     d.cmd_draw(cmd, 3, 1, 0, 0);
                     d.cmd_end_render_pass(cmd);
                 };
-                if update {
+                if update && self.splat_nearness.is_some() {
+                    // Splat: every face texel a point into the accumulators, then the fold.
+                    begin_sized(self.cube_splat_pass, self.cube.splat_target, self.cube.atlas);
+                    d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.cube_splat);
+                    push(0, 0, 0);
+                    d.cmd_draw(cmd, 6 * self.cube.face * self.cube.face, 1, 0, 0);
+                    d.cmd_end_render_pass(cmd);
+                    stamp(2);
+                    fullscreen(self.resolve_pass, self.cube.pull_target, self.cube_fold);
+                    build_mips(d, cmd, &self.cube.mid, self.cube.atlas, self.levels);
+                    stamp(3);
+                    fullscreen(self.net_pass, self.cube.net_targets[self.parity], self.cube_net);
+                    stamp(4);
+                } else if update {
                     fullscreen(self.forward_pass, self.cube.forward_target, self.cube_forward);
                     build_mips(d, cmd, &[self.cube.m], self.cube.atlas, self.levels);
                     stamp(2);

@@ -264,7 +264,7 @@ pub fn run(shaders: &Path) -> Result<()> {
     if rule.layout != 3 {
         bail!("DESKTOP renders the cube-v1 sphere store: WEIGHTS must be a cube-v1 net (this is {})", rule.layout_name());
     }
-    println!("Net: {} {} ({} weights, {} mip levels)", if rule.trained() { "trained" } else { "random" }, rule.layout_name(), rule.len(), rule.levels());
+    println!("Net: {} {} ({} weights, {} mip levels, {} reprojection)", if rule.trained() { "trained" } else { "random" }, rule.layout_name(), rule.len(), rule.levels(), if rule.splat.is_some() { "splat" } else { "pull" });
     let edge: u32 = env::var("EYE_SIZE").ok().and_then(|v| v.parse().ok()).unwrap_or(256);
     ensure!(edge % (1 << (rule.levels() - 1)) == 0, "EYE_SIZE must be divisible by 2^(levels - 1)");
     let size = vk::Extent2D { width: edge, height: edge };
@@ -278,6 +278,7 @@ pub fn run(shaders: &Path) -> Result<()> {
     let face = env::var("CUBE_SIZE").ok().and_then(|v| v.parse::<u32>().ok())
         .unwrap_or(((std::f32::consts::FRAC_PI_2 / pixel / step as f32).round() as u32).max(1) * step);
     let mut world = World::new(&mut resources, shaders, size, format, [&eyes[0], &eyes[1]], rule.specialization(), rule.len(), face)?;
+    world.splat_nearness = rule.splat;
     println!("Cube: {face} texels per face ({:.2} arcmin); eyes {edge} px, {:.0} deg", (std::f32::consts::FRAC_PI_2 / face as f32).to_degrees() * 60., fov.to_degrees());
 
     // The picture: room for the dome's square; the equirect uses its top half.
