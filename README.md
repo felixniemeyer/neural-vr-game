@@ -30,11 +30,10 @@ Shader edits reload live; Rust edits rebuild and restart the app. The broker, co
 and Monado logs go to `build/dev/`.
 
 Without OpenXR at all (no Monado): `DESKTOP=1` renders a cube-v1 net's sphere store from
-two virtual eyes (fixed 90 Hz clock) and writes it after every net update as an
-equirectangular panorama, or with `DOME=1` as a domemaster (`native/src/desktop.rs`). In
+two virtual eyes and draws it in its own Vulkan window as an equirectangular panorama, or
+with `DOME=1` as a domemaster (`native/src/desktop.rs`; Tab switches, Esc closes). In
 dev.sh, pick a cube-v1 net and then the output (stereo VR, domemaster, equirect; or
-`OUTPUT=dome`); the panorama shows live in imv. The eyes follow the autopilot (motion tab,
-`auto`) plus the controller's camera tab: a Player3D you fly with WASD/mouse/QE, and
+`OUTPUT=dome`). The eyes follow the autopilot (motion tab, `auto`, off by default) plus the controller's camera tab: a Player3D you fly with WASD/mouse/QE, and
 `attention`, how far from the dome's zenith the camera's forward sits (as fabric-artwork's
 camera; 90 = at the bottom rim).
 
@@ -42,7 +41,7 @@ camera; 90 = at the bottom rim).
 native/build.sh
 cd native && DESKTOP=1 DOME=1 WEIGHTS=../train/runs/cube-wide/net VIDEO=../build/desktop/run.mp4 \
   FRAMES=2700 ../build/native/sunk-city ../build/native
-# the latest panorama: build/desktop/panorama.ppm (PANORAMA, PANORAMA_WIDTH, DOME_FOV, FOV, FRAMES)
+# VIDEO: an mp4 on a fixed 90 Hz clock (PANORAMA_WIDTH, DOME_FOV, FOV, FRAMES)
 ```
 
 ## Steam Frame

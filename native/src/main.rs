@@ -61,7 +61,7 @@ fn init_gpu(instance: &xr::Instance, system: xr::SystemId) -> Result<Gpu> {
         let setup = (|| -> Result<_> {
             let physical = instance.vulkan_graphics_device(system, raw)?;
             let physical_handle = vk::PhysicalDevice::from_raw(physical as u64);
-            let (device, queue, family, stats) = make_device(&vulkan, physical_handle, |info| {
+            let (device, queue, family, stats) = make_device(&vulkan, physical_handle, &[], |info| {
                 let raw = instance
                     .create_vulkan_device(system, get_proc, physical, (info as *const vk::DeviceCreateInfo).cast())?
                     .map_err(vk::Result::from_raw)?;
@@ -93,6 +93,7 @@ fn init_gpu(instance: &xr::Instance, system: xr::SystemId) -> Result<Gpu> {
 unsafe fn make_device(
     vulkan: &ash::Instance,
     physical: vk::PhysicalDevice,
+    extra: &[&std::ffi::CStr],
     create: impl FnOnce(&vk::DeviceCreateInfo) -> Result<ash::Device>,
 ) -> Result<(ash::Device, vk::Queue, u32, Option<ash::khr::pipeline_executable_properties::Device>)> {
     unsafe {
@@ -117,6 +118,7 @@ unsafe fn make_device(
         ensure!(half.shader_float16 == vk::TRUE, "The GPU lacks shaderFloat16");
         let mut half = vk::PhysicalDeviceShaderFloat16Int8Features::default().shader_float16(true);
         let mut extensions = vec![ash::khr::shader_float16_int8::NAME.as_ptr()];
+        extensions.extend(extra.iter().map(|e| e.as_ptr()));
         // The driver's statistics (registers, instructions) per pipeline, if it has them.
         let stats = vulkan
             .enumerate_device_extension_properties(physical)?
@@ -555,7 +557,7 @@ impl Zip {
     }
 }
 
-/// The live faders (av-controls). `desktop` (DESKTOP=1): the autopilot starts on and a
+/// The live faders (av-controls). `desktop` (DESKTOP=1): a
 /// camera tab: a Player3D flown from the controller on top of the autopilot (its position
 /// in metres, relative to the autopilot's heading), and the dome's attention: how far
 /// from the zenith the camera's forward sits in a domemaster (degrees).
@@ -612,7 +614,7 @@ fn panel(rule: &rule::Rule, desktop: bool) -> av_controls::Controls {
         .fader_with("swirl", 0.5, 30., initial("swirl", 6.), 1)
         .fader_with("dot", 0.01, 0.5, initial("dot", 0.08), 2)
         .section("motion")
-        .switch("auto", initial("auto", if desktop { 1. } else { 0. }) > 0.5)
+        .switch("auto", initial("auto", 0.) > 0.5)
         .fader_with("speed", 0., 15., initial("speed", 3.), 1)
         .fader_with("pull", 0., 60., initial("pull", 25.), 1)
         .fader_with("drag", 0., 6., initial("drag", 2.5), 2)

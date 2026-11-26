@@ -114,6 +114,30 @@ ivec2 cubeTexel(int f, ivec2 c) {
     return ivec2(faceOrigin(g)) + y;
 }
 
+// The state (image 0 A, 1 B, 2 C) at an atlas texel: source 1 = next (this update's
+// output), 0 = prev.
+vec4 cubeFetch(int source, int image, ivec2 p) {
+    if (source == 1) {
+        if (image == 0) return texelFetch(cubeNextA, p, 0);
+        if (image == 1) return texelFetch(cubeNextB, p, 0);
+        return texelFetch(cubeNextC, p, 0);
+    }
+    if (image == 0) return texelFetch(cubePrevA, p, 0);
+    if (image == 1) return texelFetch(cubePrevB, p, 0);
+    return texelFetch(cubePrevC, p, 0);
+}
+
+// The state in direction d: bilinear in d's face, texels past its edge from the neighbour
+// face (the state has no gutter).
+vec4 cubeLatest(int source, int image, vec3 d) {
+    int f = faceOf(d);
+    vec2 x = faceTexel(f, d);
+    vec2 base = floor(x), t = x - base;
+    ivec2 c = ivec2(base);
+    return mix(mix(cubeFetch(source, image, cubeTexel(f, c)), cubeFetch(source, image, cubeTexel(f, c + ivec2(1, 0))), t.x),
+               mix(cubeFetch(source, image, cubeTexel(f, c + ivec2(0, 1))), cubeFetch(source, image, cubeTexel(f, c + ivec2(1, 1))), t.x), t.y);
+}
+
 // The rendered scene in direction d from the head: (colour, inverse distance from the
 // head) and its fade (sceneAt), world velocity, sky (1: no geometry there), the focus
 // position (resolve.frag); from the first eye that sees d. `guess`:

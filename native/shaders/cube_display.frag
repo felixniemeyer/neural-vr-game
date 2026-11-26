@@ -13,27 +13,7 @@
 layout(push_constant) uniform Push { int target; int source; int mode; } pc;
 layout(location = 0) out vec4 color;
 
-vec4 fetch(int image, ivec2 p) {
-    if (pc.source == 1) {
-        if (image == 0) return texelFetch(cubeNextA, p, 0);
-        if (image == 1) return texelFetch(cubeNextB, p, 0);
-        return texelFetch(cubeNextC, p, 0);
-    }
-    if (image == 0) return texelFetch(cubePrevA, p, 0);
-    if (image == 1) return texelFetch(cubePrevB, p, 0);
-    return texelFetch(cubePrevC, p, 0);
-}
-
-// Bilinear in direction d's face; texels past its edge come from the neighbour face (the
-// state has no gutter).
-vec4 latest(int image, vec3 d) {
-    int f = faceOf(d);
-    vec2 x = faceTexel(f, d);
-    vec2 base = floor(x), t = x - base;
-    ivec2 c = ivec2(base);
-    return mix(mix(fetch(image, cubeTexel(f, c)), fetch(image, cubeTexel(f, c + ivec2(1, 0))), t.x),
-               mix(fetch(image, cubeTexel(f, c + ivec2(0, 1))), fetch(image, cubeTexel(f, c + ivec2(1, 1))), t.x), t.y);
-}
+vec4 latest(int image, vec3 d) { return cubeLatest(pc.source, image, d); }
 
 void main() {
     ivec2 p = ivec2(gl_FragCoord.xy);

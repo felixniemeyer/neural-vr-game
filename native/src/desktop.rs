@@ -1,32 +1,33 @@
-//! DESKTOP=1: Sunk City without OpenXR (and without Monado's emulated headset). Plain
-//! Vulkan, two virtual eyes on the autopilot (zip.rs's wander through the city, a fixed
-//! 90 Hz clock: the result does not depend on how fast the GPU is), and the cube-v1 sphere
-//! store itself as the output: after each net update its colour is read back and drawn as
-//! an equirectangular panorama (the whole sphere, world-fixed: -z at the centre, y up), or
-//! a domemaster (DOME=1: a square fisheye that follows the camera, as fabric-artwork's: the
-//! camera's forward sits the attention fader's angle from the dome's zenith, towards the
-//! image's bottom edge; 0 = the camera looks at the zenith, 90 = at the bottom rim).
+//! DESKTOP=1: Sunk City without OpenXR (and without Monado's emulated headset), in a window.
+//! Plain Vulkan, two virtual eyes that feed the cube-v1 sphere store as in VR, and the store
+//! itself as the picture: panorama.frag draws the whole sphere on the GPU every frame,
+//! seen from its centre, as a domemaster (DOME=1: a square azimuthal-equidistant fisheye)
+//! or an equirectangular panorama, into an offscreen image that is blitted (letterboxed)
+//! into the window's swapchain. Both follow the camera; in the dome, the camera's forward
+//! sits the attention fader's angle from the zenith, towards the bottom edge (as
+//! fabric-artwork's camera: 0 = the camera looks at the zenith, 90 = at the bottom rim).
 //!
 //! Env (besides the app's WEIGHTS, CUBE_SIZE, FADERS, CONTROLS, EYE_SIZE):
-//!   PANORAMA=file.ppm   the latest panorama, rewritten every update (default
-//!                       build/desktop/panorama.ppm; an image viewer that reloads shows it live)
-//!   PANORAMA_WIDTH      pixels (default 1024; height = width / 2, the dome's = width)
-//!   DOME=1              a domemaster instead (azimuthal equidistant)
+//!   DOME=1              domemaster (else equirectangular); Tab in the window switches
 //!   DOME_FOV            the dome's angle across, degrees (default 180)
-//!   VIDEO=file.mp4      also every panorama into a video via ffmpeg (netfps frames per second)
-//!   FRAMES=n            stop after n frames (default: until Ctrl+C)
+//!   PANORAMA_WIDTH      the picture's pixels across (default 1024; equirect height = width / 2)
+//!   VIDEO=file.mp4      also the picture after every net update into a video via ffmpeg
+//!                       (netfps frames per second; the simulation then runs on a fixed 90 Hz
+//!                       clock, else on the wall clock)
+//!   FRAMES=n            stop after n frames (default: until the window closes, Esc or Ctrl+C)
 //!   FOV                 the virtual eyes' field of view, degrees (default 90)
 //! Controls (av-controls, tab "camera"): the camera, a Player3D flown from the controller
-//! (WASD, mouse, Q/E roll) on top of the autopilot (tab "motion": auto, speed; with auto off
+//! (WASD, mouse, Q/E roll) on top of the autopilot (tab "motion": auto, off by default, speed; with auto off
 //! the camera alone moves), and attention. The eyes look where the camera does.
 
 use crate::gpu::{Gpu, Resource, Resources};
-use crate::world::{self, Settings, World, EYES};
+use crate::world::{self, Settings, World, EYES, PANORAMA_PUSH};
 use crate::{camera, city, panel, per_second, rule, swarm, NetClock, Zip, START_HEIGHT};
 use anyhow::{bail, ensure, Context, Result};
 use ash::vk;
-use glam::{Quat, Vec3};
+use glam::{Mat3, Quat, Vec3};
 use openxr as xr;
+use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle};
 use std::{
     env,
     io::Write,
@@ -36,25 +37,39 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
+    time::{Duration, Instant},
+};
+use winit::{
+    application::ApplicationHandler,
+    event::{ElementState, WindowEvent},
+    event_loop::{ActiveEventLoop, EventLoop},
+    keyboard::{Key, NamedKey},
+    platform::pump_events::{EventLoopExtPumpEvents, PumpStatus},
+    window::{Window, WindowId},
 };
 
 const DT: f32 = 1. / 90.;
 const IPD: f32 = 0.064;
+const PICTURE: vk::Format = vk::Format::R8G8B8A8_UNORM;
 
-/// Vulkan without OpenXR: the first discrete GPU, else any.
-fn plain_gpu() -> Result<Gpu> {
+/// Vulkan without OpenXR, able to present to `display`'s windows: the first discrete GPU,
+/// else any.
+fn plain_gpu(display: RawDisplayHandle) -> Result<Gpu> {
     unsafe {
         let entry = ash::Entry::load().context("Loading Vulkan")?;
         let application = vk::ApplicationInfo::default()
             .application_name(c"Sunk City")
             .api_version(vk::API_VERSION_1_1);
-        let instance = entry.create_instance(&vk::InstanceCreateInfo::default().application_info(&application), None)?;
+        let extensions = ash_window::enumerate_required_extensions(display)?;
+        let info = vk::InstanceCreateInfo::default().application_info(&application).enabled_extension_names(extensions);
+        let instance = entry.create_instance(&info, None)?;
         let physical = instance
             .enumerate_physical_devices()?
             .into_iter()
             .max_by_key(|&p| (instance.get_physical_device_properties(p).device_type == vk::PhysicalDeviceType::DISCRETE_GPU) as u8)
             .context("No Vulkan device")?;
-        match crate::make_device(&instance, physical, |info| Ok(instance.create_device(physical, info, None)?)) {
+        let swapchain = [ash::khr::swapchain::NAME];
+        match crate::make_device(&instance, physical, &swapchain, |info| Ok(instance.create_device(physical, info, None)?)) {
             Ok((device, queue, family, stats)) => Ok(Gpu { stats, _entry: entry, instance, physical, device, queue, family }),
             Err(error) => {
                 instance.destroy_instance(None);
@@ -64,174 +79,160 @@ fn plain_gpu() -> Result<Gpu> {
     }
 }
 
-/// The cube's faces (cube.glsl): forward and up per face, world coordinates.
-const FORWARD: [Vec3; 6] = [Vec3::X, Vec3::NEG_X, Vec3::Y, Vec3::NEG_Y, Vec3::Z, Vec3::NEG_Z];
-const UP: [Vec3; 6] = [Vec3::Y, Vec3::Y, Vec3::Z, Vec3::NEG_Z, Vec3::Y, Vec3::Y];
-
-fn threads() -> usize {
-    std::thread::available_parallelism().map_or(4, |n| n.get())
+/// The window's surface and swapchain (recreated on resize), destroyed before the device.
+struct Screen {
+    device: ash::Device,
+    surfaces: ash::khr::surface::Instance,
+    swapchains: ash::khr::swapchain::Device,
+    surface: vk::SurfaceKHR,
+    swapchain: vk::SwapchainKHR,
+    images: Vec<vk::Image>,
+    extent: vk::Extent2D,
+    acquired: vk::Semaphore,
+    /// Per swapchain image: its commands finished (present waits on it).
+    rendered: Vec<vk::Semaphore>,
 }
 
-fn face_of(d: Vec3) -> usize {
-    let a = d.abs();
-    if a.x >= a.y && a.x >= a.z {
-        if d.x > 0. { 0 } else { 1 }
-    } else if a.y >= a.z {
-        if d.y > 0. { 2 } else { 3 }
-    } else if d.z > 0. {
-        4
-    } else {
-        5
-    }
-}
-
-/// The equirectangular panorama (rgb24) of the dumped state A (cube.glsl's atlas):
-/// bilinear within each face, tone-mapped as cube_display.frag. Where each pixel reads
-/// (4 atlas texels and the bilinear weights) is worked out once per face size.
-struct Panorama {
-    width: usize,
-    /// DOME: the angle across, radians.
-    dome: Option<f32>,
-    /// The camera's orientation and the attention (radians) the dome's table was built for.
-    view: (Quat, f32),
-    layout: (u32, u32),
-    /// Per pixel: atlas index of the top-left texel, the steps to the right and down
-    /// neighbours (0 at a face's last texel), the fractions.
-    table: Vec<(u32, u8, u32, f32, f32)>,
-    state: Vec<[f32; 3]>,
-}
-
-impl Panorama {
-    fn new(width: usize, dome: Option<f32>) -> Self {
-        Self { width, dome, view: (Quat::IDENTITY, 0.), layout: (0, 0), table: Vec::new(), state: Vec::new() }
-    }
-
-    fn height(&self) -> usize {
-        if self.dome.is_some() { self.width } else { self.width / 2 }
-    }
-
-    /// The world direction of a pixel; None outside the dome's circle.
-    fn direction(&self, column: usize, row: usize) -> Option<Vec3> {
-        let (width, height) = (self.width as f32, self.height() as f32);
-        let (column, row) = (column as f32 + 0.5, row as f32 + 0.5);
-        let Some(fov) = self.dome else {
-            let lat = std::f32::consts::FRAC_PI_2 - row / height * std::f32::consts::PI;
-            let lon = column / width * std::f32::consts::TAU - std::f32::consts::PI;
-            return Some(Vec3::new(lon.sin() * lat.cos(), lat.sin(), -lon.cos() * lat.cos()));
+impl Screen {
+    fn new(gpu: &Gpu, display: RawDisplayHandle, window: &Window) -> Result<Self> {
+        let surfaces = ash::khr::surface::Instance::new(&gpu._entry, &gpu.instance);
+        let surface = unsafe {
+            ash_window::create_surface(&gpu._entry, &gpu.instance, display, window.window_handle()?.as_raw(), None)?
         };
-        // The dome's frame: x image right, y image up, z the zenith.
-        let (u, v) = (2. * column / width - 1., 1. - 2. * row / height);
-        let r = u.hypot(v);
-        if r > 1. {
-            return None;
-        }
-        let theta = r * fov / 2.;
-        let (sin, cos) = theta.sin_cos();
-        let dome = if r > 0. { Vec3::new(sin * u / r, sin * v / r, cos) } else { Vec3::Z };
-        // The camera's forward (-z) is the attention's angle from the zenith towards the
-        // bottom, its right is the image's right (camera.ts' playerToDomemaster).
-        let (orientation, attention) = self.view;
-        let (s, c) = attention.sin_cos();
-        let forward = dome.dot(Vec3::new(0., -s, c));
-        let up = dome.dot(Vec3::new(0., c, s));
-        Some(orientation * Vec3::new(dome.x, up, -forward))
-    }
-
-    fn build(&mut self, (face, gutter): (u32, u32), aw: usize) {
-        self.layout = (face, gutter);
-        let n = face as f32;
-        let angle = std::f32::consts::FRAC_PI_2 / n;
-        let cell = (face + 2 * gutter) as usize;
-        let (width, height) = (self.width, self.height());
-        // Per pixel, on all cores in bands of rows (the dome rebuilds it as the camera turns).
-        let mut table = std::mem::take(&mut self.table);
-        table.resize(width * height, (0, 0, 0, 0., 0.));
-        let band = height.div_ceil(threads()) * width;
-        let this = &*self;
-        std::thread::scope(|scope| {
-            for (b, chunk) in table.chunks_mut(band).enumerate() {
-                scope.spawn(move || {
-                    for (i, entry) in chunk.iter_mut().enumerate() {
-                        let at = b * band + i;
-                        *entry = this.entry(at % width, at / width, (n, angle, cell, gutter as usize), aw);
-                    }
-                });
-            }
-        });
-        self.table = table;
-    }
-
-    /// Where pixel (column, row) reads the atlas (see `table`).
-    fn entry(&self, column: usize, row: usize, (n, angle, cell, gutter): (f32, f32, usize, usize), aw: usize) -> (u32, u8, u32, f32, f32) {
-        let Some(d) = self.direction(column, row) else {
-            return (u32::MAX, 0, 0, 0., 0.);
+        ensure!(
+            unsafe { surfaces.get_physical_device_surface_support(gpu.physical, gpu.family, surface)? },
+            "the GPU's queue cannot present to the window"
+        );
+        let acquired = unsafe { gpu.device.create_semaphore(&vk::SemaphoreCreateInfo::default(), None)? };
+        let mut screen = Self {
+            device: gpu.device.clone(),
+            surfaces,
+            swapchains: ash::khr::swapchain::Device::new(&gpu.instance, &gpu.device),
+            surface,
+            swapchain: vk::SwapchainKHR::null(),
+            images: Vec::new(),
+            extent: vk::Extent2D::default(),
+            acquired,
+            rendered: Vec::new(),
         };
-        let f = face_of(d);
-        let (forward, up) = (FORWARD[f], UP[f]);
-        let right = forward.cross(up);
-        let z = d.dot(forward);
-        let x = ((d.dot(right).atan2(z) + std::f32::consts::FRAC_PI_4) / angle - 0.5).clamp(0., n - 1.);
-        let y = ((-d.dot(up)).atan2(z) + std::f32::consts::FRAC_PI_4) / angle - 0.5;
-        let y = y.clamp(0., n - 1.);
-        let (x0, y0) = (x.floor(), y.floor());
-        let base = (f % 3 * cell + gutter + x0 as usize, f / 3 * cell + gutter + y0 as usize);
-        let right_step = u8::from(x0 < n - 1.);
-        let down_step = if y0 < n - 1. { aw as u32 } else { 0 };
-        ((base.1 * aw + base.0) as u32, right_step, down_step, x - x0, y - y0)
+        let size = window.inner_size();
+        screen.rebuild(gpu.physical, vk::Extent2D { width: size.width, height: size.height })?;
+        Ok(screen)
     }
 
-    /// `view`: the camera's orientation and the attention (radians), for the dome.
-    fn draw(&mut self, world: &World, view: (Quat, f32), out: &mut Vec<u8>) {
-        let atlas = world.dump_extent();
-        let (aw, ah) = (atlas.width as usize, atlas.height as usize);
-        if world.cube_layout() != self.layout || (self.dome.is_some() && view != self.view) {
-            self.view = view;
-            self.build(world.cube_layout(), aw);
-        }
-        // State A (after mid A..D), copied out in one go: the mapped dump is uncached
-        // memory, slow to read texel by texel.
-        let start = 4 * 8 * aw * ah;
-        let mut raw = vec![0u8; 8 * aw * ah];
-        raw.copy_from_slice(&world.dumped()[start..start + 8 * aw * ah]);
-        self.state.clear();
-        self.state.extend(raw.chunks_exact(8).map(|t| -> [f32; 3] {
-            std::array::from_fn(|c| half::f16::from_le_bytes([t[2 * c], t[2 * c + 1]]).to_f32())
-        }));
-        let tone = world.tone().map(|[black, white, gamma]| {
-            let scale = 1. / (white - black).max(1e-3);
-            (scale, -black * scale, gamma)
-        });
-        out.clear();
-        out.resize(3 * self.table.len(), 0);
-        let band = self.table.len().div_ceil(threads());
-        let state = &self.state;
-        std::thread::scope(|scope| {
-            for (entries, pixels) in self.table.chunks(band).zip(out.chunks_mut(3 * band)) {
-                scope.spawn(move || {
-                    for (&(at, right, down, tx, ty), pixel) in entries.iter().zip(pixels.chunks_exact_mut(3)) {
-                        if at == u32::MAX {
-                            continue; // outside the dome: black
-                        }
-                        let at = at as usize;
-                        let (p, b) = (state[at], state[at + right as usize]);
-                        let (c, e) = (state[at + down as usize], state[at + down as usize + right as usize]);
-                        for ch in 0..3 {
-                            let value = (p[ch] * (1. - tx) + b[ch] * tx) * (1. - ty) + (c[ch] * (1. - tx) + e[ch] * tx) * ty;
-                            let (scale, offset, gamma) = tone[ch];
-                            let v = (value * scale + offset).max(0.);
-                            let v = if (gamma - 1.).abs() < 1e-3 { v } else { v.powf(gamma) };
-                            pixel[ch] = if v.is_finite() { (v.min(1.) * 255. + 0.5) as u8 } else { 0 };
-                        }
-                    }
-                });
+    /// A swapchain for the window's current size (the device must be idle); a zero
+    /// extent (minimised) keeps none.
+    fn rebuild(&mut self, physical: vk::PhysicalDevice, size: vk::Extent2D) -> Result<()> {
+        unsafe {
+            let caps = self.surfaces.get_physical_device_surface_capabilities(physical, self.surface)?;
+            let extent = if caps.current_extent.width != u32::MAX {
+                caps.current_extent
+            } else {
+                vk::Extent2D {
+                    width: size.width.clamp(caps.min_image_extent.width, caps.max_image_extent.width),
+                    height: size.height.clamp(caps.min_image_extent.height, caps.max_image_extent.height),
+                }
+            };
+            for semaphore in self.rendered.drain(..) {
+                self.device.destroy_semaphore(semaphore, None);
             }
-        });
+            let old = std::mem::replace(&mut self.swapchain, vk::SwapchainKHR::null());
+            self.images.clear();
+            self.extent = extent;
+            if extent.width == 0 || extent.height == 0 {
+                if old != vk::SwapchainKHR::null() {
+                    self.swapchains.destroy_swapchain(old, None);
+                }
+                return Ok(());
+            }
+            ensure!(caps.supported_usage_flags.contains(vk::ImageUsageFlags::TRANSFER_DST), "the window's images cannot be blitted to");
+            let formats = self.surfaces.get_physical_device_surface_formats(physical, self.surface)?;
+            // UNORM: the picture is already tone-mapped for display (as the video).
+            let format = formats
+                .iter()
+                .find(|f| matches!(f.format, vk::Format::B8G8R8A8_UNORM | vk::Format::R8G8B8A8_UNORM))
+                .or(formats.first())
+                .copied()
+                .context("the window has no surface formats")?;
+            // Never wait for the compositor: FIFO blocks forever while the window is hidden
+            // (Wayland), and the simulation runs as fast as the GPU anyway.
+            let modes = self.surfaces.get_physical_device_surface_present_modes(physical, self.surface)?;
+            let mode = [vk::PresentModeKHR::MAILBOX, vk::PresentModeKHR::IMMEDIATE]
+                .into_iter()
+                .find(|m| modes.contains(m))
+                .unwrap_or(vk::PresentModeKHR::FIFO);
+            let count = if caps.max_image_count > 0 { (caps.min_image_count + 1).min(caps.max_image_count) } else { caps.min_image_count + 1 };
+            let info = vk::SwapchainCreateInfoKHR::default()
+                .surface(self.surface)
+                .min_image_count(count)
+                .image_format(format.format)
+                .image_color_space(format.color_space)
+                .image_extent(extent)
+                .image_array_layers(1)
+                .image_usage(vk::ImageUsageFlags::TRANSFER_DST)
+                .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
+                .pre_transform(caps.current_transform)
+                .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
+                .present_mode(mode)
+                .clipped(true)
+                .old_swapchain(old);
+            self.swapchain = self.swapchains.create_swapchain(&info, None)?;
+            if old != vk::SwapchainKHR::null() {
+                self.swapchains.destroy_swapchain(old, None);
+            }
+            self.images = self.swapchains.get_swapchain_images(self.swapchain)?;
+            for _ in &self.images {
+                self.rendered.push(self.device.create_semaphore(&vk::SemaphoreCreateInfo::default(), None)?);
+            }
+        }
+        Ok(())
     }
 }
 
-fn video(path: &Path, width: usize, height: usize, fps: f32) -> Result<Child> {
+impl Drop for Screen {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = self.device.device_wait_idle();
+            for &semaphore in self.rendered.iter().chain([&self.acquired]) {
+                self.device.destroy_semaphore(semaphore, None);
+            }
+            if self.swapchain != vk::SwapchainKHR::null() {
+                self.swapchains.destroy_swapchain(self.swapchain, None);
+            }
+            self.surfaces.destroy_surface(self.surface, None);
+        }
+    }
+}
+
+/// The window's events since the last pump.
+#[derive(Default)]
+struct Events {
+    close: bool,
+    resized: bool,
+    /// Tab: dome <-> equirect.
+    switch: bool,
+}
+
+impl ApplicationHandler for Events {
+    fn resumed(&mut self, _: &ActiveEventLoop) {}
+
+    fn window_event(&mut self, _: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
+        match event {
+            WindowEvent::CloseRequested => self.close = true,
+            WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => self.resized = true,
+            WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed && !event.repeat => match event.logical_key {
+                Key::Named(NamedKey::Escape) => self.close = true,
+                Key::Named(NamedKey::Tab) => self.switch = true,
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+}
+
+fn video(path: &Path, width: u32, height: u32, fps: f32) -> Result<Child> {
     Command::new("ffmpeg")
-        .args(["-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", &format!("{width}x{height}")])
+        .args(["-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgba", "-s", &format!("{width}x{height}")])
         .args(["-r", &format!("{fps}"), "-i", "-", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18"])
         .arg(path)
         .stdin(Stdio::piped())
@@ -239,8 +240,24 @@ fn video(path: &Path, width: usize, height: usize, fps: f32) -> Result<Child> {
         .context("Starting ffmpeg (VIDEO)")
 }
 
+fn barrier(d: &ash::Device, cmd: vk::CommandBuffer, image: vk::Image, (from, to): (vk::ImageLayout, vk::ImageLayout), (src, dst): (vk::AccessFlags, vk::AccessFlags), (after, before): (vk::PipelineStageFlags, vk::PipelineStageFlags)) {
+    let range = vk::ImageSubresourceRange::default().aspect_mask(vk::ImageAspectFlags::COLOR).level_count(1).layer_count(1);
+    let barrier = vk::ImageMemoryBarrier::default()
+        .image(image)
+        .old_layout(from)
+        .new_layout(to)
+        .src_access_mask(src)
+        .dst_access_mask(dst)
+        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .subresource_range(range);
+    unsafe { d.cmd_pipeline_barrier(cmd, after, before, vk::DependencyFlags::empty(), &[], &[], &[barrier]) };
+}
+
 pub fn run(shaders: &Path) -> Result<()> {
-    let gpu = plain_gpu()?;
+    let mut event_loop = EventLoop::new().context("Opening the window system (Wayland/X11)")?;
+    let display = event_loop.display_handle()?.as_raw();
+    let gpu = plain_gpu(display)?;
     let d = &gpu.device;
     let mut resources = Resources::new(&gpu);
     let rule = rule::Rule::load(env::var_os("WEIGHTS").map(PathBuf::from).as_deref())?;
@@ -263,12 +280,28 @@ pub fn run(shaders: &Path) -> Result<()> {
     let mut world = World::new(&mut resources, shaders, size, format, [&eyes[0], &eyes[1]], rule.specialization(), rule.len(), face)?;
     println!("Cube: {face} texels per face ({:.2} arcmin); eyes {edge} px, {:.0} deg", (std::f32::consts::FRAC_PI_2 / face as f32).to_degrees() * 60., fov.to_degrees());
 
+    // The picture: room for the dome's square; the equirect uses its top half.
+    let width: u32 = env::var("PANORAMA_WIDTH").ok().and_then(|v| v.parse().ok()).unwrap_or(1024);
+    let picture_size = vk::Extent2D { width, height: width };
+    let picture_usage = vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_SRC;
+    let (picture, picture_view) = resources.image(picture_size, PICTURE, picture_usage)?;
+    let picture_pass = world.enable_panorama(&mut resources, shaders, PICTURE)?;
+    let picture_target = resources.framebuffer(picture_pass, picture_size, &[picture_view])?;
+    let degrees = |name: &str, default: f32| env::var(name).ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(default).to_radians();
+    let dome_angle = degrees("DOME_FOV", 180.);
+    let mut dome = env::var("DOME").is_ok_and(|v| v != "0");
+
     let pool = resources.keep(
         unsafe { d.create_command_pool(&vk::CommandPoolCreateInfo::default().queue_family_index(gpu.family).flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER), None)? },
         Resource::Commands,
     );
-    let cmd = unsafe { d.allocate_command_buffers(&vk::CommandBufferAllocateInfo::default().command_pool(pool).command_buffer_count(1))? }[0];
+    // Two command buffers: the world and its picture (never waits for the window), then
+    // the picture blitted into a window image (waits for that image only).
+    let [cmd, show]: [vk::CommandBuffer; 2] = unsafe { d.allocate_command_buffers(&vk::CommandBufferAllocateInfo::default().command_pool(pool).command_buffer_count(2))? }
+        .try_into()
+        .unwrap();
     let fence = resources.keep(unsafe { d.create_fence(&vk::FenceCreateInfo::default(), None)? }, Resource::Fence);
+    let shown = resources.keep(unsafe { d.create_fence(&vk::FenceCreateInfo::default(), None)? }, Resource::Fence);
     let queries = resources.keep(
         unsafe { d.create_query_pool(&vk::QueryPoolCreateInfo::default().query_type(vk::QueryType::TIMESTAMP).query_count(world::STAMPS), None)? },
         Resource::Queries,
@@ -280,32 +313,58 @@ pub fn run(shaders: &Path) -> Result<()> {
         ctrlc::set_handler(move || quit.store(true, Ordering::SeqCst))?;
     }
     let controls = panel(&rule, true);
-    let width: usize = env::var("PANORAMA_WIDTH").ok().and_then(|v| v.parse().ok()).unwrap_or(1024);
-    let still = env::var_os("PANORAMA").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("build/desktop/panorama.ppm"));
-    if let Some(dir) = still.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let degrees = |name: &str, default: f32| env::var(name).ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(default).to_radians();
-    let dome = env::var("DOME").is_ok_and(|v| v != "0").then(|| degrees("DOME_FOV", 180.));
-    let mut panorama = Panorama::new(width, dome);
-    let height = panorama.height();
     let mut ffmpeg = match env::var_os("VIDEO") {
-        Some(path) => Some(video(Path::new(&path), width, height, controls.get("netfps").round().max(1.))?),
+        Some(path) => Some(video(Path::new(&path), width, if dome { width } else { width / 2 }, controls.get("netfps").round().max(1.))?),
         None => None,
     };
+    let (video_buffer, video_pixels) = resources.buffer(&vec![0u8; 4 * (width * width) as usize], vk::BufferUsageFlags::TRANSFER_DST)?;
+
+    #[allow(deprecated)] // winit 0.30: windows from the pumped loop, no ApplicationHandler::resumed dance
+    let window = event_loop.create_window(
+        Window::default_attributes()
+            .with_title("Sunk City")
+            .with_inner_size(winit::dpi::LogicalSize::new(width, if dome { width } else { width / 2 })),
+    )?;
+    let mut screen = Screen::new(&gpu, display, &window)?;
+    let mut events = Events::default();
+
     let limit: Option<u64> = env::var("FRAMES").ok().and_then(|v| v.parse().ok());
     let mut zip = Zip { position: Vec3::new(0., START_HEIGHT, 0.), ..Zip::default() };
     let mut clock = NetClock::default();
     let mut swarm = swarm::Swarm::new()?;
     let (mut weights, mut packed) = (vec![0f32; rule.len()], vec![0u16; rule.len()]);
-    let mut pixels = Vec::with_capacity(width * height * 3);
-    let (mut frames, mut updates, mut since) = (0u64, 0u64, std::time::Instant::now());
-    let (mut gpu_ms, mut read_ms) = (0f64, 0f64);
+    let (mut frames, mut updates, mut since) = (0u64, 0u64, Instant::now());
+    let mut gpu_ms = [0f64; world::STAMPS as usize - 1]; // per stage (world.rs stamps)
     let tick_ns = unsafe { gpu.instance.get_physical_device_properties(gpu.physical).limits.timestamp_period } as f64;
-    println!("Desktop: panoramas to {}{}", still.display(), env::var("VIDEO").map(|v| format!(" and {v}")).unwrap_or_default());
+    let start = Instant::now();
+    let mut last = 0f32;
+    println!("Desktop: a window ({}; Tab switches, Esc closes){}", if dome { "domemaster" } else { "equirect" }, env::var("VIDEO").map(|v| format!(", video to {v}")).unwrap_or_default());
 
     while !quit.load(Ordering::SeqCst) && limit.is_none_or(|n| frames < n) {
-        let seconds = frames as f32 * DT;
+        let frame_start = Instant::now();
+        if let PumpStatus::Exit(_) = event_loop.pump_app_events(Some(Duration::ZERO), &mut events) {
+            break;
+        }
+        if std::mem::take(&mut events.close) {
+            break;
+        }
+        if std::mem::take(&mut events.switch) && ffmpeg.is_none() {
+            dome = !dome; // not while recording: the video's size is fixed
+        }
+        if std::mem::take(&mut events.resized) {
+            unsafe { d.device_wait_idle()? };
+            let size = window.inner_size();
+            screen.rebuild(gpu.physical, vk::Extent2D { width: size.width, height: size.height })?;
+        }
+        if screen.images.is_empty() {
+            std::thread::sleep(Duration::from_millis(50)); // minimised
+            events.resized = true;
+            continue;
+        }
+
+        // Time: the wall clock live, a fixed 90 Hz clock for a video (whatever the GPU's speed).
+        let seconds = if ffmpeg.is_some() { frames as f32 * DT } else { start.elapsed().as_secs_f32() };
+        let dt = (seconds - std::mem::replace(&mut last, seconds)).clamp(0., 0.1);
         let city = city::City {
             cell: controls.get("cell"),
             height: controls.get("height"),
@@ -313,7 +372,7 @@ pub fn run(shaders: &Path) -> Result<()> {
             player: glam::Vec2::new(zip.position.x, zip.position.z),
         };
         if controls.on("auto") {
-            zip.fly(DT, Vec3::ZERO, &city, controls.get("speed"), controls.get("body"));
+            zip.fly(dt, Vec3::ZERO, &city, controls.get("speed"), controls.get("body"));
         }
         // The camera (controller) on top of the autopilot: its position in the autopilot's
         // heading, its orientation as a head's.
@@ -363,32 +422,102 @@ pub fn run(shaders: &Path) -> Result<()> {
                 swirl: controls.get("swirl"),
                 follow: 10.,
             };
-            swarm.update(params, seconds, DT, zip.position);
+            swarm.update(params, seconds, dt, zip.position);
             world.upload_creatures(&swarm.out);
         } else {
             world.upload_creatures(&[]);
         }
+
+        // The picture: the camera's axes in the world, the dome's attention.
+        let axes = Mat3::from_quat(turn * look);
+        let shape = if dome { vk::Extent2D { width, height: width } } else { vk::Extent2D { width, height: width / 2 } };
+        let mut push = [0f32; PANORAMA_PUSH];
+        push[0..3].copy_from_slice(&axes.x_axis.to_array());
+        push[4..7].copy_from_slice(&axes.y_axis.to_array());
+        push[8..11].copy_from_slice(&axes.z_axis.to_array());
+        push[12..16].copy_from_slice(&[controls.get("attention").to_radians(), dome_angle, dome as u8 as f32, 0.]);
+        push[16..20].copy_from_slice(&[shape.width as f32, shape.height as f32, 0., width as f32]);
+        // Letterboxed into the window.
+        let fit = (screen.extent.width as f32 / shape.width as f32).min(screen.extent.height as f32 / shape.height as f32);
+        let (w, h) = ((shape.width as f32 * fit) as i32, (shape.height as f32 * fit) as i32);
+        let (x0, y0) = ((screen.extent.width as i32 - w) / 2, (screen.extent.height as i32 - h) / 2);
+        let record_video = ffmpeg.is_some() && settings.tau > 0.;
+
         unsafe {
+            use vk::{AccessFlags as A, ImageLayout as L, PipelineStageFlags as S};
             d.reset_command_buffer(cmd, vk::CommandBufferResetFlags::empty())?;
             d.begin_command_buffer(cmd, &vk::CommandBufferBeginInfo::default())?;
             d.cmd_reset_query_pool(cmd, queries, 0, world::STAMPS);
-            d.cmd_write_timestamp(cmd, vk::PipelineStageFlags::TOP_OF_PIPE, queries, 0);
+            d.cmd_write_timestamp(cmd, S::TOP_OF_PIPE, queries, 0);
             let frame_rule = rule.frame();
             rule.weights(seconds, settings.wild, &mut weights);
             rule::pack(&rule.layers, &weights, &mut packed);
             world.capture = frames % 8 == 0;
-            world.dumping = true; // the cube copies its new state on update frames only
             world.draw(d, cmd, queries, cameras, [0, 0], seconds, &frame_rule, &packed, settings);
+            world.draw_panorama(d, cmd, picture_target, shape, push);
+            let read = L::TRANSFER_SRC_OPTIMAL;
+            barrier(d, cmd, picture, (L::COLOR_ATTACHMENT_OPTIMAL, read), (A::COLOR_ATTACHMENT_WRITE, A::TRANSFER_READ), (S::COLOR_ATTACHMENT_OUTPUT, S::TRANSFER));
+            let layers = vk::ImageSubresourceLayers::default().aspect_mask(vk::ImageAspectFlags::COLOR).layer_count(1);
+            if record_video {
+                let copy = vk::BufferImageCopy::default()
+                    .image_subresource(layers)
+                    .image_extent(vk::Extent3D { width: shape.width, height: shape.height, depth: 1 });
+                d.cmd_copy_image_to_buffer(cmd, picture, read, video_buffer, &[copy]);
+            }
             d.end_command_buffer(cmd)?;
             d.reset_fences(&[fence])?;
-            d.queue_submit(gpu.queue, &[vk::SubmitInfo::default().command_buffers(&[cmd])], fence)?;
+            let commands = [cmd];
+            d.queue_submit(gpu.queue, &[vk::SubmitInfo::default().command_buffers(&commands)], fence)?;
             d.wait_for_fences(&[fence], true, u64::MAX)?;
+
+            // Into the window, if it has an image free now (hidden or minimised: skipped).
+            match screen.swapchains.acquire_next_image(screen.swapchain, 0, screen.acquired, vk::Fence::null()) {
+                Ok((image, _)) => {
+                    let target = screen.images[image as usize];
+                    d.reset_command_buffer(show, vk::CommandBufferResetFlags::empty())?;
+                    d.begin_command_buffer(show, &vk::CommandBufferBeginInfo::default())?;
+                    let write = L::TRANSFER_DST_OPTIMAL;
+                    barrier(d, show, target, (L::UNDEFINED, write), (A::empty(), A::TRANSFER_WRITE), (S::TRANSFER, S::TRANSFER));
+                    let range = vk::ImageSubresourceRange::default().aspect_mask(vk::ImageAspectFlags::COLOR).level_count(1).layer_count(1);
+                    d.cmd_clear_color_image(show, target, write, &vk::ClearColorValue { float32: [0., 0., 0., 1.] }, &[range]);
+                    barrier(d, show, target, (write, write), (A::TRANSFER_WRITE, A::TRANSFER_WRITE), (S::TRANSFER, S::TRANSFER));
+                    let blit = vk::ImageBlit::default()
+                        .src_subresource(layers)
+                        .src_offsets([vk::Offset3D::default(), vk::Offset3D { x: shape.width as i32, y: shape.height as i32, z: 1 }])
+                        .dst_subresource(layers)
+                        .dst_offsets([vk::Offset3D { x: x0, y: y0, z: 0 }, vk::Offset3D { x: x0 + w, y: y0 + h, z: 1 }]);
+                    d.cmd_blit_image(show, picture, read, target, write, &[blit], vk::Filter::LINEAR);
+                    barrier(d, show, target, (write, L::PRESENT_SRC_KHR), (A::TRANSFER_WRITE, A::empty()), (S::TRANSFER, S::BOTTOM_OF_PIPE));
+                    d.end_command_buffer(show)?;
+                    d.reset_fences(&[shown])?;
+                    let waits = [screen.acquired];
+                    let stages = [S::TRANSFER];
+                    let signals = [screen.rendered[image as usize]];
+                    let commands = [show];
+                    let submit = vk::SubmitInfo::default().wait_semaphores(&waits).wait_dst_stage_mask(&stages).command_buffers(&commands).signal_semaphores(&signals);
+                    d.queue_submit(gpu.queue, &[submit], shown)?;
+                    let swapchains = [screen.swapchain];
+                    let indices = [image];
+                    let present = vk::PresentInfoKHR::default().wait_semaphores(&signals).swapchains(&swapchains).image_indices(&indices);
+                    match screen.swapchains.queue_present(gpu.queue, &present) {
+                        Ok(false) => {}
+                        Ok(true) | Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => events.resized = true,
+                        Err(error) => return Err(error.into()),
+                    }
+                    // The next picture overwrites what this blit reads.
+                    d.wait_for_fences(&[shown], true, u64::MAX)?;
+                }
+                Err(vk::Result::TIMEOUT | vk::Result::NOT_READY) => {}
+                Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => events.resized = true,
+                Err(error) => return Err(error.into()),
+            }
             let mut stamps = [0u64; world::STAMPS as usize];
             if d.get_query_pool_results(queries, 0, &mut stamps, vk::QueryResultFlags::TYPE_64).is_ok() {
-                gpu_ms += stamps[world::STAMPS as usize - 1].wrapping_sub(stamps[0]) as f64 * tick_ns / 1e6;
+                for (i, ms) in gpu_ms.iter_mut().enumerate() {
+                    *ms += stamps[i + 1].wrapping_sub(stamps[i]) as f64 * tick_ns / 1e6;
+                }
             }
         }
-        let read = std::time::Instant::now();
         if world.capture {
             if controls.on("exposure") {
                 world.calibrate(controls.get("mid"), controls.get("clip"), controls.get("black"), controls.get("tint"));
@@ -398,33 +527,35 @@ pub fn run(shaders: &Path) -> Result<()> {
         }
         if settings.tau > 0. {
             updates += 1;
-            panorama.draw(&world, (turn * look, controls.get("attention").to_radians()), &mut pixels);
-            let mut file = Vec::with_capacity(pixels.len() + 32);
-            write!(file, "P6\n{width} {height}\n255\n")?;
-            file.extend_from_slice(&pixels);
-            let temporary = still.with_extension("tmp");
-            std::fs::write(&temporary, &file)?;
-            std::fs::rename(&temporary, &still)?; // whole files only, for viewers
-            if let Some(child) = &mut ffmpeg {
-                child.stdin.as_mut().context("ffmpeg stdin")?.write_all(&pixels)?;
-            }
         }
-        read_ms += read.elapsed().as_secs_f64() * 1e3;
+        if let (true, Some(child)) = (record_video, &mut ffmpeg) {
+            let bytes = unsafe { std::slice::from_raw_parts(video_pixels, 4 * (shape.width * shape.height) as usize) };
+            child.stdin.as_mut().context("ffmpeg stdin")?.write_all(bytes)?;
+        }
+        // Live: paced to 90 Hz (as the headset), not as fast as the GPU goes (the whole
+        // system would lag); a video renders as fast as it can on its fixed clock.
+        if ffmpeg.is_none() {
+            std::thread::sleep(Duration::from_secs_f32(DT).saturating_sub(frame_start.elapsed()));
+        }
         frames += 1;
         if frames % 90 == 0 {
-            let rate = 90. / std::mem::replace(&mut since, std::time::Instant::now()).elapsed().as_secs_f64();
+            let rate = 90. / std::mem::replace(&mut since, Instant::now()).elapsed().as_secs_f64();
             let forward = turn * look * Vec3::NEG_Z;
+            let [scene, forward_ms, pull, net, display] = gpu_ms.map(|ms| ms / 90.);
+            let total = scene + forward_ms + pull + net + display;
             println!(
-                "{frames} frames ({:.1} s simulated, {rate:.1} frames/s: GPU {:.2} ms/frame, panoramas {:.1} ms/frame), {updates} updates, at ({:.1}, {:.1}, {:.1}) looking ({:.2}, {:.2})",
-                seconds, gpu_ms / 90., read_ms / 90., origin.x, origin.y, origin.z, forward.x, forward.z
+                "{frames} frames ({seconds:.1} s, {rate:.1} frames/s, {updates} updates): GPU {total:.2} ms/frame (scene {scene:.2} forward {forward_ms:.2} pull {pull:.2} net {net:.2} display {display:.2}), at ({:.1}, {:.1}, {:.1}) looking ({:.2}, {:.2}, {:.2})",
+                origin.x, origin.y, origin.z, forward.x, forward.y, forward.z
             );
-            (gpu_ms, read_ms) = (0., 0.);
+            window.set_title(&format!("Sunk City: {} {rate:.0} fps, GPU {total:.1} ms", if dome { "dome" } else { "equirect" }));
+            gpu_ms = [0.; world::STAMPS as usize - 1];
         }
     }
+    unsafe { d.device_wait_idle()? };
+    drop(screen);
     if let Some(mut child) = ffmpeg {
         drop(child.stdin.take());
         child.wait()?;
     }
-    unsafe { d.device_wait_idle()? };
     Ok(())
 }

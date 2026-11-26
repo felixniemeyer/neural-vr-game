@@ -122,6 +122,16 @@ struct Uniforms {
 }
 const _: () = assert!(size_of::<Uniforms>() == 480 + (2 + MAX_LAYERS + MAX_TAPS + 10) * 16);
 
+/// panorama.frag's push constants (floats): camera right, up, back (vec4 each), view
+/// (attention, dome angle, kind, mode), size (width, height, square offset, side).
+pub const PANORAMA_PUSH: usize = 20;
+
+/// DESKTOP's whole-sphere view (panorama.frag) into an image of `format`.
+struct Panorama {
+    pass: vk::RenderPass,
+    pipeline: vk::Pipeline,
+}
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct Push {
@@ -179,6 +189,7 @@ pub struct World {
     /// Host-visible copy of eye 0's resolved state (A, B, C, D) and new state.
     dump: (vk::Buffer, *mut u8),
     pub dumping: bool,
+    panorama: Option<Panorama>,
     scene_targets: [vk::Framebuffer; EYES],
     acc_targets: [vk::Framebuffer; EYES],
     resolve_targets: [vk::Framebuffer; EYES],
@@ -512,9 +523,10 @@ impl World {
             Resource::SetLayout,
         );
         let set_layouts = [set_layout];
+        // Room for the panorama's push (PANORAMA_PUSH floats); the others use the first 12 bytes.
         let push = [vk::PushConstantRange::default()
             .stage_flags(stages)
-            .size(size_of::<Push>() as u32)];
+            .size((4 * PANORAMA_PUSH) as u32)];
         let layout = r.keep(
             unsafe {
                 d.create_pipeline_layout(
@@ -794,6 +806,7 @@ impl World {
             weight_count,
             dump,
             dumping: false,
+            panorama: None,
             acc_targets,
             resolve_targets,
             net_targets,
@@ -900,7 +913,49 @@ impl World {
         [self.resolve, self.net, self.display] = std::array::from_fn(|_| [next(), next()]);
         (self.cube_forward, self.cube_pull, self.cube_net) = (next(), next(), next());
         self.cube_display = [next(), next()];
+        if let Some(panorama) = &self.panorama {
+            let pipeline = self.panorama_pipeline(r, shaders, panorama.pass)?;
+            self.panorama.as_mut().unwrap().pipeline = pipeline;
+        }
         Ok(())
+    }
+
+    fn panorama_pipeline(&self, r: &mut Resources<'_>, shaders: &Path, pass: vk::RenderPass) -> Result<vk::Pipeline> {
+        let spec: Vec<i32> = self.spec.iter().chain(&[0]).copied().collect();
+        let pipeline = pipeline(&r.gpu.device, shaders, ("fullscreen.vert.spv", "panorama.frag.spv"), pass, self.layout, 1, false, false, false, &spec)?;
+        Ok(r.keep(pipeline, Resource::Pipeline))
+    }
+
+    /// DESKTOP: the whole-sphere view (panorama.frag) into images of `format`; returns
+    /// the render pass for their framebuffers (they end in COLOR_ATTACHMENT_OPTIMAL).
+    pub fn enable_panorama(&mut self, r: &mut Resources<'_>, shaders: &Path, format: vk::Format) -> Result<vk::RenderPass> {
+        let dont_care = vk::AttachmentLoadOp::DONT_CARE;
+        let pass = render_pass(r, &[format], false, dont_care, vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL, false)?;
+        let pipeline = self.panorama_pipeline(r, shaders, pass)?;
+        self.panorama = Some(Panorama { pass, pipeline });
+        Ok(pass)
+    }
+
+    /// Record the panorama (after `draw` in the same command buffer: its uniforms, the
+    /// latest state) into `framebuffer` (from `enable_panorama`'s pass).
+    pub fn draw_panorama(&self, d: &Device, cmd: vk::CommandBuffer, framebuffer: vk::Framebuffer, extent: vk::Extent2D, push: [f32; PANORAMA_PUSH]) {
+        let panorama = self.panorama.as_ref().expect("enable_panorama first");
+        let stages = vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT;
+        let area = vk::Rect2D::default().extent(extent);
+        let viewport = vk::Viewport::default().width(extent.width as f32).height(extent.height as f32).max_depth(1.);
+        let bytes: Vec<u8> = push.iter().flat_map(|v| v.to_ne_bytes()).collect();
+        unsafe {
+            // After draw the parity has flipped on an update: this set's prev is the latest state.
+            d.cmd_bind_descriptor_sets(cmd, vk::PipelineBindPoint::GRAPHICS, self.layout, 0, &[self.sets[self.parity]], &[]);
+            let info = vk::RenderPassBeginInfo::default().render_pass(panorama.pass).framebuffer(framebuffer).render_area(area);
+            d.cmd_begin_render_pass(cmd, &info, vk::SubpassContents::INLINE);
+            d.cmd_set_viewport(cmd, 0, &[viewport]);
+            d.cmd_set_scissor(cmd, 0, &[area]);
+            d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, panorama.pipeline);
+            d.cmd_push_constants(cmd, self.layout, stages, 0, &bytes);
+            d.cmd_draw(cmd, 3, 1, 0, 0);
+            d.cmd_end_render_pass(cmd);
+        }
     }
 
     /// Switch to another net live (main.rs NET_FILE): its specialization constants and

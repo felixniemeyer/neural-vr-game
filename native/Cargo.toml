@@ -6,11 +6,14 @@ edition = "2024"
 [dependencies]
 anyhow = "1.0.104"
 ash = "0.38"
+ash-window = "0.13"
 av-controls = { git = "https://github.com/avonx2/av-controls", version = "0.1.0" }
 ctrlc = { version = "3", features = ["termination"] }
 glam = "0.30"
 half = "2.7.1"
 openxr = "0.19"
 rand = "0.9"
+raw-window-handle = "0.6"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+winit = "0.30"
