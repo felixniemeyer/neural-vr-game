@@ -66,6 +66,11 @@ const LAST_BINDING: u32 = CUBE_BINDING + CUBE_IMAGES - 1;
 pub static CAPTURE_STATS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// How fast the display exposure follows its measurement (1/s).
 const EXPOSURE_RATE: f32 = 1.5;
+/// cube-v1 face frames (cube.glsl FACE_FORWARD, FACE_UP).
+const CUBE_FORWARD: [Vec3; 6] = [Vec3::X, Vec3::NEG_X, Vec3::Y, Vec3::NEG_Y, Vec3::Z, Vec3::NEG_Z];
+const CUBE_UP: [Vec3; 6] = [Vec3::Y, Vec3::Y, Vec3::Z, Vec3::NEG_Z, Vec3::Y, Vec3::Y];
+/// cube-v1: texels per face edge of the sphere's depth probe (collisions).
+const CUBE_PROBE: u32 = 24;
 /// Width (px) of the depth probe read back each frame for collisions.
 const PROBE: u32 = 32;
 /// GPU timestamps per frame: start, after scene, splat, resolve, net, display.
@@ -261,6 +266,10 @@ struct Cube {
     /// splat pass and folded into mid A..D by cube_fold.
     acc_views: [vk::ImageView; CUBE_ACCS],
     splat_target: vk::Framebuffer,
+    /// Collisions: mid A and B at a coarse mip level (about CUBE_PROBE texels per face),
+    /// read back after every update (World::surroundings).
+    probe: (vk::Buffer, *mut [u16; 4]),
+    probe_level: u32,
     /// net_targets[parity] writes state[1 - parity].
     net_targets: [vk::Framebuffer; 2],
 }
@@ -292,6 +301,9 @@ impl Cube {
             mid_views[i] = r.view_levels(mid[i], STATE, vk::ImageAspectFlags::COLOR, levels)?;
         }
         let acc_usage = Usage::COLOR_ATTACHMENT | Usage::SAMPLED;
+        let probe_level = (face / CUBE_PROBE).max(1).ilog2().min(levels - 1);
+        let probe_texels = mip_extent(atlas, probe_level);
+        let probe = r.buffer(&vec![[0u16; 4]; 2 * (probe_texels.width * probe_texels.height) as usize], vk::BufferUsageFlags::TRANSFER_DST)?;
         let mut acc_views = [vk::ImageView::null(); CUBE_ACCS];
         for (i, view) in acc_views.iter_mut().enumerate() {
             *view = r.image(atlas, if i < 4 { ACC } else { ACC_SINGLE }, acc_usage)?.1;
@@ -309,6 +321,8 @@ impl Cube {
             forward_target: r.framebuffer(forward, atlas, &[m_target])?,
             pull_target: r.framebuffer(pull, atlas, &mid_targets)?,
             splat_target: r.framebuffer(splat, atlas, &acc_views)?,
+            probe,
+            probe_level,
             acc_views,
             net_targets: [r.framebuffer(net, atlas, &state_views[1])?, r.framebuffer(net, atlas, &state_views[0])?],
         })
@@ -1257,6 +1271,13 @@ impl World {
                     }
                 }
                 if update {
+                    // The probe: this update's pulled/splatted state (scene blended in) at a coarse level.
+                    let level = self.cube.probe_level;
+                    let texels = mip_extent(self.cube.atlas, level);
+                    let bytes = 8 * (texels.width * texels.height) as u64;
+                    for (i, &image) in self.cube.mid[..2].iter().enumerate() {
+                        copy_to_buffer(d, cmd, image, self.cube.atlas, level, self.cube.probe.0, i as u64 * bytes);
+                    }
                     self.parity = 1 - self.parity;
                 }
                 self.frame += 1;
@@ -1349,7 +1370,7 @@ impl World {
     /// probe (call after its commands finished): one per covered probe pixel.
     pub fn surroundings(&self) -> Vec<Vec3> {
         if self.spec[7] == 3 {
-            return Vec::new(); // cube-v1: no probe of the sphere yet (no collisions)
+            return self.cube_surroundings();
         }
         let size = mip_extent(self.size, self.probe_level);
         let (w, h) = (size.width as usize, size.height as usize);
@@ -1370,6 +1391,42 @@ impl World {
                 let dir = (far.truncate() / far.w - camera.position).normalize_or_zero();
                 points.push(camera.position + dir / inv);
             }
+        }
+        points
+    }
+
+    /// cube-v1: the sphere probe (the last update's state, seen from the store's centre)
+    /// as world points, one per face texel of the probe level with weight >= 0.3.
+    fn cube_surroundings(&self) -> Vec<Vec3> {
+        let Some(centre) = self.cube_centre else { return Vec::new() };
+        let cube = &self.cube;
+        let level = cube.probe_level;
+        let texels = mip_extent(cube.atlas, level);
+        let (w, h) = (texels.width as usize, texels.height as usize);
+        let probe = unsafe { std::slice::from_raw_parts(cube.probe.1, 2 * w * h) };
+        let (a, b) = probe.split_at(w * h);
+        let step = 1u32 << level;
+        let (cell, gutter, face) = ((cube.face + 2 * cube.gutter) / step, cube.gutter / step, cube.face / step);
+        let angle = std::f32::consts::FRAC_PI_2 / cube.face as f32;
+        let mut points = Vec::new();
+        for (i, (a, b)) in a.iter().zip(b).enumerate() {
+            let (x, y) = ((i % w) as u32, (i / w) as u32);
+            let (lx, ly) = ((x % cell) as i32 - gutter as i32, (y % cell) as i32 - gutter as i32);
+            if lx < 0 || ly < 0 || lx >= face as i32 || ly >= face as i32 {
+                continue; // gutter
+            }
+            let weight = half_to_f32(b[3]);
+            let inv = half_to_f32(a[3]) / weight;
+            if !(weight >= 0.3 && inv > 0.) {
+                continue;
+            }
+            let f = (x / cell + 3 * (y / cell)) as usize;
+            // cube.glsl faceDir at the coarse texel's centre in fine texel coords.
+            let fine = |l: i32| (l as f32 + 0.5) * step as f32 - 0.5;
+            let t = Vec2::new(fine(lx), fine(ly)).map(|c| ((c + 0.5) * angle - std::f32::consts::FRAC_PI_4).tan());
+            let (forward, up) = (CUBE_FORWARD[f], CUBE_UP[f]);
+            let dir = (forward.cross(up) * t.x - up * t.y + forward).normalize();
+            points.push(centre + dir / inv);
         }
         points
     }

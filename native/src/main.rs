@@ -634,7 +634,16 @@ fn panel(rule: &rule::Rule, desktop: bool) -> av_controls::Controls {
         .fader_with("black", 0., 0.3, initial("black", 0.05), 3)
         .fader("tint", 0., 1., initial("tint", 0.3));
     let panel = if desktop {
-        panel.section("camera").player3d("camera", 4., 0.0025, true).fader_with("attention", 0., 90., initial("attention", 30.), 0)
+        // keySpeed (m/s) and rotationSpeed: the controller's Player3D reads these sibling
+        // faders by id (else both are its moveSpeed); collide: the camera's push away from
+        // the sphere's geometry (desktop.rs), body its radius (motion tab).
+        panel
+            .section("camera")
+            .player3d("camera", 1., 0.0025, true)
+            .fader_with("keySpeed", 0.1, 8., initial("keySpeed", 1.), 1)
+            .fader_with("rotationSpeed", 0.5, 10., initial("rotationSpeed", 4.), 1)
+            .fader_with("attention", 0., 90., initial("attention", 30.), 0)
+            .switch("collide", initial("collide", 1.) > 0.5)
     } else {
         panel
     };

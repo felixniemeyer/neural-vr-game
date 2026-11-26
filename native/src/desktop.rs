@@ -339,6 +339,9 @@ pub fn run(shaders: &Path) -> Result<()> {
     let tick_ns = unsafe { gpu.instance.get_physical_device_properties(gpu.physical).limits.timestamp_period } as f64;
     let start = Instant::now();
     let mut last = 0f32;
+    // Collisions (fabric-artwork's sensor push, from the sphere's own depth): the camera's
+    // offset from where the autopilot and the controller put it.
+    let (mut pushed, mut last_origin) = (Vec3::ZERO, None::<Vec3>);
     println!("Desktop: a window ({}; Tab switches, Esc closes){}", if dome { "domemaster" } else { "equirect" }, env::var("VIDEO").map(|v| format!(", video to {v}")).unwrap_or_default());
 
     while !quit.load(Ordering::SeqCst) && limit.is_none_or(|n| frames < n) {
@@ -382,7 +385,7 @@ pub fn run(shaders: &Path) -> Result<()> {
         let look = Quat::from_xyzw(x, y, z, w);
         let look = if look.length_squared() > 1e-6 { look.normalize() } else { Quat::IDENTITY };
         let turn = zip.turn();
-        let origin = zip.position + turn * Vec3::from(pose.position);
+        let origin = zip.position + turn * Vec3::from(pose.position) + pushed;
         let half = fov / 2.;
         let views: [xr::View; EYES] = std::array::from_fn(|i| xr::View {
             pose: xr::Posef {
@@ -529,6 +532,29 @@ pub fn run(shaders: &Path) -> Result<()> {
         if settings.tau > 0. {
             updates += 1;
         }
+        // Every point of the sphere within reach (the body plus 0.15 s of the camera's
+        // speed, so it brakes before it touches) pushes the camera straight away from it by
+        // its penetration; the push is their mean, so the probe's density doesn't matter.
+        let speed = last_origin.map_or(0., |p: Vec3| p.distance(origin) / dt.max(1e-3));
+        last_origin = Some(origin);
+        let surroundings = world.surroundings();
+        let probe_points = surroundings.len();
+        let nearest = surroundings.iter().map(|p| p.distance(origin)).fold(f32::INFINITY, f32::min);
+        if controls.on("collide") {
+            let reach = controls.get("body") + speed * 0.15;
+            let (mut push, mut hits) = (Vec3::ZERO, 0);
+            for point in surroundings {
+                let to = point - origin;
+                let distance = to.length();
+                if distance < reach && distance > 1e-3 {
+                    push -= to / distance * (reach - distance).min(0.5 * reach);
+                    hits += 1;
+                }
+            }
+            if hits > 0 {
+                pushed += push / hits as f32;
+            }
+        }
         if let (true, Some(child)) = (record_video, &mut ffmpeg) {
             let bytes = unsafe { std::slice::from_raw_parts(video_pixels, 4 * (shape.width * shape.height) as usize) };
             child.stdin.as_mut().context("ffmpeg stdin")?.write_all(bytes)?;
@@ -545,8 +571,8 @@ pub fn run(shaders: &Path) -> Result<()> {
             let [scene, forward_ms, pull, net, display] = gpu_ms.map(|ms| ms / 90.);
             let total = scene + forward_ms + pull + net + display;
             println!(
-                "{frames} frames ({seconds:.1} s, {rate:.1} frames/s, {updates} updates): GPU {total:.2} ms/frame (scene {scene:.2} forward {forward_ms:.2} pull {pull:.2} net {net:.2} display {display:.2}), at ({:.1}, {:.1}, {:.1}) looking ({:.2}, {:.2}, {:.2})",
-                origin.x, origin.y, origin.z, forward.x, forward.y, forward.z
+                "{frames} frames ({seconds:.1} s, {rate:.1} frames/s, {updates} updates): GPU {total:.2} ms/frame (scene {scene:.2} forward {forward_ms:.2} pull {pull:.2} net {net:.2} display {display:.2}), at ({:.1}, {:.1}, {:.1}) looking ({:.2}, {:.2}, {:.2}), probe {probe_points} points, nearest {nearest:.1} m, pushed {:.2} m",
+                origin.x, origin.y, origin.z, forward.x, forward.y, forward.z, pushed.length()
             );
             window.set_title(&format!("Sunk City: {} {rate:.0} fps, GPU {total:.1} ms", if dome { "dome" } else { "equirect" }));
             gpu_ms = [0.; world::STAMPS as usize - 1];
