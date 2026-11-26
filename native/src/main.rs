@@ -555,8 +555,11 @@ impl Zip {
     }
 }
 
-/// The live faders (av-controls).
-fn panel(rule: &rule::Rule) -> av_controls::Controls {
+/// The live faders (av-controls). `desktop` (DESKTOP=1): the autopilot starts on and a
+/// camera tab: a Player3D flown from the controller on top of the autopilot (its position
+/// in metres, relative to the autopilot's heading), and the dome's attention: how far
+/// from the zenith the camera's forward sits in a domemaster (degrees).
+fn panel(rule: &rule::Rule, desktop: bool) -> av_controls::Controls {
     // Live settings from the av-controls broker (CONTROLS, default wss://localhost:8080);
     // without a broker the defaults below stay.
     // FADERS="wild=0.5,color=0.3": other initial fader values (e.g. without a broker).
@@ -569,7 +572,7 @@ fn panel(rule: &rule::Rule) -> av_controls::Controls {
             .and_then(|(_, value)| value.trim().parse().ok())
             .unwrap_or(default)
     };
-    av_controls::Panel::new("sunk-city")
+    let panel = av_controls::Panel::new("sunk-city")
         .section("net")
         .fader("wild", 0., 1., initial("wild", 0.))
         // Certainty gate: the net's change per pixel times 1 - gate * certainty, so
@@ -609,7 +612,7 @@ fn panel(rule: &rule::Rule) -> av_controls::Controls {
         .fader_with("swirl", 0.5, 30., initial("swirl", 6.), 1)
         .fader_with("dot", 0.01, 0.5, initial("dot", 0.08), 2)
         .section("motion")
-        .switch("auto", initial("auto", 0.) > 0.5)
+        .switch("auto", initial("auto", if desktop { 1. } else { 0. }) > 0.5)
         .fader_with("speed", 0., 15., initial("speed", 3.), 1)
         .fader_with("pull", 0., 60., initial("pull", 25.), 1)
         .fader_with("drag", 0., 6., initial("drag", 2.5), 2)
@@ -627,8 +630,13 @@ fn panel(rule: &rule::Rule) -> av_controls::Controls {
         .fader("mid", 0., 1., initial("mid", 0.5))
         .fader_with("clip", 0., 0.2, initial("clip", 0.03), 3)
         .fader_with("black", 0., 0.3, initial("black", 0.05), 3)
-        .fader("tint", 0., 1., initial("tint", 0.3))
-        .connect(&env::var("CONTROLS").unwrap_or_else(|_| "wss://localhost:8080".into()))
+        .fader("tint", 0., 1., initial("tint", 0.3));
+    let panel = if desktop {
+        panel.section("camera").player3d("camera", 4., 0.0025, true).fader_with("attention", 0., 90., initial("attention", 30.), 0)
+    } else {
+        panel
+    };
+    panel.connect(&env::var("CONTROLS").unwrap_or_else(|_| "wss://localhost:8080".into()))
 }
 
 fn run(shaders: &Path) -> Result<()> {
@@ -828,7 +836,7 @@ fn run(shaders: &Path) -> Result<()> {
     // The image's geometry around the player, from the last frame (for the brake).
     let mut walls: Vec<Vec3> = Vec::new();
     let mut zip = Zip { position: Vec3::new(0., START_HEIGHT, 0.), anywhere: env::var("ZIP_ANYWHERE").map_or(true, |v| v != "0"), ..Zip::default() };
-    let controls = panel(&rule);
+    let controls = panel(&rule, false);
     // MOVE scales head translation: 0 rotation only (default), 1 real scale, more =
     // giant steps (e.g. to cross the city with Monado's slow qwerty WASD).
     let stride: f32 = env::var("MOVE").ok().and_then(|v| v.parse().ok()).unwrap_or(0.);

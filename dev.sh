@@ -18,6 +18,11 @@
 #   follows the newest export of any run (also without a terminal). p in this terminal
 #   opens the picker again. Nets switch live: dev.sh writes the net's path to
 #   build/dev/net (NET_FILE) and the running app swaps it in, no restart.
+#   OUTPUT=stereo|dome|equirect (a cube-v1 net; the picker asks after the net): stereo is
+#   VR through Monado; dome (domemaster) and equirect run without VR (DESKTOP=1,
+#   native/src/desktop.rs): the panorama goes to build/desktop/panorama.ppm, shown live in
+#   VIEWER (default imv), the camera flown from the controller's camera tab; new nets
+#   restart the app there. DOME_FOV, PANORAMA_WIDTH pass through.
 set -euo pipefail
 root=$(cd -- "$(dirname -- "$0")" && pwd)
 out=$root/build/native
@@ -28,6 +33,9 @@ controller_port=${CONTROLLER_PORT:-4173}
 export EYE_SIZE=${EYE_SIZE:-512} #384
 export MOVE=${MOVE:-4} # qwerty WASD is slow at city scale
 headset=${HEADSET:-qwerty}
+output=${OUTPUT:-stereo}
+panorama=$root/build/desktop/panorama.ppm
+viewer=""
 # sway: put Monado's windows on this workspace: the compositor (Wayland app_id
 # "openxr") and the debug GUI (XWayland class "monado-service"; its title comes late).
 if [[ -n ${SWAYSOCK:-} ]] && command -v swaymsg >/dev/null; then
@@ -54,7 +62,9 @@ choose() { # the picker (train/zoo.py); returns 1 if nothing was picked
     local file choice
     file=$(mktemp)
     if ! python3 "$root/train/zoo.py" pick "$file"; then rm -f "$file"; return 1; fi
-    choice=$(<"$file")
+    choice=$(sed -n 1p "$file")
+    output=$(sed -n 2p "$file")
+    output=${output:-stereo}
     rm -f "$file"
     net_stamp="" # announce (and send) the followed net even if it is the same
     case $choice in
@@ -125,18 +135,38 @@ start_monado() {
     monado=$!
     sleep 2
 }
-launch() { # the app prints "... frames, GPU ..." every 120 frames once it renders
-    "$out/sunk-city" "$out" > >(tee "$logs/app.log") 2>&1 &
+desktop() { [[ $output != stereo ]]; }
+launch() { # the app prints "... frames ... GPU ..." every 90-120 frames once it renders
+    local mode=()
+    if desktop; then
+        mode=(env DESKTOP=1 PANORAMA="$panorama")
+        [[ $output == dome ]] && mode+=(DOME=1)
+    fi
+    "${mode[@]}" "$out/sunk-city" "$out" > >(tee "$logs/app.log") 2>&1 &
     app=$!
-    for _ in $(seq 100); do
-        grep -q "frames, GPU" "$logs/app.log" 2>/dev/null && return 0
+    local tries=100 # desktop: the first line after 90 simulated frames (slow while training)
+    desktop && tries=900
+    for _ in $(seq $tries); do
+        grep -q "frames.*GPU" "$logs/app.log" 2>/dev/null && return 0
         kill -0 "$app" 2>/dev/null || return 1
         sleep 0.1
     done
     return 1
 }
+show_panorama() { # a viewer that reloads the panorama as the app rewrites it
+    [[ -n $viewer ]] && kill -0 "$viewer" 2>/dev/null && return
+    setsid ${VIEWER:-imv} "$panorama" >"$logs/viewer.log" 2>&1 &
+    viewer=$!
+    groups+=($viewer)
+}
 start_app() {
     stop_app
+    if desktop; then
+        echo "dev.sh: $output output without VR (DESKTOP=1); fly the camera in the controller's camera tab"
+        launch && { show_panorama; return; }
+        echo "dev.sh: the desktop app does not render, see build/dev/app.log"
+        return
+    fi
     pgrep -x monado-service >/dev/null || start_monado
     launch && return
     echo "dev.sh: no frames, restarting Monado"
@@ -178,7 +208,16 @@ while true; do
     if [[ -t 0 ]]; then
         key=""
         read -rsn1 -t 1 key || true
-        if [[ $key == p ]]; then choose || echo "dev.sh: nothing picked, keeping the net"; fi
+        if [[ $key == p ]]; then
+            before=$output
+            if choose; then
+                pick_net || true
+                # desktop outputs read the net at start only; switching output restarts too
+                if desktop || [[ $output != "$before" ]]; then start_app; fi
+            else
+                echo "dev.sh: nothing picked, keeping the net"
+            fi
+        fi
     else
         sleep 1
     fi
@@ -192,7 +231,8 @@ while true; do
         echo "dev.sh: shaders changed, compiling (the app reloads them)"
         "$root/native/build.sh" "$out" --shaders || echo "dev.sh: shader compile failed, keeping the old ones"
     fi
-    pick_net || true # a newer export goes to the running app (NET_FILE), no restart
+    # a newer export goes to the running app (NET_FILE), no restart; desktop: a restart
+    if pick_net && desktop; then start_app; fi
     if [[ -n $app ]] && ! kill -0 "$app" 2>/dev/null; then
         echo "dev.sh: the app exited; save a Rust file to restart it"
         app=""

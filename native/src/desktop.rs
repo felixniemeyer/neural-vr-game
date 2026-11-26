@@ -2,16 +2,23 @@
 //! Vulkan, two virtual eyes on the autopilot (zip.rs's wander through the city, a fixed
 //! 90 Hz clock: the result does not depend on how fast the GPU is), and the cube-v1 sphere
 //! store itself as the output: after each net update its colour is read back and drawn as
-//! an equirectangular panorama (the whole sphere, -z at the centre, y up).
+//! an equirectangular panorama (the whole sphere, world-fixed: -z at the centre, y up), or
+//! a domemaster (DOME=1: a square fisheye that follows the camera, as fabric-artwork's: the
+//! camera's forward sits the attention fader's angle from the dome's zenith, towards the
+//! image's bottom edge; 0 = the camera looks at the zenith, 90 = at the bottom rim).
 //!
 //! Env (besides the app's WEIGHTS, CUBE_SIZE, FADERS, CONTROLS, EYE_SIZE):
 //!   PANORAMA=file.ppm   the latest panorama, rewritten every update (default
 //!                       build/desktop/panorama.ppm; an image viewer that reloads shows it live)
-//!   PANORAMA_WIDTH      pixels (default 1024; height = width / 2)
+//!   PANORAMA_WIDTH      pixels (default 1024; height = width / 2, the dome's = width)
+//!   DOME=1              a domemaster instead (azimuthal equidistant)
+//!   DOME_FOV            the dome's angle across, degrees (default 180)
 //!   VIDEO=file.mp4      also every panorama into a video via ffmpeg (netfps frames per second)
 //!   FRAMES=n            stop after n frames (default: until Ctrl+C)
 //!   FOV                 the virtual eyes' field of view, degrees (default 90)
-//! The faders' "speed" sets the autopilot's (always on here).
+//! Controls (av-controls, tab "camera"): the camera, a Player3D flown from the controller
+//! (WASD, mouse, Q/E roll) on top of the autopilot (tab "motion": auto, speed; with auto off
+//! the camera alone moves), and attention. The eyes look where the camera does.
 
 use crate::gpu::{Gpu, Resource, Resources};
 use crate::world::{self, Settings, World, EYES};
@@ -61,6 +68,10 @@ fn plain_gpu() -> Result<Gpu> {
 const FORWARD: [Vec3; 6] = [Vec3::X, Vec3::NEG_X, Vec3::Y, Vec3::NEG_Y, Vec3::Z, Vec3::NEG_Z];
 const UP: [Vec3; 6] = [Vec3::Y, Vec3::Y, Vec3::Z, Vec3::NEG_Z, Vec3::Y, Vec3::Y];
 
+fn threads() -> usize {
+    std::thread::available_parallelism().map_or(4, |n| n.get())
+}
+
 fn face_of(d: Vec3) -> usize {
     let a = d.abs();
     if a.x >= a.y && a.x >= a.z {
@@ -79,6 +90,10 @@ fn face_of(d: Vec3) -> usize {
 /// (4 atlas texels and the bilinear weights) is worked out once per face size.
 struct Panorama {
     width: usize,
+    /// DOME: the angle across, radians.
+    dome: Option<f32>,
+    /// The camera's orientation and the attention (radians) the dome's table was built for.
+    view: (Quat, f32),
     layout: (u32, u32),
     /// Per pixel: atlas index of the top-left texel, the steps to the right and down
     /// neighbours (0 at a face's last texel), the fractions.
@@ -87,8 +102,39 @@ struct Panorama {
 }
 
 impl Panorama {
-    fn new(width: usize) -> Self {
-        Self { width, layout: (0, 0), table: Vec::new(), state: Vec::new() }
+    fn new(width: usize, dome: Option<f32>) -> Self {
+        Self { width, dome, view: (Quat::IDENTITY, 0.), layout: (0, 0), table: Vec::new(), state: Vec::new() }
+    }
+
+    fn height(&self) -> usize {
+        if self.dome.is_some() { self.width } else { self.width / 2 }
+    }
+
+    /// The world direction of a pixel; None outside the dome's circle.
+    fn direction(&self, column: usize, row: usize) -> Option<Vec3> {
+        let (width, height) = (self.width as f32, self.height() as f32);
+        let (column, row) = (column as f32 + 0.5, row as f32 + 0.5);
+        let Some(fov) = self.dome else {
+            let lat = std::f32::consts::FRAC_PI_2 - row / height * std::f32::consts::PI;
+            let lon = column / width * std::f32::consts::TAU - std::f32::consts::PI;
+            return Some(Vec3::new(lon.sin() * lat.cos(), lat.sin(), -lon.cos() * lat.cos()));
+        };
+        // The dome's frame: x image right, y image up, z the zenith.
+        let (u, v) = (2. * column / width - 1., 1. - 2. * row / height);
+        let r = u.hypot(v);
+        if r > 1. {
+            return None;
+        }
+        let theta = r * fov / 2.;
+        let (sin, cos) = theta.sin_cos();
+        let dome = if r > 0. { Vec3::new(sin * u / r, sin * v / r, cos) } else { Vec3::Z };
+        // The camera's forward (-z) is the attention's angle from the zenith towards the
+        // bottom, its right is the image's right (camera.ts' playerToDomemaster).
+        let (orientation, attention) = self.view;
+        let (s, c) = attention.sin_cos();
+        let forward = dome.dot(Vec3::new(0., -s, c));
+        let up = dome.dot(Vec3::new(0., c, s));
+        Some(orientation * Vec3::new(dome.x, up, -forward))
     }
 
     fn build(&mut self, (face, gutter): (u32, u32), aw: usize) {
@@ -96,33 +142,50 @@ impl Panorama {
         let n = face as f32;
         let angle = std::f32::consts::FRAC_PI_2 / n;
         let cell = (face + 2 * gutter) as usize;
-        let (width, height) = (self.width, self.width / 2);
-        self.table.clear();
-        for row in 0..height {
-            let lat = std::f32::consts::FRAC_PI_2 - (row as f32 + 0.5) / height as f32 * std::f32::consts::PI;
-            for column in 0..width {
-                let lon = (column as f32 + 0.5) / width as f32 * std::f32::consts::TAU - std::f32::consts::PI;
-                let d = Vec3::new(lon.sin() * lat.cos(), lat.sin(), -lon.cos() * lat.cos());
-                let f = face_of(d);
-                let (forward, up) = (FORWARD[f], UP[f]);
-                let right = forward.cross(up);
-                let z = d.dot(forward);
-                let x = ((d.dot(right).atan2(z) + std::f32::consts::FRAC_PI_4) / angle - 0.5).clamp(0., n - 1.);
-                let y = ((-d.dot(up)).atan2(z) + std::f32::consts::FRAC_PI_4) / angle - 0.5;
-                let y = y.clamp(0., n - 1.);
-                let (x0, y0) = (x.floor(), y.floor());
-                let base = (f % 3 * cell + gutter as usize + x0 as usize, f / 3 * cell + gutter as usize + y0 as usize);
-                let right_step = u8::from(x0 < n - 1.);
-                let down_step = if y0 < n - 1. { aw as u32 } else { 0 };
-                self.table.push(((base.1 * aw + base.0) as u32, right_step, down_step, x - x0, y - y0));
+        let (width, height) = (self.width, self.height());
+        // Per pixel, on all cores in bands of rows (the dome rebuilds it as the camera turns).
+        let mut table = std::mem::take(&mut self.table);
+        table.resize(width * height, (0, 0, 0, 0., 0.));
+        let band = height.div_ceil(threads()) * width;
+        let this = &*self;
+        std::thread::scope(|scope| {
+            for (b, chunk) in table.chunks_mut(band).enumerate() {
+                scope.spawn(move || {
+                    for (i, entry) in chunk.iter_mut().enumerate() {
+                        let at = b * band + i;
+                        *entry = this.entry(at % width, at / width, (n, angle, cell, gutter as usize), aw);
+                    }
+                });
             }
-        }
+        });
+        self.table = table;
     }
 
-    fn draw(&mut self, world: &World, out: &mut Vec<u8>) {
+    /// Where pixel (column, row) reads the atlas (see `table`).
+    fn entry(&self, column: usize, row: usize, (n, angle, cell, gutter): (f32, f32, usize, usize), aw: usize) -> (u32, u8, u32, f32, f32) {
+        let Some(d) = self.direction(column, row) else {
+            return (u32::MAX, 0, 0, 0., 0.);
+        };
+        let f = face_of(d);
+        let (forward, up) = (FORWARD[f], UP[f]);
+        let right = forward.cross(up);
+        let z = d.dot(forward);
+        let x = ((d.dot(right).atan2(z) + std::f32::consts::FRAC_PI_4) / angle - 0.5).clamp(0., n - 1.);
+        let y = ((-d.dot(up)).atan2(z) + std::f32::consts::FRAC_PI_4) / angle - 0.5;
+        let y = y.clamp(0., n - 1.);
+        let (x0, y0) = (x.floor(), y.floor());
+        let base = (f % 3 * cell + gutter + x0 as usize, f / 3 * cell + gutter + y0 as usize);
+        let right_step = u8::from(x0 < n - 1.);
+        let down_step = if y0 < n - 1. { aw as u32 } else { 0 };
+        ((base.1 * aw + base.0) as u32, right_step, down_step, x - x0, y - y0)
+    }
+
+    /// `view`: the camera's orientation and the attention (radians), for the dome.
+    fn draw(&mut self, world: &World, view: (Quat, f32), out: &mut Vec<u8>) {
         let atlas = world.dump_extent();
         let (aw, ah) = (atlas.width as usize, atlas.height as usize);
-        if world.cube_layout() != self.layout {
+        if world.cube_layout() != self.layout || (self.dome.is_some() && view != self.view) {
+            self.view = view;
             self.build(world.cube_layout(), aw);
         }
         // State A (after mid A..D), copied out in one go: the mapped dump is uncached
@@ -139,24 +202,36 @@ impl Panorama {
             (scale, -black * scale, gamma)
         });
         out.clear();
-        for &(at, right, down, tx, ty) in &self.table {
-            let at = at as usize;
-            let (p, b) = (self.state[at], self.state[at + right as usize]);
-            let (c, e) = (self.state[at + down as usize], self.state[at + down as usize + right as usize]);
-            for ch in 0..3 {
-                let value = (p[ch] * (1. - tx) + b[ch] * tx) * (1. - ty) + (c[ch] * (1. - tx) + e[ch] * tx) * ty;
-                let (scale, offset, gamma) = tone[ch];
-                let v = (value * scale + offset).max(0.);
-                let v = if (gamma - 1.).abs() < 1e-3 { v } else { v.powf(gamma) };
-                out.push(if v.is_finite() { (v.min(1.) * 255. + 0.5) as u8 } else { 0 });
+        out.resize(3 * self.table.len(), 0);
+        let band = self.table.len().div_ceil(threads());
+        let state = &self.state;
+        std::thread::scope(|scope| {
+            for (entries, pixels) in self.table.chunks(band).zip(out.chunks_mut(3 * band)) {
+                scope.spawn(move || {
+                    for (&(at, right, down, tx, ty), pixel) in entries.iter().zip(pixels.chunks_exact_mut(3)) {
+                        if at == u32::MAX {
+                            continue; // outside the dome: black
+                        }
+                        let at = at as usize;
+                        let (p, b) = (state[at], state[at + right as usize]);
+                        let (c, e) = (state[at + down as usize], state[at + down as usize + right as usize]);
+                        for ch in 0..3 {
+                            let value = (p[ch] * (1. - tx) + b[ch] * tx) * (1. - ty) + (c[ch] * (1. - tx) + e[ch] * tx) * ty;
+                            let (scale, offset, gamma) = tone[ch];
+                            let v = (value * scale + offset).max(0.);
+                            let v = if (gamma - 1.).abs() < 1e-3 { v } else { v.powf(gamma) };
+                            pixel[ch] = if v.is_finite() { (v.min(1.) * 255. + 0.5) as u8 } else { 0 };
+                        }
+                    }
+                });
             }
-        }
+        });
     }
 }
 
-fn video(path: &Path, width: usize, fps: f32) -> Result<Child> {
+fn video(path: &Path, width: usize, height: usize, fps: f32) -> Result<Child> {
     Command::new("ffmpeg")
-        .args(["-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", &format!("{width}x{}", width / 2)])
+        .args(["-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", &format!("{width}x{height}")])
         .args(["-r", &format!("{fps}"), "-i", "-", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18"])
         .arg(path)
         .stdin(Stdio::piped())
@@ -204,14 +279,18 @@ pub fn run(shaders: &Path) -> Result<()> {
         let quit = quit.clone();
         ctrlc::set_handler(move || quit.store(true, Ordering::SeqCst))?;
     }
-    let controls = panel(&rule);
+    let controls = panel(&rule, true);
     let width: usize = env::var("PANORAMA_WIDTH").ok().and_then(|v| v.parse().ok()).unwrap_or(1024);
     let still = env::var_os("PANORAMA").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("build/desktop/panorama.ppm"));
     if let Some(dir) = still.parent() {
         std::fs::create_dir_all(dir)?;
     }
+    let degrees = |name: &str, default: f32| env::var(name).ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(default).to_radians();
+    let dome = env::var("DOME").is_ok_and(|v| v != "0").then(|| degrees("DOME_FOV", 180.));
+    let mut panorama = Panorama::new(width, dome);
+    let height = panorama.height();
     let mut ffmpeg = match env::var_os("VIDEO") {
-        Some(path) => Some(video(Path::new(&path), width, controls.get("netfps").round().max(1.))?),
+        Some(path) => Some(video(Path::new(&path), width, height, controls.get("netfps").round().max(1.))?),
         None => None,
     };
     let limit: Option<u64> = env::var("FRAMES").ok().and_then(|v| v.parse().ok());
@@ -219,8 +298,7 @@ pub fn run(shaders: &Path) -> Result<()> {
     let mut clock = NetClock::default();
     let mut swarm = swarm::Swarm::new()?;
     let (mut weights, mut packed) = (vec![0f32; rule.len()], vec![0u16; rule.len()]);
-    let mut pixels = Vec::with_capacity(width * width / 2 * 3);
-    let mut panorama = Panorama::new(width);
+    let mut pixels = Vec::with_capacity(width * height * 3);
     let (mut frames, mut updates, mut since) = (0u64, 0u64, std::time::Instant::now());
     let (mut gpu_ms, mut read_ms) = (0f64, 0f64);
     let tick_ns = unsafe { gpu.instance.get_physical_device_properties(gpu.physical).limits.timestamp_period } as f64;
@@ -234,13 +312,25 @@ pub fn run(shaders: &Path) -> Result<()> {
             blocks: controls.get("blocks").round().max(1.) as u32,
             player: glam::Vec2::new(zip.position.x, zip.position.z),
         };
-        zip.fly(DT, Vec3::ZERO, &city, controls.get("speed"), controls.get("body"));
-        let (origin, turn) = (zip.position, zip.turn());
+        if controls.on("auto") {
+            zip.fly(DT, Vec3::ZERO, &city, controls.get("speed"), controls.get("body"));
+        }
+        // The camera (controller) on top of the autopilot: its position in the autopilot's
+        // heading, its orientation as a head's.
+        let pose = controls.pose("camera");
+        let [x, y, z, w] = pose.rotation;
+        let look = Quat::from_xyzw(x, y, z, w);
+        let look = if look.length_squared() > 1e-6 { look.normalize() } else { Quat::IDENTITY };
+        let turn = zip.turn();
+        let origin = zip.position + turn * Vec3::from(pose.position);
         let half = fov / 2.;
         let views: [xr::View; EYES] = std::array::from_fn(|i| xr::View {
             pose: xr::Posef {
-                orientation: xr::Quaternionf { x: 0., y: 0., z: 0., w: 1. },
-                position: xr::Vector3f { x: (i as f32 - 0.5) * IPD, y: 0., z: 0. },
+                orientation: xr::Quaternionf { x: look.x, y: look.y, z: look.z, w: look.w },
+                position: {
+                    let eye = look * Vec3::new((i as f32 - 0.5) * IPD, 0., 0.);
+                    xr::Vector3f { x: eye.x, y: eye.y, z: eye.z }
+                },
             },
             fov: xr::Fovf { angle_left: -half, angle_right: half, angle_up: half, angle_down: -half },
         });
@@ -308,9 +398,9 @@ pub fn run(shaders: &Path) -> Result<()> {
         }
         if settings.tau > 0. {
             updates += 1;
-            panorama.draw(&world, &mut pixels);
+            panorama.draw(&world, (turn * look, controls.get("attention").to_radians()), &mut pixels);
             let mut file = Vec::with_capacity(pixels.len() + 32);
-            write!(file, "P6\n{width} {}\n255\n", width / 2)?;
+            write!(file, "P6\n{width} {height}\n255\n")?;
             file.extend_from_slice(&pixels);
             let temporary = still.with_extension("tmp");
             std::fs::write(&temporary, &file)?;
@@ -323,7 +413,7 @@ pub fn run(shaders: &Path) -> Result<()> {
         frames += 1;
         if frames % 90 == 0 {
             let rate = 90. / std::mem::replace(&mut since, std::time::Instant::now()).elapsed().as_secs_f64();
-            let forward = turn * Quat::IDENTITY * Vec3::NEG_Z;
+            let forward = turn * look * Vec3::NEG_Z;
             println!(
                 "{frames} frames ({:.1} s simulated, {rate:.1} frames/s: GPU {:.2} ms/frame, panoramas {:.1} ms/frame), {updates} updates, at ({:.1}, {:.1}, {:.1}) looking ({:.2}, {:.2})",
                 seconds, gpu_ms / 90., read_ms / 90., origin.x, origin.y, origin.z, forward.x, forward.z

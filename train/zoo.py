@@ -2,7 +2,9 @@
 
   python3 zoo.py              list (layouts, runs, metrics)
   python3 zoo.py pick <file>  interactive picker (arrows/j/k, Enter, q); writes the choice
-                              to <file>: "newest", "follow <run dir>" or "pin <net dir>"
+                              to <file>: "newest", "follow <run dir>" or "pin <net dir>",
+                              for a cube-v1 net then a second line, the output picked next:
+                              "stereo" (VR), "dome" or "equirect" (desktop, no VR)
                               (dev.sh: at start, and live with p in its terminal)
   python3 zoo.py runnable <net dir>   exit 0 if the app can run it, else print why
 
@@ -121,43 +123,64 @@ def pick(result: Path):
     def ui(screen):
         curses.curs_set(0)
         curses.use_default_colors()
-        at = 0
         while True:
-            screen.erase()
-            height, width = screen.getmaxyx()
-            screen.addnstr(0, 0, "sunk-city: which net?  (arrows/j/k, Enter: start, q: quit)", width - 1, curses.A_BOLD)
-            current = selectable[at]
-            top = max(0, current - (height - 4))
-            for y, (text, e) in enumerate(table[top:top + height - 2]):
-                index = top + y
-                style = curses.A_NORMAL
-                if e is None and text == HEADER:
-                    style = curses.A_DIM
-                elif e is None and text:
-                    style = curses.A_BOLD | curses.A_UNDERLINE
-                elif e not in (None, "newest") and e[5]:
-                    style = curses.A_DIM
-                if index == current:
-                    style |= curses.A_REVERSE
-                screen.addnstr(y + 2, 0, text, width - 1, style)
-            key = screen.getch()
-            if key in (curses.KEY_UP, ord("k")):
-                at = max(0, at - 1)
-            elif key in (curses.KEY_DOWN, ord("j")):
-                at = min(len(selectable) - 1, at + 1)
-            elif key in (curses.KEY_ENTER, 10, 13):
-                return table[current][1]
-            elif key in (ord("q"), 27):
-                return None
+            choice = menu(screen, "sunk-city: which net?  (arrows/j/k, Enter: start, q: quit)", table, selectable)
+            if choice in (None, "newest") or choice[0] != "cube-v1":
+                return choice, None
+            outputs = [(text, key) for key, text in OUTPUTS]
+            output = menu(screen, f"{choice[1]}: which output?  (Enter: start, q: back)", outputs, list(range(len(outputs))))
+            if output:
+                return choice, output
 
-    choice = curses.wrapper(ui)
+    choice, output = curses.wrapper(ui)
     if choice is None:
         return 1
-    if choice == "newest":
-        result.write_text("newest")
-    else:
-        result.write_text(f"{choice[2]} {choice[3]}")
+    line = "newest" if choice == "newest" else f"{choice[2]} {choice[3]}"
+    result.write_text(line + (f"\n{output}" if output else ""))
     return 0
+
+
+# cube-v1 outputs: dev.sh runs the stereo one in VR (Monado), the others with DESKTOP=1.
+OUTPUTS = [
+    ("stereo", "stereo: VR headset (Monado)"),
+    ("dome", "domemaster: desktop, no VR (camera in the controller's camera tab)"),
+    ("equirect", "equirectangular: desktop, no VR"),
+]
+
+
+def menu(screen, title, table, selectable):
+    """A list (rows of (text, value or None), `selectable` the row indices one can pick);
+    the value of the row picked, None on q."""
+    import curses
+
+    at = 0
+    while True:
+        screen.erase()
+        height, width = screen.getmaxyx()
+        screen.addnstr(0, 0, title, width - 1, curses.A_BOLD)
+        current = selectable[at]
+        top = max(0, current - (height - 4))
+        for y, (text, e) in enumerate(table[top:top + height - 2]):
+            index = top + y
+            style = curses.A_NORMAL
+            if e is None and text == HEADER:
+                style = curses.A_DIM
+            elif e is None and text:
+                style = curses.A_BOLD | curses.A_UNDERLINE
+            elif isinstance(e, tuple) and e[5]:
+                style = curses.A_DIM
+            if index == current:
+                style |= curses.A_REVERSE
+            screen.addnstr(y + 2, 0, text, width - 1, style)
+        key = screen.getch()
+        if key in (curses.KEY_UP, ord("k")):
+            at = max(0, at - 1)
+        elif key in (curses.KEY_DOWN, ord("j")):
+            at = min(len(selectable) - 1, at + 1)
+        elif key in (curses.KEY_ENTER, 10, 13):
+            return table[current][1]
+        elif key in (ord("q"), 27):
+            return None
 
 
 def main():
