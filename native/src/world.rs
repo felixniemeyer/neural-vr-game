@@ -75,8 +75,10 @@ const CUBE_PROBE: u32 = 24;
 const PROBE: u32 = 32;
 /// GPU timestamps per frame: start, after scene, splat, resolve, net, display.
 pub const STAMPS: u32 = 6;
-/// Split updates (World::split): the net pass in this many bands of rows, one per frame.
-const NET_BANDS: u32 = 3;
+/// Split updates (World::split): the fold (or pull) and the net in this many bands of rows,
+/// a stage each (small stages pack the frames' GPU budget well).
+const FOLD_BANDS: u32 = 2;
+const NET_BANDS: u32 = 6;
 
 /// Live settings (av-controls faders).
 #[derive(Clone, Copy)]
@@ -243,10 +245,11 @@ pub struct World {
     /// forward motion); `advance` records the rest, a stage per frame (fold, then the net in
     /// NET_BANDS bands), so the window keeps its frame rate while the cube updates slowly.
     pub split: bool,
-    /// The split update in flight: its next stage (1 fold / pull, 2.. net bands).
+    /// The split update in flight: its next stage (1.. fold / pull bands, then net bands).
     stage: Option<u32>,
-    /// The net pass that keeps what it doesn't draw (a band of rows).
+    /// The net and fold passes that keep what they don't draw (a band of rows).
     cube_band_pass: vk::RenderPass,
+    cube_fold_band_pass: vk::RenderPass,
     cube: Cube,
     /// Clear the cube's images before the next frame (new or resized).
     cube_clear: bool,
@@ -672,6 +675,7 @@ impl World {
         let forward_pass = render_pass(r, &[STATE], false, dont_care, read_layout, true)?;
         let cube_splat_pass = render_pass(r, &[ACC, ACC, ACC, ACC, ACC_SINGLE], false, clear, read_layout, true)?;
         let cube_band_pass = render_pass(r, &[STATE; STATES], false, vk::AttachmentLoadOp::LOAD, read_layout, true)?;
+        let cube_fold_band_pass = render_pass(r, &[STATE; 4], false, vk::AttachmentLoadOp::LOAD, read_layout, true)?;
         let passes = [scene_pass, splat_pass, resolve_pass, net_pass, display_pass, forward_pass, cube_splat_pass];
         let mut pipelines = Self::pipelines(&r.gpu.device, shaders, passes, layout, &spec)?
             .into_iter()
@@ -895,6 +899,7 @@ impl World {
             split: false,
             stage: None,
             cube_band_pass,
+            cube_fold_band_pass,
             cube_splat,
             cube_fold,
             splat_nearness: None,
@@ -1263,9 +1268,7 @@ impl World {
                     stamp(2);
                 }
                 if self.split {
-                    // The rest in `advance`, a stage per frame; the window draws the panorama.
-                    stamp(3);
-                    stamp(4);
+                    // The rest in `advance` (the caller's stamps from here on).
                     self.stage = update.then_some(1);
                     self.frame += 1;
                     return;
@@ -1368,15 +1371,15 @@ impl World {
         self.stage.is_some()
     }
 
-    /// Split updates: record the next stage of the update in flight (after the caller's
-    /// timestamp 0; writes 1 to 4): the fold (or pull) and the net's mips, then the net in
-    /// NET_BANDS bands of rows. True when this stage finished the update (the parity has
-    /// flipped: the panorama shows the new state).
-    pub fn advance(&mut self, d: &Device, cmd: vk::CommandBuffer, queries: vk::QueryPool) -> bool {
+    /// Split updates: record the next stage of the update in flight: the fold (or pull) in
+    /// FOLD_BANDS bands of rows (the last builds the net's mips), then the net in NET_BANDS. True when this stage
+    /// finished the update (the parity has flipped: the panorama shows the new state).
+    /// Several stages may follow each other in one command buffer, but no `draw` after
+    /// them (it rewrites the uniforms they read).
+    pub fn advance(&mut self, d: &Device, cmd: vk::CommandBuffer) -> bool {
         let Some(stage) = self.stage else { return false };
         let stages = vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT;
         let atlas = self.cube.atlas;
-        let stamp = |index: u32| unsafe { d.cmd_write_timestamp(cmd, vk::PipelineStageFlags::BOTTOM_OF_PIPE, queries, index) };
         // A fullscreen pass over the rows `rows` (the viewport stays the whole atlas).
         let pass = |pass, framebuffer, pipeline, rows: (u32, u32)| unsafe {
             let area = vk::Rect2D {
@@ -1396,22 +1399,19 @@ impl World {
             d.cmd_bind_descriptor_sets(cmd, vk::PipelineBindPoint::GRAPHICS, self.layout, 0, &[self.sets[self.parity]], &[]);
             d.cmd_push_constants(cmd, self.layout, stages, 0, &Push { target: 0, source: 0, mode: 0 }.bytes());
         }
-        stamp(1);
-        stamp(2);
-        if stage == 1 {
+        let bands = |band: u32, count: u32| (atlas.height * band / count, atlas.height * (band + 1) / count);
+        if stage <= FOLD_BANDS {
+            // Level 0 only: the fold's pass keeps what it doesn't draw, like the net's.
             let pipeline = if self.splat_nearness.is_some() { self.cube_fold } else { self.cube_pull };
-            pass(self.resolve_pass, self.cube.pull_target, pipeline, (0, atlas.height));
-            build_mips(d, cmd, &self.cube.mid, atlas, self.levels);
-            stamp(3);
-            stamp(4);
-            self.stage = Some(2);
+            pass(self.cube_fold_band_pass, self.cube.pull_target, pipeline, bands(stage - 1, FOLD_BANDS));
+            if stage == FOLD_BANDS {
+                build_mips(d, cmd, &self.cube.mid, atlas, self.levels);
+            }
+            self.stage = Some(stage + 1);
             return false;
         }
-        stamp(3);
-        let band = stage - 2;
-        let rows = (atlas.height * band / NET_BANDS, atlas.height * (band + 1) / NET_BANDS);
-        pass(self.cube_band_pass, self.cube.net_targets[self.parity], self.cube_net, rows);
-        stamp(4);
+        let band = stage - 1 - FOLD_BANDS;
+        pass(self.cube_band_pass, self.cube.net_targets[self.parity], self.cube_net, bands(band, NET_BANDS));
         if band + 1 < NET_BANDS {
             self.stage = Some(stage + 1);
             return false;

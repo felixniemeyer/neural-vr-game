@@ -355,6 +355,10 @@ pub fn run(shaders: &Path) -> Result<()> {
     let mut owed = 0f32;
     let (mut finished, mut before) = (0f32, 0f32);
     let (mut window_fps, mut cube_fps) = (refresh, 0f32);
+    // The update's stages run back to back while they fit the frame's GPU budget (3/4 of
+    // the frame minus the panorama): the cost of a stage and of the panorama, measured.
+    let (mut first_ms, mut stage_ms, mut panorama_ms) = (6f64, 4f64, 2f64);
+
     println!("Desktop: a window ({}; Tab switches, Esc closes){}", if dome { "domemaster" } else { "equirect" }, env::var("VIDEO").map(|v| format!(", video to {v}")).unwrap_or_default());
 
     while !quit.load(Ordering::SeqCst) && limit.is_none_or(|n| frames < n) {
@@ -475,19 +479,28 @@ pub fn run(shaders: &Path) -> Result<()> {
             d.begin_command_buffer(cmd, &vk::CommandBufferBeginInfo::default())?;
             d.cmd_reset_query_pool(cmd, queries, 0, world::STAMPS);
             d.cmd_write_timestamp(cmd, S::TOP_OF_PIPE, queries, 0);
-            let frame_rule = rule.frame();
-            rule.weights(seconds, settings.wild, &mut weights);
-            rule::pack(&rule.layers, &weights, &mut packed);
+            // Stamps: 0 start, 1 scene, 2 splat (a new update; else right away), 3 the
+            // update's other stages, 4 = 3, 5 the panorama.
+            let budget = period as f64 * 750. - panorama_ms;
+            let mut stages_run = 0u32; // after the first
+            let mut spent = 0.;
             if starting {
-                // A new update: the scene and the splat now, the rest in the next frames.
-                world.draw(d, cmd, queries, cameras, [0, 0], seconds, &frame_rule, &packed, settings);
-            } else if world.updating() {
-                done = world.advance(d, cmd, queries);
+                // A new update: the scene and the splat (first stage), then on below.
+                spent = first_ms;
+                rule.weights(seconds, settings.wild, &mut weights);
+                rule::pack(&rule.layers, &weights, &mut packed);
+                world.draw(d, cmd, queries, cameras, [0, 0], seconds, &rule.frame(), &packed, settings);
             } else {
-                for stamp in 1..5 {
-                    d.cmd_write_timestamp(cmd, S::BOTTOM_OF_PIPE, queries, stamp);
-                }
+                d.cmd_write_timestamp(cmd, S::BOTTOM_OF_PIPE, queries, 1);
+                d.cmd_write_timestamp(cmd, S::BOTTOM_OF_PIPE, queries, 2);
             }
+            while world.updating() && ((!starting && stages_run == 0) || spent + stage_ms <= budget) {
+                spent += stage_ms;
+                done = world.advance(d, cmd);
+                stages_run += 1;
+            }
+            d.cmd_write_timestamp(cmd, S::BOTTOM_OF_PIPE, queries, 3);
+            d.cmd_write_timestamp(cmd, S::BOTTOM_OF_PIPE, queries, 4);
             if done {
                 (before, finished) = (finished, seconds);
                 push[3] = 0.;
@@ -553,9 +566,17 @@ pub fn run(shaders: &Path) -> Result<()> {
             }
             let mut stamps = [0u64; world::STAMPS as usize];
             if d.get_query_pool_results(queries, 0, &mut stamps, vk::QueryResultFlags::TYPE_64).is_ok() {
+                let span = |a: usize, b: usize| stamps[b].wrapping_sub(stamps[a]) as f64 * tick_ns / 1e6;
                 for (i, ms) in gpu_ms.iter_mut().enumerate() {
-                    *ms += stamps[i + 1].wrapping_sub(stamps[i]) as f64 * tick_ns / 1e6;
+                    *ms += span(i, i + 1);
                 }
+                if starting {
+                    first_ms += (span(0, 2) - first_ms) * 0.2;
+                }
+                if stages_run > 0 {
+                    stage_ms += (span(2, 3) / stages_run as f64 - stage_ms) * 0.2;
+                }
+                panorama_ms += (span(4, 5) - panorama_ms) * 0.2;
             }
         }
         let record_video = ffmpeg.is_some() && done;
@@ -614,10 +635,10 @@ pub fn run(shaders: &Path) -> Result<()> {
         if frames % 90 == 0 {
             let rate = 90. / std::mem::replace(&mut since, Instant::now()).elapsed().as_secs_f64();
             let forward = turn * look * Vec3::NEG_Z;
-            let [scene, forward_ms, pull, net, display] = gpu_ms.map(|ms| ms / 90.);
-            let total = scene + forward_ms + pull + net + display;
+            let [scene, splat, stages, _, display] = gpu_ms.map(|ms| ms / 90.);
+            let total = scene + splat + stages + display;
             println!(
-                "{frames} frames ({seconds:.1} s, {rate:.1} frames/s, {updates} updates, cube {cube_fps:.1}/s): GPU {total:.2} ms/frame (scene {scene:.2} forward {forward_ms:.2} pull {pull:.2} net {net:.2} display {display:.2}), at ({:.1}, {:.1}, {:.1}) looking ({:.2}, {:.2}, {:.2}), probe {probe_points} points, nearest {nearest:.1} m, pushed {:.2} m",
+                "{frames} frames ({seconds:.1} s, {rate:.1} frames/s, {updates} updates, cube {cube_fps:.1}/s): GPU {total:.2} ms/frame (scene {scene:.2} first stage {splat:.2} other stages {stages:.2} panorama {display:.2}; stages {first_ms:.1} ms first, then {stage_ms:.1} ms each), at ({:.1}, {:.1}, {:.1}) looking ({:.2}, {:.2}, {:.2}), probe {probe_points} points, nearest {nearest:.1} m, pushed {:.2} m",
                 origin.x, origin.y, origin.z, forward.x, forward.y, forward.z, pushed.length()
             );
             window.set_title(&format!("Sunk City: {} {rate:.0} fps, cube {cube_fps:.1}/s, GPU {total:.1} ms", if dome { "dome" } else { "equirect" }));
