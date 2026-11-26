@@ -39,5 +39,5 @@ hole_weight = 4.0
 edge_weight = 1.0
 texture = 1.0
 preview = 250
-threads = 3
+threads = 6
 init = "../../../nice-net"
