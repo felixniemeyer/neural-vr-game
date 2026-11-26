@@ -1077,6 +1077,14 @@ impl World {
         Ok(())
     }
 
+    /// Start the cube over: its images cleared before the next update (which starts a new
+    /// one: an update in flight is dropped) and the store recentred on the head.
+    pub fn reset_cube(&mut self) {
+        self.cube_clear = true;
+        self.cube_centre = None;
+        self.stage = None;
+    }
+
     /// Record one frame for both eyes: scene, splat, resolve, net, display. Writes
     /// timestamps 1..STAMPS-1 into `queries` after each stage (0 is the caller's).
     pub fn draw(
@@ -1499,6 +1507,32 @@ impl World {
             }
         }
         points
+    }
+
+    /// cube-v1: the sphere's mean inverse depth (1/m) around the store's centre, from the
+    /// probe: the weighted mean the coarsest mip level would hold (holes don't count, sky
+    /// counts as about 0), so 1/it is the harmonic mean distance. None without coverage.
+    pub fn mean_inverse_depth(&self) -> Option<f32> {
+        self.cube_centre?;
+        let cube = &self.cube;
+        let texels = mip_extent(cube.atlas, cube.probe_level);
+        let (w, h) = (texels.width as usize, texels.height as usize);
+        let probe = unsafe { std::slice::from_raw_parts(cube.probe.1, 2 * w * h) };
+        let (a, b) = probe.split_at(w * h);
+        let step = 1u32 << cube.probe_level;
+        let (cell, gutter, face) = ((cube.face + 2 * cube.gutter) / step, cube.gutter / step, cube.face / step);
+        let (mut inv, mut weight) = (0f32, 0f32);
+        for (i, (a, b)) in a.iter().zip(b).enumerate() {
+            let (lx, ly) = ((i % w) as u32 % cell, (i / w) as u32 % cell);
+            if lx < gutter || ly < gutter || lx >= gutter + face || ly >= gutter + face {
+                continue; // gutter
+            }
+            let (a, b) = (half_to_f32(a[3]), half_to_f32(b[3]));
+            if a.is_finite() && b.is_finite() && b > 0. {
+                (inv, weight) = (inv + a.max(0.), weight + b);
+            }
+        }
+        (weight > 1e-3).then(|| inv / weight)
     }
 
     /// cube-v1: the sphere probe (the last update's state, seen from the store's centre)

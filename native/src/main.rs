@@ -644,7 +644,12 @@ fn panel(rule: &rule::Rule, desktop: bool) -> av_controls::Controls {
             .fader_with("rotationSpeed", 0.5, 10., initial("rotationSpeed", 4.), 1)
             .fader_with("attention", 0., 90., initial("attention", 30.), 0)
             .switch("collide", initial("collide", 1.) > 0.5)
+            // The controller's speed and the body's radius scaled by the distance around the
+            // camera (desktop.rs).
+            .switch("adaptive", initial("adaptive", 1.) > 0.5)
             .switch("fps", initial("fps", 1.) > 0.5)
+            // Flip either way: the cube starts over and the camera's push is zero (R in the window).
+            .switch("reset", false)
     } else {
         panel
     };

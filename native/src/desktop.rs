@@ -19,6 +19,10 @@
 //! Controls (av-controls, tab "camera"): the camera, a Player3D flown from the controller
 //! (WASD, mouse, Q/E roll) on top of the autopilot (tab "motion": auto, off by default, speed; with auto off
 //! the camera alone moves), and attention. The eyes look where the camera does.
+//! collide: the camera is pushed away from the sphere's own geometry (body: its radius);
+//! adaptive: the controller's speed and the body scale with the distance around the
+//! camera (the cube's harmonic mean depth); reset (or R in the window): the cube starts
+//! over and the push is zero.
 
 use crate::gpu::{Gpu, Resource, Resources};
 use crate::world::{self, Settings, World, EYES, PANORAMA_PUSH};
@@ -211,6 +215,8 @@ struct Events {
     resized: bool,
     /// Tab: dome <-> equirect.
     switch: bool,
+    /// R: start the cube and the camera's push over.
+    reset: bool,
 }
 
 impl ApplicationHandler for Events {
@@ -223,6 +229,7 @@ impl ApplicationHandler for Events {
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed && !event.repeat => match event.logical_key {
                 Key::Named(NamedKey::Escape) => self.close = true,
                 Key::Named(NamedKey::Tab) => self.switch = true,
+                Key::Character(ref c) if c.eq_ignore_ascii_case("r") => self.reset = true,
                 _ => {}
             },
             _ => {}
@@ -348,7 +355,16 @@ pub fn run(shaders: &Path) -> Result<()> {
     let mut last = 0f32;
     // Collisions (fabric-artwork's sensor push, from the sphere's own depth): the camera's
     // offset from where the autopilot and the controller put it.
-    let (mut pushed, mut last_origin) = (Vec3::ZERO, None::<Vec3>);
+    // The speed is the camera's own (without the push): a push that counted would widen
+    // the next one's reach, and so on (the camera flew off to 1e10 m).
+    let (mut pushed, mut last_intended) = (Vec3::ZERO, None::<Vec3>);
+    // The reset switch (camera tab): flipping it either way resets, like R in the window.
+    let mut reset_switch = controls.on("reset");
+    // Adaptive speed (camera tab): the controller's movement scaled by the distance around
+    // the camera (the cube's harmonic mean, 1/its mean inverse depth), smoothed in ln(d):
+    // half the remaining way every 2 s. At keySpeed 1 the camera moves about 0.3 of that
+    // distance per second. moved: the controller's position, accumulated scaled.
+    let (mut ln_distance, mut moved, mut last_pose) = (None::<f32>, Vec3::ZERO, None::<Vec3>);
     // Net time owed to the cube (ticks while an update is in flight wait for the next),
     // the last two updates' finish times (the display blends between their states), and
     // the frame rates of the window and the cube (exponential moving averages).
@@ -359,7 +375,7 @@ pub fn run(shaders: &Path) -> Result<()> {
     // the frame minus the panorama): the cost of a stage and of the panorama, measured.
     let (mut first_ms, mut stage_ms, mut panorama_ms) = (6f64, 4f64, 2f64);
 
-    println!("Desktop: a window ({}; Tab switches, Esc closes){}", if dome { "domemaster" } else { "equirect" }, env::var("VIDEO").map(|v| format!(", video to {v}")).unwrap_or_default());
+    println!("Desktop: a window ({}; Tab switches, R resets, Esc closes){}", if dome { "domemaster" } else { "equirect" }, env::var("VIDEO").map(|v| format!(", video to {v}")).unwrap_or_default());
 
     while !quit.load(Ordering::SeqCst) && limit.is_none_or(|n| frames < n) {
         let frame_start = Instant::now();
@@ -368,6 +384,15 @@ pub fn run(shaders: &Path) -> Result<()> {
         }
         if std::mem::take(&mut events.close) {
             break;
+        }
+        let flipped = controls.on("reset") != reset_switch;
+        reset_switch ^= flipped;
+        if std::mem::take(&mut events.reset) || flipped {
+            world.reset_cube();
+            pushed = Vec3::ZERO;
+            owed = 0.;
+            (before, finished) = (0., 0.);
+            println!("Reset: the cube starts over, the camera's push is zero");
         }
         if std::mem::take(&mut events.switch) && ffmpeg.is_none() {
             dome = !dome; // not while recording: the video's size is fixed
@@ -402,7 +427,17 @@ pub fn run(shaders: &Path) -> Result<()> {
         let look = Quat::from_xyzw(x, y, z, w);
         let look = if look.length_squared() > 1e-6 { look.normalize() } else { Quat::IDENTITY };
         let turn = zip.turn();
-        let origin = zip.position + turn * Vec3::from(pose.position) + pushed;
+        if let Some(target) = world.mean_inverse_depth().filter(|inv| inv.is_finite()).map(|inv| -inv.max(1e-4).ln()) {
+            let ln = ln_distance.get_or_insert(target);
+            *ln += (target - *ln) * (1. - 0.5f32.powf(dt / 2.));
+        }
+        let distance = ln_distance.map_or(1., f32::exp);
+        let scale = if controls.on("adaptive") { (0.3 * distance).clamp(0.1, 50.) } else { 1. };
+        let position = Vec3::from(pose.position);
+        moved += (position - last_pose.unwrap_or(position)) * scale;
+        last_pose = Some(position);
+        let intended = zip.position + turn * moved;
+        let origin = intended + pushed;
         let half = fov / 2.;
         let views: [xr::View; EYES] = std::array::from_fn(|i| xr::View {
             pose: xr::Posef {
@@ -600,13 +635,17 @@ pub fn run(shaders: &Path) -> Result<()> {
         // Every point of the sphere within reach (the body plus 0.15 s of the camera's
         // speed, so it brakes before it touches) pushes the camera straight away from it by
         // its penetration; the push is their mean, so the probe's density doesn't matter.
-        let speed = last_origin.map_or(0., |p: Vec3| p.distance(origin) / dt.max(1e-3));
-        last_origin = Some(origin);
+        let speed = last_intended.map_or(0., |p: Vec3| p.distance(intended) / dt.max(1e-3));
+        last_intended = Some(intended);
         let surroundings = world.surroundings();
         let probe_points = surroundings.len();
         let nearest = surroundings.iter().map(|p| p.distance(origin)).fold(f32::INFINITY, f32::min);
-        if controls.on("collide") {
-            let reach = controls.get("body") + speed * 0.15;
+        // Once per update: the probe is that update's (pushing on every frame in between
+        // would push the same penetration several times).
+        if controls.on("collide") && done {
+            // Adaptive speed scales the body too: a camera that moves 10x faster keeps 10x
+            // the distance (else it brakes too late in open space, or not at all up close).
+            let reach = controls.get("body") * scale + speed * 0.15;
             let (mut push, mut hits) = (Vec3::ZERO, 0);
             for point in surroundings {
                 let to = point - origin;
@@ -618,6 +657,9 @@ pub fn run(shaders: &Path) -> Result<()> {
             }
             if hits > 0 {
                 pushed += push / hits as f32;
+            }
+            if !pushed.is_finite() {
+                pushed = Vec3::ZERO;
             }
         }
         if let (true, Some(child)) = (record_video, &mut ffmpeg) {
@@ -638,7 +680,7 @@ pub fn run(shaders: &Path) -> Result<()> {
             let [scene, splat, stages, _, display] = gpu_ms.map(|ms| ms / 90.);
             let total = scene + splat + stages + display;
             println!(
-                "{frames} frames ({seconds:.1} s, {rate:.1} frames/s, {updates} updates, cube {cube_fps:.1}/s): GPU {total:.2} ms/frame (scene {scene:.2} first stage {splat:.2} other stages {stages:.2} panorama {display:.2}; stages {first_ms:.1} ms first, then {stage_ms:.1} ms each), at ({:.1}, {:.1}, {:.1}) looking ({:.2}, {:.2}, {:.2}), probe {probe_points} points, nearest {nearest:.1} m, pushed {:.2} m",
+                "{frames} frames ({seconds:.1} s, {rate:.1} frames/s, {updates} updates, cube {cube_fps:.1}/s): GPU {total:.2} ms/frame (scene {scene:.2} first stage {splat:.2} other stages {stages:.2} panorama {display:.2}; stages {first_ms:.1} ms first, then {stage_ms:.1} ms each), at ({:.1}, {:.1}, {:.1}) looking ({:.2}, {:.2}, {:.2}), probe {probe_points} points, nearest {nearest:.1} m, around {distance:.1} m (speed x{scale:.2}), pushed {:.2} m",
                 origin.x, origin.y, origin.z, forward.x, forward.y, forward.z, pushed.length()
             );
             window.set_title(&format!("Sunk City: {} {rate:.0} fps, cube {cube_fps:.1}/s, GPU {total:.1} ms", if dome { "dome" } else { "equirect" }));
