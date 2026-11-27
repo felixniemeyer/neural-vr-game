@@ -335,6 +335,16 @@ def style(x, known):
     return torch.stack(grams, 1)
 
 
+def tone(x, known, bins=10):
+    """Soft per-channel histograms of x [B, C, H, W] over 0..1 (triangle kernels; values
+    outside count in the end bins), weighted by known, as CDFs [B, C, bins] (train.tone)."""
+    centres = torch.linspace(0, 1, bins, dtype=x.dtype).view(1, 1, bins, 1)
+    v = x.clamp(0, 1).flatten(2)[:, :, None]  # [B, C, 1, HW]
+    hist = F.relu(1 - (v - centres).abs() * (bins - 1)) * known.flatten(2)[:, :, None]
+    hist = hist.sum(3) / known.flatten(2).sum(2, keepdim=True).clamp_min(1)
+    return hist.cumsum(2)
+
+
 def spectrum(x, known, bands=8):
     """Radially averaged log power spectrum of luminance [B, bands] (train.spectrum),
     unknown pixels set to the known mean so the mask edge adds little power."""
@@ -368,7 +378,7 @@ def damage(state, share, area, kinds=("colour",), generator=None):
     a random strength s and of a random kind (train.damage_kinds): "colour" blends
     colour and hidden toward noise by s, "depth" scales the inverse depth by per-pixel
     noise (log-normal, sigma 0.7 s: the splat then scatters the points), "both" does
-    both. Certainty drops by s; above s = 0.8 the blobs become holes (all 0, as the
+    both, "clip" blends colour toward its 4x contrast stretch (clipped to 0..1) by s. Certainty drops by s; above s = 0.8 the blobs become holes (all 0, as the
     splat leaves them). Returns (state, mask)."""
     b, _, h, w = state.shape
     rand = lambda *shape: torch.rand(*shape, generator=generator)
@@ -378,11 +388,14 @@ def damage(state, share, area, kinds=("colour",), generator=None):
     s = rand(b, 1, 1, 1) * mask
     kind = [kinds[i] for i in (rand(b) * len(kinds)).long().clamp(max=len(kinds) - 1)]
     colour = torch.tensor([k in ("colour", "both") for k in kind], dtype=state.dtype).view(b, 1, 1, 1)
+    clip = torch.tensor([k == "clip" for k in kind], dtype=state.dtype).view(b, 1, 1, 1)
     depth = torch.tensor([k in ("depth", "both") for k in kind], dtype=state.dtype).view(b, 1, 1, 1)
     out = state.clone()
     sc = s * colour
     out[:, RGB] = state[:, RGB] * (1 - sc) + rand(b, 3, h, w) * sc
     out[:, HID] = state[:, HID] * (1 - sc) + (rand(b, state.shape[1] - HID.start, h, w) * 2 - 1) * sc
+    stretched = ((state[:, RGB] - 0.5) * 4 + 0.5).clamp(0, 1)
+    out[:, RGB] = out[:, RGB] * (1 - s * clip) + stretched * s * clip
     out[:, INV:INV + 1] = state[:, INV:INV + 1] * torch.exp(0.7 * s * depth * torch.randn(b, 1, h, w, generator=generator))
     out[:, CERT:CERT + 1] = state[:, CERT:CERT + 1] * (1 - s)
     out = out * (1 - (s > 0.8).float())

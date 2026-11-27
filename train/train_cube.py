@@ -38,7 +38,7 @@ from sunk.clips import ClipPool, Clips, focal_of
 from sunk.config import load
 from sunk.model import CERT, HID, INV, RGB, VEL, Net, init_from, load_export, scale_code
 from sunk.sphere import directions, pull, splat
-from train import Footage, damage, gradients, on_mains, pixel_weight, preview, style
+from train import Footage, damage, gradients, on_mains, pixel_weight, preview, style, tone
 
 FLAGS = 2  # carried after the net's channels: seen (ever known), missed (out of view since);
 # then the period target (the net's channels again), all moved by the pull
@@ -274,6 +274,10 @@ def rollout(net, config, batch, observe, start=None, ages=None, periods=None, ti
         if style_weight.any():
             gap = (style(image[:, RGB], score) - style(goal[:, RGB], score)).abs().mean((1, 2, 3))
             step_loss = step_loss + (style_weight * gap).mean()
+        if t.tone:
+            step_loss = step_loss + t.tone * (tone(image[:, RGB], score) - tone(goal[:, RGB], score)).abs().mean()
+        if t.range:  # every texel, seen or not: the state's colour stays displayable
+            step_loss = step_loss + t.range * (F.relu(net.raw - 1) + F.relu(-net.raw)).mean()
         loss = loss + step_loss
         total_known = total_known + landed.mean()
         recall_sum = recall_sum + (error.mean(1, keepdim=True) * recall * crop).sum()
@@ -385,6 +389,9 @@ def evaluate(project, samples=24, steps=None, chunks=None):
     def grad(x):
         return ((x[..., 1:, :-1] - x[..., :-1, :-1]).abs() + (x[..., :-1, 1:] - x[..., :-1, :-1]).abs()).mean((1, 2, 3))
 
+    def clipped(x):  # share of texels with a channel at black or white
+        return ((x <= 0.01) | (x >= 0.99)).any(1).float().mean().item()
+
     rows = {}
     for name, change in (("net", net.max_change), ("pull", 0.0)):
         net.max_change = change
@@ -394,11 +401,11 @@ def evaluate(project, samples=24, steps=None, chunks=None):
         last = ((image - truth).abs().mean(1, keepdim=True) * known).sum() / known.sum().clamp_min(1)
         sharp = (grad(image) / grad(truth).clamp_min(1e-4)).mean().item()
         contrast = (image.mean(1).flatten(1).std(1) / truth.mean(1).flatten(1).std(1).clamp_min(1e-4)).mean().item()
-        rows[name] = (loss.item(), (rs / max(float(rc), 1)).item(), last.item(), sharp, contrast)
+        rows[name] = (loss.item(), (rs / max(float(rc), 1)).item(), last.item(), sharp, contrast, clipped(final[:, RGB]))
     print(f"{project}: {len(batch['dt'])} free-running rollouts of {steps} steps (scales {config.train.scales[0]}..{config.train.scales[-1]})")
-    print("            loss     recall   last L1   sharpness  contrast")
+    print(f"            loss     recall   last L1   sharpness  contrast  clipped (footage {clipped(truth):.1%})")
     for name, r in rows.items():
-        print(f"  {name:<8} {r[0]:.4f}   {r[1]:.4f}   {r[2]:.4f}    {r[3]:.2f}       {r[4]:.2f}")
+        print(f"  {name:<8} {r[0]:.4f}   {r[1]:.4f}   {r[2]:.4f}    {r[3]:.2f}       {r[4]:.2f}      {r[5]:.1%}")
     gain = [1 - a / b if b else 0 for a, b in zip(rows["net"][:3], rows["pull"][:3])]
     print(f"net vs pull only: {gain[0]:+.1%} loss, {gain[1]:+.1%} recall, {gain[2]:+.1%} last step (positive = better)")
 

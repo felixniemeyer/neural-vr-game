@@ -74,6 +74,9 @@ class Train:
     texture: float = 0.0        # loss on local edge energy (8x8 windows, position-free)
     corridor: float = 0.0       # loss when mean luminance leaves truth +-0.05 or contrast drops below 0.8x truth's
     style: float = 0.0          # Gram matrices of a fixed random conv bank vs truth's (position-free texture statistics, DyNCA-like)
+    range: float = 0.0          # penalty on colour leaving 0..1 (before the clamp), on every texel and step, seen or not
+    tone: float = 0.0           # per-channel colour histograms (soft, 10 bins) vs truth's, compared as CDFs (1D Wasserstein):
+                                # position-free, against clipped black / white and against drifting to grey alike
     spectrum: float = 0.0       # radially averaged log power spectrum of luminance vs truth's (position-free, against blur)
     loop: float = 0.0           # loop closure: the last step's prediction warped back to step 1's camera must match step 1's
     semigroup: float = 0.0      # weight of |net(x, tau) - net(net(x, tau/2), tau/2)|: big steps agree with small ones
@@ -81,7 +84,8 @@ class Train:
     damage: float = 0.0         # fraction of samples whose start state is damaged (Growing NCA's regeneration training)
     damage_area: float = 0.5    # max fraction of a damaged sample's area (blobs), each at a random strength
                                 # (certainty drops by it; strong damage leaves holes)
-    damage_kinds: list = field(default_factory=lambda: ["colour"])  # per damaged sample one of: colour (+ hidden), depth, both
+    damage_kinds: list = field(default_factory=lambda: ["colour"])  # per damaged sample one of: colour (+ hidden), depth, both,
+                                # clip (colour contrast stretched 4x around 0.5 into 0..1: clipped blobs to recover)
     # cube-v1 (net.layout; sunk/clips.py, train_cube.py): a world-fixed canvas on a virtual EAC face
     scales: list = field(default_factory=lambda: [128, 816])  # square frame size (px) range clips are cut at, log-uniform: data.size .. native centre crop
     clips: int = 64             # clips (one stream's footage, ~4 MB each) kept in RAM, refreshed in the background

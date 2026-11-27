@@ -281,7 +281,8 @@ class Net(nn.Module):
             delta = delta * (1 - self.gate * filled[:, CERT:CERT + 1].clamp(0, 1))
 
         out = filled.clone()
-        out[:, RGB] = (filled[:, RGB] + delta[:, 0:3]).clamp(0, 1.5)
+        self.raw = filled[:, RGB] + delta[:, 0:3]  # before the clamp (train.range)
+        out[:, RGB] = self.raw.clamp(0, 1.5)
         out[:, INV:INV + 1] = inv_self * torch.exp(delta[:, 3:4])
         out[:, HID] = (filled[:, HID] + delta[:, 4:]).clamp(-4, 4)
         cert = filled[:, CERT:CERT + 1]
@@ -339,7 +340,8 @@ class Net(nn.Module):
         delta = self.max_change * tau * torch.tanh(self.layers[-1](x))
 
         out = filled.clone()
-        out[:, RGB] = (filled[:, RGB] + delta[:, 0:3]).clamp(0, 1.5)
+        self.raw = filled[:, RGB] + delta[:, 0:3]  # before the clamp (train.range)
+        out[:, RGB] = self.raw.clamp(0, 1.5)
         out[:, INV:INV + 1] = inv_self * torch.exp(delta[:, 3:4])
         out[:, HID] = (filled[:, HID] + delta[:, 4:]).clamp(-4, 4)
         out[:, CERT:CERT + 1] = 1  # the next resolve replaces it with that step's weight
