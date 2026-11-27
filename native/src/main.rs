@@ -544,6 +544,11 @@ impl Zip {
         for normal in normals {
             self.velocity -= normal * self.velocity.dot(normal).min(0.);
         }
+        self.keep_above_floor(eye);
+    }
+
+    /// The head at least 1 m above the ground.
+    fn keep_above_floor(&mut self, eye: Vec3) {
         let floor = 1. - eye.y;
         if self.position.y < floor {
             self.position.y = floor;
@@ -551,12 +556,14 @@ impl Zip {
         }
     }
 
-    /// The autopilot alone (no controllers): one step of `dt` seconds (desktop.rs).
-    fn fly(&mut self, dt: f32, eye: Vec3, city: &city::City, speed: f32, body: f32) {
+    /// The autopilot alone (no controllers): one step of `dt` seconds (desktop.rs). Only the
+    /// floor holds it: the blocks are the sphere's job (desktop.rs collides with its
+    /// sensors, like everything else it shows).
+    fn fly(&mut self, dt: f32, eye: Vec3, height: f32, speed: f32) {
         let eye = self.turn() * eye;
-        self.autopilot(dt, eye, city.height, speed);
+        self.autopilot(dt, eye, height, speed);
         self.position += self.velocity * dt;
-        self.keep_out(city, eye, body);
+        self.keep_above_floor(eye);
     }
 }
 
@@ -638,8 +645,8 @@ fn panel(rule: &rule::Rule, desktop: bool) -> av_controls::Controls {
         .fader("tint", 0., 1., initial("tint", 0.3));
     let panel = if desktop {
         // keySpeed (m/s) and rotationSpeed: the controller's Player3D reads these sibling
-        // faders by id (else both are its moveSpeed); collide: the camera's push away from
-        // the sphere's geometry (desktop.rs), body its radius (motion tab).
+        // faders by id (else both are its moveSpeed); collide: the camera's brake and push
+        // at the sphere's geometry (desktop.rs, collide.rs), body its radius (motion tab).
         panel
             .section("camera")
             .player3d("camera", 1., 0.0025, true)
@@ -647,6 +654,9 @@ fn panel(rule: &rule::Rule, desktop: bool) -> av_controls::Controls {
             .fader_with("rotationSpeed", 0.5, 10., initial("rotationSpeed", 4.), 1)
             .fader_with("attention", 0., 90., initial("attention", 30.), 0)
             .switch("collide", initial("collide", 1.) > 0.5)
+            // How fast the camera is eased out of the geometry it is in (of the penetration
+            // per second); moving closer is braked, so this can stay gentle.
+            .fader_with("push", 0., 5., initial("push", 0.5), 2)
             // The controller's speed and the body's radius scaled by the distance around the
             // camera (desktop.rs).
             .switch("adaptive", initial("adaptive", 1.) > 0.5)

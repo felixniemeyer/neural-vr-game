@@ -255,6 +255,9 @@ pub struct World {
     cube_clear: bool,
     /// The store's centre: the head at the last update (None: no update yet).
     cube_centre: Option<Vec3>,
+    /// The centre the probe was seen from: `cube_centre` when its update finished (a split
+    /// update moves `cube_centre` at its start, while the probe still holds the last one's).
+    probe_centre: Option<Vec3>,
     /// The pyramid sampler (the cube's descriptors use it for all its images).
     linear: vk::Sampler,
     dump_capacity: usize,
@@ -906,6 +909,7 @@ impl World {
             cube,
             cube_clear: true,
             cube_centre: None,
+            probe_centre: None,
             linear,
             dump_capacity,
         })
@@ -1054,7 +1058,7 @@ impl World {
         }
         self.weight_count = weight_count;
         if (old[7] == 3) != (spec[7] == 3) {
-            self.cube_centre = None; // a new store starts where the head is
+            (self.cube_centre, self.probe_centre) = (None, None); // a new store starts where the head is
         }
         Ok(())
     }
@@ -1073,7 +1077,7 @@ impl World {
         cube.bind(&r.gpu.device, self.sets, self.linear);
         self.cube = cube;
         self.cube_clear = true;
-        self.cube_centre = None;
+        (self.cube_centre, self.probe_centre) = (None, None);
         Ok(())
     }
 
@@ -1081,7 +1085,7 @@ impl World {
     /// one: an update in flight is dropped) and the store recentred on the head.
     pub fn reset_cube(&mut self) {
         self.cube_clear = true;
-        self.cube_centre = None;
+        (self.cube_centre, self.probe_centre) = (None, None);
         self.stage = None;
     }
 
@@ -1456,6 +1460,7 @@ impl World {
         for (i, &image) in self.cube.mid[..2].iter().enumerate() {
             copy_to_buffer(d, cmd, image, self.cube.atlas, level, self.cube.probe.0, i as u64 * bytes);
         }
+        self.probe_centre = self.cube_centre;
         if self.split {
             for i in 0..2 {
                 copy_image(d, cmd, self.cube.state[self.parity][i], self.cube.old[i], self.cube.atlas);
@@ -1533,7 +1538,7 @@ impl World {
     /// probe: the weighted mean the coarsest mip level would hold (holes don't count, sky
     /// counts as about 0), so 1/it is the harmonic mean distance. None without coverage.
     pub fn mean_inverse_depth(&self) -> Option<f32> {
-        self.cube_centre?;
+        self.probe_centre?;
         let (mut inv, mut weight) = (0f32, 0f32);
         for (_, _, _, a, b) in self.cube_probe() {
             if a.is_finite() && b.is_finite() && b > 0. {
@@ -1543,10 +1548,18 @@ impl World {
         (weight > 1e-3).then(|| inv / weight)
     }
 
-    /// cube-v1: the sphere probe (the last update's state, seen from the store's centre)
-    /// as world points, one per face texel of the probe level with weight >= 0.3.
-    fn cube_surroundings(&self) -> Vec<Vec3> {
-        let Some(centre) = self.cube_centre else { return Vec::new() };
+    /// cube-v1: where the probe was seen from (None: no update finished yet).
+    pub fn probe_centre(&self) -> Option<Vec3> {
+        self.probe_centre
+    }
+
+    /// cube-v1: the sphere probe as a sensor field around `probe_centre`: per face texel of
+    /// the probe level with weight >= 0.3 (holes and sky give none), its direction and the
+    /// distance to the geometry along it (m).
+    pub fn sensors(&self) -> Vec<(Vec3, f32)> {
+        if self.probe_centre.is_none() {
+            return Vec::new();
+        }
         let step = (1u32 << self.cube.probe_level) as f32;
         let angle = std::f32::consts::FRAC_PI_2 / self.cube.face as f32;
         self.cube_probe()
@@ -1559,10 +1572,15 @@ impl World {
                 let fine = |l: i32| (l as f32 + 0.5) * step - 0.5;
                 let t = Vec2::new(fine(lx), fine(ly)).map(|c| ((c + 0.5) * angle - std::f32::consts::FRAC_PI_4).tan());
                 let (forward, up) = (CUBE_FORWARD[f], CUBE_UP[f]);
-                let dir = (forward.cross(up) * t.x - up * t.y + forward).normalize();
-                Some(centre + dir / inv)
+                Some(((forward.cross(up) * t.x - up * t.y + forward).normalize(), 1. / inv))
             })
             .collect()
+    }
+
+    /// cube-v1: the sensors as world points (the VR brake).
+    fn cube_surroundings(&self) -> Vec<Vec3> {
+        let Some(centre) = self.probe_centre else { return Vec::new() };
+        self.sensors().into_iter().map(|(dir, distance)| centre + dir * distance).collect()
     }
 
     fn captured(&self) -> &[[u16; 4]] {
