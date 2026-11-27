@@ -14,9 +14,8 @@
 // exp(-(error / SIGMA)^2); the moved point's distance and the motion input (texels moved,
 // change of log distance, per tick).
 //
-// Then the scene blend of resolve.frag's v2 branch (the runtime's "observe"): where an eye
-// sees the scene in this direction, colour, depth and velocity move toward it by min(w, 1)
-// times the frame's mixing. Written premultiplied by w (cube.glsl mid A..D).
+// Written premultiplied by w (cube.glsl mid A..D); the observation is net.frag's, after
+// the net. The motion stays in face texels (pull nets were trained so).
 
 layout(location = 0) out vec4 outA; // (rgb, inv) w
 layout(location = 1) out vec4 outB; // (velocity w, w)
@@ -122,21 +121,6 @@ void main() {
     float logChange = log(distance * max(inv, 1e-6)) * seen;
     inv = seen / distance;
     vec2 moved = here - best;
-
-    // Scene blend (resolve.frag, v2 branch).
-    vec4 g;
-    vec3 sceneVelocity;
-    float fade, sky;
-    vec2 centred;
-    if (sceneDir(faceDir(f, here), inv > 1e-6 ? 1.0 / inv : 20.0, g, sceneVelocity, fade, sky, centred)) {
-        float focus = 1.0 + u.mixing.w * exp(-dot(centred, centred) / 0.18);
-        float present = min(w, 1.0);
-        float alpha = present * min(fade * u.mixing.x * (1.0 - sky) * focus, 1.0);
-        float depthAlpha = present * min(fade * u.mixing.z * focus, 1.0);
-        rgb = mix(rgb, g.rgb, alpha);
-        inv = mix(inv, g.w, depthAlpha);
-        velocity = mix(velocity, sceneVelocity, depthAlpha);
-    }
 
     bool broken = isnan(w) || isinf(w) || any(isnan(vec4(rgb, inv))) || any(isnan(h)) || isnan(logChange);
     if (broken) w = 0.0;

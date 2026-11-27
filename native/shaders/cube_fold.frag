@@ -12,7 +12,7 @@
 // in their gutters on it (tents within a texel of an edge; adjacent EAC grids meet exactly,
 // so the spill texel just past a neighbour's edge is this texel). Gutter texels take the
 // folded sums of the face texel that owns their direction (nearest), for the mips.
-// Then the scene blend and the outputs exactly as cube_pull.frag.
+// Then the outputs as cube_pull.frag's (the observation is net.frag's, after the net).
 
 layout(location = 0) out vec4 outA; // (rgb, inv) w
 layout(location = 1) out vec4 outB; // (velocity w, w)
@@ -71,21 +71,6 @@ void main() {
     vec4 h = C * k;
     vec3 motion = D.xyz * k;
     float w = min(W, 1.0) * B.w / (D.w + SPLAT_EPS);
-
-    // Scene blend (cube_pull.frag's, resolve.frag v2 branch), in this texel's own direction.
-    vec4 g;
-    vec3 sceneVelocity;
-    float fade, sky;
-    vec2 centred;
-    if (sceneDir(faceDir(f, here), inv > 1e-6 ? 1.0 / inv : 20.0, g, sceneVelocity, fade, sky, centred)) {
-        float focus = 1.0 + u.mixing.w * exp(-dot(centred, centred) / 0.18);
-        float present = min(w, 1.0);
-        float alpha = present * min(fade * u.mixing.x * (1.0 - sky) * focus, 1.0);
-        float depthAlpha = present * min(fade * u.mixing.z * focus, 1.0);
-        rgb = mix(rgb, g.rgb, alpha);
-        inv = mix(inv, g.w, depthAlpha);
-        velocity = mix(velocity, sceneVelocity, depthAlpha);
-    }
 
     bool broken = isnan(w) || isinf(w) || any(isnan(vec4(rgb, inv))) || any(isnan(h)) || any(isnan(motion));
     if (broken) w = 0.0;

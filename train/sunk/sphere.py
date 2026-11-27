@@ -49,6 +49,68 @@ def direction_at(x, angle, origin):
     return F.normalize(d, dim=-1)
 
 
+def front_of(up):
+    """A unit vector perpendicular to `up` [..., 3]: the local frames' fallback axis
+    where a direction is parallel to up (world.rs front_of does the same)."""
+    x = torch.zeros_like(up)
+    x[..., 0] = 1
+    z = torch.zeros_like(up)
+    z[..., 2] = 1
+    f = torch.linalg.cross(up, x)
+    return F.normalize(torch.where(f.norm(dim=-1, keepdim=True) > 1e-3, f, torch.linalg.cross(up, z)), dim=-1)
+
+
+def local_frame(d, up, front):
+    """The gravity frame at unit directions d [..., 3]: (right, up along the sphere) of the
+    image there, as cube.glsl localFrame. Canvas coords (x right, y up, z ahead) are
+    left-handed and the runtime's world right-handed, so the crosses swap: here right =
+    cross(up, d) (at the horizon facing ahead: +x), up' = cross(d, right); at the poles
+    cross(front, d). up, front broadcast."""
+    r = torch.linalg.cross(up.expand_as(d), d)
+    r = torch.where((r * r).sum(-1, keepdim=True) > 1e-8, r, torch.linalg.cross(front.expand_as(d), d))
+    r = F.normalize(r, dim=-1)
+    return r, torch.linalg.cross(d, r)
+
+
+def frame_motion(d, q, up, front, angle):
+    """Where the point q [B, ..., 3] lies seen from the direction d [B, ..., 3] (unit), in
+    texels of d's gravity frame: (right, down), the inverse of a tap (cube_splat.vert).
+    Behind (cos < 0.05): 0. angle [B] rad per texel."""
+    right, upl = local_frame(d, up, front)
+    qn = F.normalize(q, dim=-1)
+    z = (qn * d).sum(-1)
+    a = angle.view((-1,) + (1,) * (d.dim() - 2))
+    x = torch.atan2((qn * right).sum(-1), z) / a
+    y = torch.atan2(-(qn * upl).sum(-1), z) / a
+    return torch.stack([x, y], -1) * (z > 0.05).unsqueeze(-1).to(d.dtype)
+
+
+def tap_tangents(taps, angle):
+    """Per tap (level, tan(dx * angle), tan(dy * angle)): the tap's tangent-plane offsets
+    (world.rs computes the same for net.frag's netTaps). angle [B] -> [B, T, 2]."""
+    off = torch.tensor([[dx, dy] for _, dx, dy in taps], dtype=torch.float32)
+    return torch.tan(off[None] * angle.view(-1, 1, 1))
+
+
+def tap_grids(taps, angle, origin, up, h, w, inner=None):
+    """grid_sample grids of each tap (forward_v2's `grids`) for the canvas (h, w) of
+    (angle [B], origin [B, 2]), at the texels `inner` (y0, y1, x0, x1): the tap's
+    direction is normalize(d + tx right - ty up') in the texel's gravity frame (up [B, 3]
+    in canvas coords), so the taps keep their shape and orientation everywhere on the
+    sphere. Returns [T] grids [B, hi, wi, 2]."""
+    y0, y1, x0, x1 = inner or (0, h, 0, w)
+    d = directions(angle, origin, h, w)[:, y0:y1, x0:x1]
+    up = up.view(-1, 1, 1, 3)
+    right, upl = local_frame(d, up, front_of(up))
+    t = tap_tangents(taps, angle)
+    grids = []
+    for k in range(len(taps)):
+        tx, ty = t[:, k, 0].view(-1, 1, 1, 1), t[:, k, 1].view(-1, 1, 1, 1)
+        x = texel_of(d + tx * right - ty * upl, angle, origin)
+        grids.append(to_grid(x, h, w))
+    return grids
+
+
 def texel_of(p, angle, origin):
     """Canvas texel coords [B, ..., 2] of points p [B, ..., 3] (any length, z > 0)."""
     shape = (-1,) + (1,) * (p.dim() - 2)
@@ -159,8 +221,25 @@ def pull(state, angle, origin, delta, dt, levels=5, sigma=0.5, inner=None):
     return out, (here - x).permute(0, 3, 1, 2), log_change
 
 
-def splat(state, angle, origin, delta, dt, inner=None, nearness=2.0):
-    """One step of splat reprojection on a canvas: pull's signature and returns.
+def splat(state, angle, origin, delta, dt, up, inner=None, nearness=2.0):
+    """One step of splat reprojection on a canvas: splat_sums, then splat_resolve."""
+    return splat_resolve(*splat_sums(state, angle, origin, delta, dt, up, inner, nearness), state.shape[1])
+
+
+def splat_resolve(acc, cover, c):
+    """The sums of splat_sums (state channels c) normalised: (state with CERT = the new
+    certainty, displacement [B, 2, ...], change of log distance [B, 1, ...]). Sums are
+    additive, so parts of a canvas can be splatted apart and added before this."""
+    sum_c, sum_n = acc[:, -2:-1], acc[:, -1:]
+    mean = acc[:, :-2] / (sum_c + SPLAT_EPS)
+    out = mean[:, :c].clone()
+    out[:, CERT:CERT + 1] = cover.clamp_max(1) * sum_c / (sum_n + SPLAT_EPS)
+    return out, mean[:, c:c + 2], mean[:, c + 2:c + 3]
+
+
+def splat_sums(state, angle, origin, delta, dt, up, inner=None, nearness=2.0):
+    """The sums of one step of splat reprojection on a canvas (pull's signature):
+    (acc [B, C + 5, hi, wi], cover [B, 1, hi, wi]), splat_resolve normalises them.
 
     Every source texel moves forward (its point after this step's motion, as in pull) and
     lands as a 2x2 tent (weights w) on the targets around it. Overlaps: each point also
@@ -169,7 +248,8 @@ def splat(state, angle, origin, delta, dt, inner=None, nearness=2.0):
         values      = sum(w n c v) / sum(w n c)
         certainty   = min(sum(w), 1) * sum(w n c) / sum(w n)
     sum(w) is the plain coverage: where nothing lands the certainty is 0 (an honest hole).
-    Each point carries its own displacement (target - source, texels) and change of log
+    Each point carries its own displacement (frame_motion: where it moved, in texels of
+    its source direction's gravity frame, up [B, 3] in canvas coords) and change of log
     distance. Sources: the whole canvas; targets: `inner` (points landing outside are
     lost). Positions carry no gradients, the splatted values do (as pull's read).
     native/shaders/cube_splat.vert + cube_fold.frag do the same on the sphere."""
@@ -179,8 +259,6 @@ def splat(state, angle, origin, delta, dt, inner=None, nearness=2.0):
     step = torch.as_tensor(dt, dtype=state.dtype).reshape(-1, 1, 1, 1)
     inv, cert = state[:, INV], state[:, CERT].clamp_min(0)
     dirs = directions(angle, origin, h, w).expand(b, -1, -1, -1)
-    j, i = torch.meshgrid(torch.arange(h, dtype=state.dtype), torch.arange(w, dtype=state.dtype), indexing="ij")
-    grid = torch.stack([i, j], -1)[None]
     # The moved point, with gradients (its distance is a value), and its landing place without.
     q = dirs / inv.clamp_min(1e-6)[..., None] + state[:, VEL].permute(0, 2, 3, 1) * step - delta[:, None, None]
     distance = q.norm(dim=-1).clamp_min(0.05)
@@ -190,9 +268,10 @@ def splat(state, angle, origin, delta, dt, inner=None, nearness=2.0):
         target = texel_of(q.detach(), angle, origin)
         near = ((1 / distance.detach()).clamp(0.01, 20.0) * NEAR_SCALE) ** nearness
         cx, cy = target[..., 0] - x0, target[..., 1] - y0
+        up_ = up.view(-1, 1, 1, 3)
+        displacement = frame_motion(dirs, q.detach(), up_, front_of(up_), angle).permute(0, 3, 1, 2) * seen[:, None]
     moved = state.clone()
     moved[:, INV] = seen / distance
-    displacement = (target - grid).permute(0, 3, 1, 2) * seen[:, None]
     log_change = (torch.log(distance * inv.clamp_min(1e-6)) * seen)[:, None]
     # Channels: values * c, then c (-> sum w n c), 1 (-> sum w n); all times w n.
     values = torch.cat([moved * cert[:, None], displacement * cert[:, None], log_change * cert[:, None],
@@ -209,12 +288,7 @@ def splat(state, angle, origin, delta, dt, inner=None, nearness=2.0):
             index = (y.clamp(0, hi - 1) * wi + x.clamp(0, wi - 1)).long().flatten(1)[:, None]
             acc = acc.scatter_add(2, index.expand(-1, k, -1), values * (tent * near).flatten(1)[:, None])
             cover = cover.scatter_add(2, index, tent.flatten(1)[:, None])
-    acc, cover = acc.view(b, k, hi, wi), cover.view(b, 1, hi, wi)
-    sum_c, sum_n = acc[:, -2:-1], acc[:, -1:]
-    mean = acc[:, :-2] / (sum_c + SPLAT_EPS)
-    out = mean[:, :c].clone()
-    out[:, CERT:CERT + 1] = cover.clamp_max(1) * sum_c / (sum_n + SPLAT_EPS)
-    return out, mean[:, c:c + 2], mean[:, c + 2:c + 3]
+    return acc.view(b, k, hi, wi), cover.view(b, 1, hi, wi)
 
 
 def look_at(d):
@@ -265,12 +339,33 @@ def _check():
 
     # splat: identity, the same translation, and occlusion (a near patch moving over a
     # static far background wins where it lands; where it left, a hole).
-    out, disp, logc = splat(state, angle, origin, torch.zeros(b, 3), torch.zeros(b))
+    # Gravity frames: at the horizon facing ahead, right = +x, up' = +y; a tap's direction
+    # comes back as its offset (frame_motion inverts tap_grids exactly).
+    up = torch.tensor([[0.0, 1.0, 0.0], [0.3, 0.9, -0.2]])
+    up = up / up.norm(dim=-1, keepdim=True)
+    r, u_ = local_frame(torch.tensor([[0.0, 0.0, 1.0]]), up[:1], front_of(up[:1]))
+    assert (r - torch.tensor([1.0, 0, 0])).abs().max() < 1e-6 and (u_ - torch.tensor([0, 1.0, 0])).abs().max() < 1e-6, "horizon frame"
+    taps = [(0, 1.0, 0.0), (2, -3.0, 4.0), (5, 20.0, -31.0)]
+    d = directions(angle, origin, h, w)
+    front = front_of(up.view(-1, 1, 1, 3))
+    right, upl = local_frame(d, up.view(-1, 1, 1, 3), front)
+    t = tap_tangents(taps, angle)
+    for k, (_, dx, dy) in enumerate(taps):
+        q = d + t[:, k, 0].view(-1, 1, 1, 1) * right - t[:, k, 1].view(-1, 1, 1, 1) * upl
+        m = frame_motion(d, q * 2.5, up.view(-1, 1, 1, 3), front, angle)
+        assert (m - torch.tensor([dx, dy])).abs().max() < 1e-3, "tap <-> motion"
+    up = torch.tensor([[0.0, 1.0, 0.0]]).expand(b, 3)
+
+    out, disp, logc = splat(state, angle, origin, torch.zeros(b, 3), torch.zeros(b), up)
     core = (slice(None), slice(None), slice(2, -2), slice(2, -2))
     assert (out[:, :3] - state[:, :3])[core].abs().max() < 1e-3 and (out[:, CERT] - 1)[:, 2:-2, 2:-2].abs().max() < 1e-3, "identity splat"
     assert disp.abs().max() < 1e-4 and logc.abs().max() < 1e-4
-    out, disp, _ = splat(plane, angle, origin, delta, torch.zeros(b))
+    out, disp, _ = splat(plane, angle, origin, delta, torch.zeros(b), up)
     centre = disp[:, 0, h // 2 - 4:h // 2 + 4, w // 2 - 4:w // 2 + 4].mean((1, 2))
+    # In the gravity frame: along right (horizontal, x . right = cos u) at distance
+    # 5 sqrt(1 + tan^2 u + tan^2 v): -dx cos u / distance rad.
+    v = (origin[:, 1] + h / 2) * angle - QUARTER
+    expect = -delta[:, 0] * torch.cos(u) / (5.0 * torch.sqrt(1 + torch.tan(u) ** 2 + torch.tan(v) ** 2)) / angle
     print("splat plane shift texels", centre.tolist(), "expected", expect.tolist())
     assert (centre - expect).abs().max() < 0.02 * expect.abs().max(), "splat translation"
     scene = torch.zeros(1, 12, h, w)
@@ -283,7 +378,7 @@ def _check():
     scene[:, INV, 8:16, 4:10] = 1 / 2.0
     scene[:, CERT, 8:16, 4:10] = 1
     scene[:, VEL.start, 8:16, 4:10] = 0.06 * 3  # m/s: 3 texels (0.03 rad at 2 m = 0.06 m) in dt = 1/3 s
-    out, _, _ = splat(scene, angle[:1], origin[:1], torch.zeros(1, 3), torch.tensor([1 / 3]))
+    out, _, _ = splat(scene, angle[:1], origin[:1], torch.zeros(1, 3), torch.tensor([1 / 3]), up[:1])
     landed = out[0, :, 9:15, 9:12]  # covered by the patch's new place, over background
     print("occlusion: blue where the patch lands", landed[2].mean().item(), "red", landed[0].mean().item())
     assert landed[2].min() > 0.95 and landed[0].max() < 0.05, "nearer wins"

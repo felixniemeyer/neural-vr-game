@@ -8,10 +8,16 @@ a canvas, into ordinary video:
   clips (sunk/clips.py)  footage at a random scale; the canvas is a rectangle of a
                          virtual EAC face, world-fixed, its texel angle the frame's
                          centre pixel at that scale (the net sees it as `scale`)
-  per step               pull the canvas with the head's translation and the objects'
-                         velocity; around it a context ring of footage (of the step the
-                         state represents, never the target) feeds only the pyramid, so
-                         the coarse taps see surroundings; the net runs on the canvas
+  per step               around the carried state (the canvas and a band, train.band)
+                         a context ring of footage (of the step the state represents,
+                         never the target); all of it moves by the head's translation and
+                         the objects' velocity (splat), so the coarse taps see moved
+                         surroundings with their motion, as on the sphere; the net runs on
+                         the canvas and the band (what moves in from the far ring, hidden
+                         0, gets the net's hidden state in the band before it arrives),
+                         its taps in each texel's gravity frame (up: the video's y axis);
+                         then the observation (train.observe) blends toward the footage,
+                         after the net as at runtime
   view                   a canvas-sized view sweeps over the canvas and back
                          (train.turn): texels out of view keep their state, and when
                          they come back their pixel losses weigh train.recall more
@@ -33,11 +39,12 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint
 
 from sunk.clips import ClipPool, Clips, focal_of
 from sunk.config import load
-from sunk.model import CERT, HID, INV, RGB, VEL, Net, init_from, load_export, scale_code
-from sunk.sphere import directions, pull, splat
+from sunk.model import CERT, INV, RGB, VEL, Net, init_from, load_export, scale_code
+from sunk.sphere import directions, pull, splat_resolve, splat_sums, tap_grids
 from train import Footage, damage, gradients, on_mains, pixel_weight, preview, style, tone
 
 FLAGS = 2  # carried after the net's channels: seen (ever known), missed (out of view since);
@@ -101,11 +108,13 @@ def make_batch(footage, streams, config, steps, rng, strides, sweep=True):
     """Per stream (clip, frame f, stride): K = steps net steps. Returns a dict of
     [B, K+1, ...] truth (rgb, inv, vel, inside), landed [B, K+1], delta [B, K, 3] (head
     translation per step, canvas frame, m), dt [B], angle [B], origin [B, 2] (inner
-    canvas), view [B, K+1, N, N] (where the sweeping view is)."""
+    canvas), up [B, 3] (the video's up, its y axis, in canvas coords), view [B, K+1, nb, nb]
+    (canvas + band: where the sweeping view is on the canvas, the band always)."""
     t = config.train
     n = t.crop + 2 * t.margin
+    band, nb, _ = band_of(config)
     big = n + 2 * t.context
-    out = {key: [] for key in ("rgb", "inv", "vel", "inside", "landed", "delta", "dt", "angle", "origin", "view")}
+    out = {key: [] for key in ("rgb", "inv", "vel", "inside", "landed", "delta", "dt", "angle", "origin", "up", "view")}
     for s, stride in zip(streams, strides):
         clip = s.clip
         chunk = footage.chunks[clip.c]
@@ -137,29 +146,40 @@ def make_batch(footage, streams, config, steps, rng, strides, sweep=True):
         out["dt"].append(torch.tensor(float(stride) / fps))
         out["angle"].append(torch.tensor(clip.angle, dtype=torch.float32))
         out["origin"].append(clip.origin + t.context)
+        out["up"].append(clip.cams[0][1].float())  # canvas -> camera 0 maps it to camera 0's y
         # The view: canvas-sized, its centre sweeping out to `amplitude` and back.
         amplitude = t.turn * n * rng.random() if sweep else 0.0
         heading = rng.normal(size=2)
         heading = heading / np.linalg.norm(heading)
-        j, i = torch.meshgrid(torch.arange(n) + 0.5, torch.arange(n) + 0.5, indexing="ij")
+        j, i = torch.meshgrid(torch.arange(nb) + 0.5 - band, torch.arange(nb) + 0.5 - band, indexing="ij")
+        canvas = (i >= 0) & (i < n) & (j >= 0) & (j < n)
         views = []
         for k in range(steps + 1):
             cx, cy = n / 2 + amplitude * np.sin(np.pi * k / steps) * heading
-            views.append((((i - cx).abs() <= n / 2) & ((j - cy).abs() <= n / 2)).float())
+            views.append((((i - cx).abs() <= n / 2) & ((j - cy).abs() <= n / 2) | ~canvas).float())
         out["view"].append(torch.stack(views))
     return {key: torch.stack(v) for key, v in out.items()}
 
 
-def start_state(batch, channels, context):
-    """The canvas (inner) at step 0 from the footage, plus the flags."""
+def band_of(config):
+    """(W, nb, e): texels of the ring the net evolves (train.band, at most the context),
+    the carried state's side (canvas + band), its offset in the big canvas."""
+    t = config.train
+    n = t.crop + 2 * t.margin
+    w = min(t.band, t.context)
+    return w, n + 2 * w, t.context - w
+
+
+def start_state(batch, channels, config):
+    """The canvas + band at step 0 from the footage, plus the flags."""
+    _, nb, e = band_of(config)
     b = len(batch["dt"])
-    m = batch["inv"].shape[-1]
-    inner = slice(context, m - context)
-    state = torch.zeros(b, 2 * channels + FLAGS, m - 2 * context, m - 2 * context)
-    known = batch["inside"][:, 0, inner, inner] * batch["view"][:, 0]
-    state[:, RGB] = batch["rgb"][:, 0, :, inner, inner]
-    state[:, INV] = batch["inv"][:, 0, inner, inner]
-    state[:, VEL] = batch["vel"][:, 0, :, inner, inner]
+    rect = slice(e, e + nb)
+    state = torch.zeros(b, 2 * channels + FLAGS, nb, nb)
+    known = batch["inside"][:, 0, rect, rect] * batch["view"][:, 0]
+    state[:, RGB] = batch["rgb"][:, 0, :, rect, rect]
+    state[:, INV] = batch["inv"][:, 0, rect, rect]
+    state[:, VEL] = batch["vel"][:, 0, :, rect, rect]
     state[:, CERT] = 1
     state[:, :channels] *= known[:, None]  # outside the frame: holes
     state[:, channels] = known  # seen
@@ -167,9 +187,9 @@ def start_state(batch, channels, context):
     return state
 
 
-def ring(batch, k, state_inner, weight, context, channels):
-    """The big canvas: the footage of step k around the inner state (hidden 0, weight
-    train.context_weight where the frame has it), inner = the state."""
+def ring(batch, k, state_band, weight, e, channels):
+    """The big canvas: the footage of step k (hidden 0, weight train.context_weight where
+    the frame has it) around the carried canvas + band (at offset e)."""
     b, _, m, _ = batch["rgb"][:, k].shape
     big = torch.zeros(b, channels, m, m)
     inside = batch["inside"][:, k]
@@ -178,25 +198,37 @@ def ring(batch, k, state_inner, weight, context, channels):
     big[:, VEL] = batch["vel"][:, k]
     big[:, CERT] = inside * weight
     big = big.clone()
-    big[:, :, context:m - context, context:m - context] = state_inner
+    nb = state_band.shape[-1]
+    big[:, :, e:e + nb, e:e + nb] = state_band
     return big
 
 
+def paste(whole, part, rect):
+    """whole [..., M, M] with part in [..., rect, rect]."""
+    out = whole.clone()
+    out[..., rect, rect] = part
+    return out
+
+
 def rollout(net, config, batch, observe, start=None, ages=None, periods=None, ticks=None, record=False):
-    """Loss over the batch's steps (see the module docstring). start: carried states
-    [C + FLAGS, N, N] per sample or None (fresh from the footage); ages [B] seconds since
+    """Loss over the batch's steps (see the module docstring). The carried state is the
+    canvas and a band of the ring around it (train.band): the net evolves both, the
+    losses look at the canvas only, so what moves into the canvas arrives with a hidden
+    state the net made (the far ring is footage, hidden 0). start: carried states
+    [C + FLAGS, nb, nb] per sample or None (fresh from the footage); ages [B] seconds since
     each stream's real start (training; None: validation, all steps alike); periods:
-    (period, phase) maps [B, 1, N, N] or None (every tick); ticks [B]: each stream's tick
+    (period, phase) maps [B, 1, nb, nb] or None (every tick); ticks [B]: each stream's tick
     count at step 0 (for the phases).
     Returns (loss, recorded frames, final state, recall error sum, recall count)."""
     t, near = config.train, config.net.near
     channels, ctx = net.channels, t.context
+    band, nb, e = band_of(config)
+    n = nb - 2 * band
     steps = batch["delta"].shape[1]
     b = len(batch["dt"])
-    fresh = start_state(batch, channels, ctx)
+    fresh = start_state(batch, channels, config)
     keep = channels + FLAGS if periods is None else 2 * channels + FLAGS  # the period target only when on
     state = torch.stack([(s if s is not None else fresh[i])[:keep] for i, s in enumerate(start)]) if start else fresh[:, :keep]
-    n = state.shape[-1]
     if t.damage and ages is not None:
         body, _ = damage(state[:, :channels], t.damage, t.damage_area, t.damage_kinds)
         state = torch.cat([body, state[:, channels:]], 1)
@@ -204,55 +236,73 @@ def rollout(net, config, batch, observe, start=None, ages=None, periods=None, ti
     scale = scale_code(batch["angle"])
     crop = torch.zeros(1, 1, n, n)
     crop[..., t.margin:n - t.margin, t.margin:n - t.margin] = 1
-    inner = (ctx, ctx + n, ctx, ctx + n)
+    m = batch["rgb"].shape[-1]
+    rect = slice(e, e + nb)
+    region = (e, e + nb, e, e + nb)  # the net's outputs: canvas + band, in the big canvas
+    io = slice(band, band + n)  # the canvas within the carried state
+    ci = slice(ctx, ctx + n)  # ... and within the big canvas
+    origin = batch["origin"] - ctx  # the big canvas's
+    grids = tap_grids(net.taps, batch["angle"], origin, batch["up"], m, m, region)
     loss, total_known, frames = 0.0, 0.0, []
     recall_sum, recall_count = 0.0, 0.0
     for k in range(steps):
-        # Sources: the whole big canvas (the carried state inside, the footage of step k
-        # around it, as the runtime's sphere has what it saw); reads past it clamp to its
-        # border. Targets: the inner canvas only.
-        source = ring(batch, k, state[:, :channels], t.context_weight, ctx, channels)
-        parts = [source, F.pad(state[:, channels:channels + FLAGS], (ctx, ctx, ctx, ctx))]
+        # Sources: the whole big canvas (the carried state, the footage of step k around
+        # it, as the runtime's sphere has what it saw), all moved forward: the coarse taps
+        # see moved surroundings with their motion, as on the sphere.
+        source = ring(batch, k, state[:, :channels], t.context_weight, e, channels)
+        parts = [source, F.pad(state[:, channels:channels + FLAGS], (e, e, e, e))]
         if periods is not None:
-            parts.append(ring(batch, k, state[:, channels + FLAGS:], t.context_weight, ctx, channels))
+            parts.append(ring(batch, k, state[:, channels + FLAGS:], t.context_weight, e, channels))
         source = torch.cat(parts, 1)
         if net.reproject == "splat":
-            pulled, displacement, log_change = splat(source, batch["angle"], batch["origin"] - ctx, batch["delta"][:, k],
-                                                     batch["dt"], inner=inner, nearness=net.nearness)
-        else:
-            pulled, displacement, log_change = pull(source, batch["angle"], batch["origin"] - ctx, batch["delta"][:, k],
-                                                    batch["dt"], levels=net.levels, inner=inner)
-        weight = pulled[:, CERT:CERT + 1]
+            # Only the carried region has gradients (the far ring is footage), so the sums
+            # of the whole canvas come without them and the region's own points add theirs
+            # (same values: sums - sums.detach()); a big splat with gradients would keep 4
+            # tent copies of every channel per step.
+            step = (batch["delta"][:, k], batch["dt"], batch["up"])
+            with torch.no_grad():
+                acc, cover = splat_sums(source, batch["angle"], origin, *step, nearness=net.nearness)
+            part, _ = splat_sums(source[..., rect, rect], batch["angle"], origin + e, *step, nearness=net.nearness)
+            acc = paste(acc, acc[..., rect, rect] + part - part.detach(), rect)
+            moved, displacement, log_change = splat_resolve(acc, cover, source.shape[1])
+        else:  # pull: only the region (its search is costly), the far ring stays as it is
+            pulled, disp, logc = pull(source, batch["angle"], origin, batch["delta"][:, k], batch["dt"],
+                                      levels=net.levels, inner=region)
+            moved = paste(source, pulled, rect)
+            displacement = F.pad(disp, (e, e, e, e))
+            log_change = F.pad(logc, (e, e, e, e))
+        weight = moved[:, CERT:CERT + 1, ci, ci]
         hole = (weight < 0.01).float()
-        flags = (pulled[:, channels:channels + FLAGS] > 0.5).float()
-        body = pulled[:, :channels]
-        target = pulled[:, channels + FLAGS:]
+        flags = (moved[:, channels:channels + FLAGS, rect, rect] > 0.5).float()
+        body = moved[:, :channels, rect, rect]
+        target = moved[:, channels + FLAGS:, rect, rect]
         per_tick = tau_step.view(-1, 1, 1, 1).clamp_min(1e-6)
         motion = torch.cat([displacement, log_change], 1) / per_tick
-        big = ring(batch, k, body, t.context_weight, ctx, channels)
-        motion_big = F.pad(motion, (ctx, ctx, ctx, ctx))
+        # The net's activations are recomputed in the backward pass (checkpoint): on the
+        # canvas + band they would be most of the memory, 8 steps of them.
+        run = lambda tau: checkpoint(net, moved[:, :channels], tau, motion, scale, region, grids, use_reentrant=False)
         if periods is None:
-            pred = net(big, tau_step, motion_big, scale, inner)
+            pred = run(tau_step)
             new = pred
         else:
             period, phase = periods
             beat = (ticks.view(-1, 1, 1, 1) + k - phase) % period
             due = (beat == 0).float()
             remaining = period - beat
-            pred = net(big, tau_step.view(-1, 1, 1, 1) * period, motion_big, scale, inner)
+            pred = run(tau_step.view(-1, 1, 1, 1) * period)
             target = pred * due + target * (1 - due)
             new = body + (target - body) / remaining
             new[:, CERT:CERT + 1] = 1
-        # Truth of step k + 1, where the view sees the footage.
+        # Truth of step k + 1, where the view sees the footage; the losses on the canvas.
         landed = batch["landed"][:, k + 1].view(-1, 1, 1, 1)
-        inside = batch["inside"][:, k + 1, None, ctx:ctx + n, ctx:ctx + n]
-        known = inside * batch["view"][:, k + 1, None] * landed
-        recall = known * flags[:, 1:2]
+        seen_now = batch["inside"][:, k + 1, None, rect, rect] * batch["view"][:, k + 1, None] * landed
+        known = seen_now[..., io, io]
+        recall = known * flags[:, 1:2, io, io]
         score = known * crop
-        truth_rgb = batch["rgb"][:, k + 1, :, ctx:ctx + n, ctx:ctx + n]
-        truth_inv = batch["inv"][:, k + 1, None, ctx:ctx + n, ctx:ctx + n]
-        image = torch.cat([new[:, RGB], new[:, INV:INV + 1] * near], 1)
-        goal = torch.cat([truth_rgb, truth_inv * near], 1)
+        truth_rgb = batch["rgb"][:, k + 1, :, rect, rect]
+        truth_inv = batch["inv"][:, k + 1, None, rect, rect]
+        image = torch.cat([new[:, RGB, io, io], new[:, INV:INV + 1, io, io] * near], 1)
+        goal = torch.cat([truth_rgb[..., io, io], truth_inv[..., io, io] * near], 1)
         weights = (1 + t.hole_weight * hole + (t.recall - 1) * recall) * score
         if ages is None:
             pixels = torch.ones(b)
@@ -284,18 +334,19 @@ def rollout(net, config, batch, observe, start=None, ages=None, periods=None, ti
         recall_count = recall_count + (recall * crop).sum()
         if record:
             shown = goal[:, RGB] * (0.35 + 0.65 * known)
-            frames.append((body, hole, new, torch.cat([shown, truth_inv, torch.zeros_like(new[:, 4:])], 1)))
+            frames.append((body[..., io, io], hole, new[..., io, io], torch.cat([shown, truth_inv[..., io, io], torch.zeros_like(new[:, 4:, io, io])], 1)))
         # Flags: seen where known; missed where seen but not known now, cleared on return.
-        seen = torch.maximum(flags[:, :1], known)
-        missed = ((flags[:, 1:2] + flags[:, :1] * (1 - known)) > 0).float() * (1 - known)
-        # Observe: blend toward the footage where the view sees it (not late in a stream).
-        alpha = observe * torch.rand(b, 1, 1, 1) * known
+        seen = torch.maximum(flags[:, :1], seen_now)
+        missed = ((flags[:, 1:2] + flags[:, :1] * (1 - seen_now)) > 0).float() * (1 - seen_now)
+        # Observe (after the net, as the runtime's net.frag): blend toward the footage where
+        # the view sees it (not late in a stream).
+        alpha = observe * torch.rand(b, 1, 1, 1) * seen_now
         if ages is not None and t.observe_seconds > 0:
             alpha = alpha * ((ages + (k + 1) * batch["dt"]) <= t.observe_seconds).float().view(-1, 1, 1, 1)
         nxt = new.clone()
         nxt[:, RGB] = new[:, RGB] * (1 - alpha) + truth_rgb * alpha
         nxt[:, INV:INV + 1] = new[:, INV:INV + 1] * (1 - alpha) + truth_inv * alpha
-        nxt[:, VEL] = new[:, VEL] * (1 - alpha) + batch["vel"][:, k + 1, :, ctx:ctx + n, ctx:ctx + n] * alpha
+        nxt[:, VEL] = new[:, VEL] * (1 - alpha) + batch["vel"][:, k + 1, :, rect, rect] * alpha
         state = torch.cat([nxt, seen, missed] + ([target] if periods is not None else []), 1)
     return loss / max(float(total_known), 1.0), frames, state, recall_sum, recall_count
 
@@ -309,14 +360,14 @@ class Streams:
 
     def batch(self, rng):
         cfg = self.config
-        n = cfg.train.crop + 2 * cfg.train.margin
+        _, nb, _ = band_of(cfg)
         strides = []
         for s in self.streams:
             stride = self.footage.stride(rng)
             frames = int(cfg.train.steps * stride)
             if s.clip is None or s.f + frames >= s.clip.frames or s.age + frames > cfg.train.horizon:
                 s.clip, s.f, s.state, s.age, s.tick = self.pool.take(rng), 0, None, 0, 0
-                s.period, s.phase = tiles(rng, n, cfg.train.periods)
+                s.period, s.phase = tiles(rng, nb, cfg.train.periods)
                 while frames >= s.clip.frames:  # a short clip: the smallest stride that fits
                     stride = min(self.footage.strides)
                     frames = int(cfg.train.steps * stride)
@@ -383,8 +434,10 @@ def evaluate(project, samples=24, steps=None, chunks=None):
     steps = steps or config.train.steps
     batch = validation_set(footage, clips, config, steps, 7, count=samples)
     ctx, n = config.train.context, config.train.crop + 2 * config.train.margin
+    band = band_of(config)[0]
+    io = slice(band, band + n)
     truth = batch["rgb"][:, -1, :, ctx:ctx + n, ctx:ctx + n]
-    known = batch["inside"][:, -1, None, ctx:ctx + n, ctx:ctx + n] * batch["view"][:, -1, None]
+    known = batch["inside"][:, -1, None, ctx:ctx + n, ctx:ctx + n] * batch["view"][:, -1, None, io, io]
 
     def grad(x):
         return ((x[..., 1:, :-1] - x[..., :-1, :-1]).abs() + (x[..., :-1, 1:] - x[..., :-1, :-1]).abs()).mean((1, 2, 3))
@@ -397,6 +450,7 @@ def evaluate(project, samples=24, steps=None, chunks=None):
         net.max_change = change
         with torch.no_grad():
             loss, _, final, rs, rc = rollout(net, config, batch, 0.0)
+        final = final[..., io, io]
         image = final[:, RGB].clamp(0, 1)
         last = ((image - truth).abs().mean(1, keepdim=True) * known).sum() / known.sum().clamp_min(1)
         sharp = (grad(image) / grad(truth).clamp_min(1e-4)).mean().item()

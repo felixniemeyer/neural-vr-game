@@ -12,7 +12,7 @@ layout(set = 0, binding = 0) uniform Frame {
     vec4 net;        // taps, layers, near (m; depth scale the net was trained with), max change
     vec4 netRun;     // tau input (1, 0 for nets trained before it), certainty gate, 0, 0
     vec4 netLayers[4]; // per layer: inputs, outputs, offset into weights (vec4s), 0
-    vec4 netTaps[32];  // per tap: mip level, dx, dy (px, y down), 0
+    vec4 netTaps[32];  // per tap: mip level, dx, dy (px, y down; cube-v1: tan(dx * texel angle), tan(dy * texel angle)), 0
     vec4 city;       // cell size m, max height m, crystal fraction, blocks per side
     vec4 mixing;     // this frame's blend toward the scene: colour, sky inverse depth, depth + velocity + certainty, focus
     vec4 player;     // ground position x, z now (xy) and in the previous frame (zw)
@@ -23,6 +23,8 @@ layout(set = 0, binding = 0) uniform Frame {
     vec4 cube;
     vec4 head;       // head position (the store's centre), xyz; w: the cube atlas's gutter (texels, cube.glsl)
     vec4 headMove;   // the head's translation since the last update, xyz (a static point p becomes p - move)
+    vec4 up;         // cube-v1: the world's up (unit, xyz): the gravity frames of the net's taps and motion (cube.glsl localFrame)
+    vec4 front;      // a unit vector perpendicular to up: the frames' axis at the poles (world.rs front_of)
 } u;
 
 // Pixel convention: integer pixel centres, origin top-left, y down.

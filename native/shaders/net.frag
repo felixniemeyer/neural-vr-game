@@ -27,9 +27,10 @@
 // (B.w passes w on, for the display).
 //
 // LAYOUT 3 (cube-v1, model.py forward_v2 with scale; cube.glsl): the same as LAYOUT 2 on
-// the cube atlas (cube mid A..D, written by cube_pull.frag): taps at face texel offsets,
-// mapped across face edges; extra (1, tau, scale, 0); the pulled weight is replaced by 1
-// (as in training: the next pull's coverage and consistency make the new weight).
+// the cube atlas (cube mid A..D, written by cube_fold.frag or cube_pull.frag): taps in each
+// texel's gravity frame (directions, so face edges don't matter); extra (1, tau, scale, 0);
+// the weight is replaced by 1 (as in training: the next reprojection makes the new one);
+// then the observation blends toward the scene (train_cube.py: after the net).
 //
 // Weights (rule::pack): float16 in slots of 4; per layer 4x4 blocks (q outputs, k inputs)
 // of 4 slots, one per input holding its 4 outputs' weights, then the bias.
@@ -230,20 +231,12 @@ void mainCube() {
     }
     float k = 1.0 / max(total, 1e-6);
     s = Tap2(g.a * k, g.v * k, g.c * k, g.m * k, w);
-    // What was missing takes the scene's depth and velocity where an eye sees it.
-    float missing = 1.0 - min(w, 1.0);
-    if (missing > 0.0) {
-        vec4 scene;
-        vec3 sceneVelocity;
-        float fade, sky;
-        vec2 centred;
-        if (sceneDir(faceDir(f, here), s.a.w > 1e-6 ? 1.0 / s.a.w : 20.0, scene, sceneVelocity, fade, sky, centred) && fade > 0.0) {
-            s.a.w = mix(s.a.w, scene.w, missing);
-            s.v = mix(s.v, sceneVelocity, missing);
-        }
-    }
     float inv = s.a.w;
     float tau = u.step.y;
+    // The taps in this texel's gravity frame: offsets in its tangent plane (u.netTaps yz
+    // are tangents, world.rs cube_taps), read where that direction is (sphere.py tap_grids).
+    vec3 d = faceDir(f, here), right, up;
+    localFrame(d, right, up);
 
     [[unroll]] for (int q = 0; q < UNITS0 / 4; q++) hidden[q] = slot(OFF0 + UNITS0 * (IN0 / 4) + q);
     feed(0, vec4(s.a.rgb, inv * near));
@@ -251,7 +244,7 @@ void mainCube() {
     feed(2, vec4(s.m, w));
     [[unroll]] for (int t = 0; t < TAPS; t++) {
         vec4 tap = u.netTaps[t];
-        Tap2 v = readCube(cubeUV(f, here + tap.yz, tap.x), tap.x);
+        Tap2 v = readCube(dirUV(d + tap.y * right - tap.z * up, tap.x), tap.x);
         feed(3 + 3 * t, vec4(v.a.rgb, (v.a.w - inv) * near * min(v.w, 1.0)));
         feed(4 + 3 * t, v.c);
         feed(5 + 3 * t, vec4(v.m, v.w));
@@ -264,8 +257,26 @@ void mainCube() {
     float change = u.net.w * tau;
     vec4 d0 = change * tanh(vec4(hidden[0]));
     vec4 d1 = change * tanh(vec4(hidden[1]));
-    stateA = vec4(clamp(s.a.rgb + d0.rgb, 0.0, 1.5), inv * exp(d0.w));
-    stateB = vec4(s.v, 1.0);
+    vec3 rgb = clamp(s.a.rgb + d0.rgb, 0.0, 1.5);
+    float invOut = inv * exp(d0.w);
+    vec3 velocity = s.v;
+    // The observation, after the net (train_cube.py's observe): where an eye sees this
+    // direction, colour, depth and velocity move toward the scene by this update's rates
+    // (u.mixing, per update; world.rs); the hidden state is the net's alone.
+    vec4 scene;
+    vec3 sceneVelocity;
+    float fade, sky;
+    vec2 centred;
+    if (sceneDir(d, invOut > 1e-6 ? 1.0 / invOut : 20.0, scene, sceneVelocity, fade, sky, centred)) {
+        float focus = 1.0 + u.mixing.w * exp(-dot(centred, centred) / 0.18);
+        float alpha = min(fade * u.mixing.x * (1.0 - sky) * focus, 1.0);
+        float depthAlpha = min(fade * u.mixing.z * focus, 1.0);
+        rgb = mix(rgb, scene.rgb, alpha);
+        invOut = mix(invOut, scene.w, depthAlpha);
+        velocity = mix(velocity, sceneVelocity, depthAlpha);
+    }
+    stateA = vec4(rgb, invOut);
+    stateB = vec4(velocity, 1.0);
     stateC = clamp(s.c + d1, -4.0, 4.0);
 }
 

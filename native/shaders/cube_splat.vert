@@ -18,7 +18,7 @@ layout(push_constant) uniform Push { int target; int source; int mode; } pc;
 layout(location = 0) flat out vec4 vA; // rgb, inverse distance after the move
 layout(location = 1) flat out vec4 vB; // velocity, certainty
 layout(location = 2) flat out vec4 vC; // h0..h3
-layout(location = 3) flat out vec4 vD; // motion (texels moved xy, change of log distance), nearness
+layout(location = 3) flat out vec4 vD; // motion (texels moved in the source's gravity frame xy, change of log distance), nearness
 layout(location = 4) flat out vec2 vCenter;
 
 const float NEAR_SCALE = 2.2360680; // sqrt(5), sphere.py
@@ -45,9 +45,13 @@ void main() {
     float distance = max(length(q), 0.05);
     int g = faceOf(q);
     vec2 t = faceTexel(g, q);
-    // Texels moved, in the landing face's coords (the source's direction there; a face
-    // across the sphere: no meaningful displacement).
-    vec2 moved = dot(source, FACE_FORWARD[g]) > 0.05 ? t - faceTexel(g, source) : vec2(0.0);
+    // Where it moved, in texels of the source direction's gravity frame (sphere.py
+    // frame_motion: a tap's offset inverted; behind: none). Faces don't matter.
+    vec3 right, up;
+    localFrame(source, right, up);
+    vec3 qn = normalize(q);
+    float z = dot(qn, source);
+    vec2 moved = z > 0.05 ? vec2(atan(dot(qn, right), z), atan(-dot(qn, up), z)) / texelAngle() : vec2(0.0);
     float nearness = pow(clamp(1.0 / distance, 0.01, 20.0) * NEAR_SCALE, u.step.w);
 
     vA = vec4(a.rgb, 1.0 / distance);

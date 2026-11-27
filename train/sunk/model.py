@@ -35,10 +35,12 @@ That is layout reproject-v1 (net.layout). reproject-v2 (forward_v2) differs:
   - no certainty decay, no gate.
 
 cube-v1 is v2's net on a world-fixed EAC sphere (sunk/sphere.py, train_cube.py): the
-state is pulled instead of splatted, motion is the pull's displacement (texels and log
-distance per tick), and the extra input is (1, tau, scale, 0) with scale =
-log2(texel angle / 1 arcmin) / 4. forward() can build the pyramid over a canvas plus a
-context ring but evaluate only the inner rectangle (inner=), and tau may be per texel.
+state is splatted (or pulled) on the sphere, motion is each point's move (texels of its
+gravity frame, sphere.frame_motion, and log distance per tick), the taps sit in each
+texel's gravity frame (grids=, sphere.tap_grids: upright everywhere, no face seams), and
+the extra input is (1, tau, scale, 0) with scale = log2(texel angle / 1 arcmin) / 4.
+forward() can build the pyramid over a canvas plus a context ring but evaluate only the
+inner rectangle (inner=), and tau may be per texel.
 """
 import json, math
 from pathlib import Path
@@ -214,12 +216,14 @@ class Net(nn.Module):
             self.grids[key] = torch.stack([(x + dx) / w * 2 - 1, (y + dy) / h * 2 - 1], -1)[None]
         return self.grids[key]
 
-    def forward(self, state, tau=1.0, motion=None, scale=None, inner=None):
+    def forward(self, state, tau=1.0, motion=None, scale=None, inner=None, grids=None):
         """tau: ticks this step covers, a number or [B] (per sample), cube-v1 also
         [B, 1, h, w] (per texel of the inner rectangle). motion: v2's screen_motion() of
-        the state [B, 3, H, W] (None: zero). cube-v1: scale [B], inner (y0, y1, x0, x1)."""
+        the state [B, 3, H, W] (None: zero). cube-v1: scale [B], inner (y0, y1, x0, x1),
+        grids: per tap its grid_sample grid [B, hi, wi, 2] over the inner rectangle
+        (sphere.tap_grids: the taps in each texel's gravity frame; None: pixel offsets)."""
         if self.layout != V1:
-            return self.forward_v2(state, tau, motion, scale, inner)
+            return self.forward_v2(state, tau, motion, scale, inner, grids)
         b, _, h, w = state.shape
         tau = torch.as_tensor(tau, dtype=state.dtype).reshape(-1, 1, 1, 1).expand(b, 1, 1, 1)
         mips = pyramid(state, self.levels, self.down, self.near)
@@ -289,7 +293,7 @@ class Net(nn.Module):
         out[:, CERT:CERT + 1] = CERT_REST + (cert - CERT_REST) * CERT_KEEP ** tau
         return out
 
-    def forward_v2(self, state, tau, motion, scale=None, inner=None):
+    def forward_v2(self, state, tau, motion, scale=None, inner=None, grids=None):
         """reproject-v2 (see the module docstring); net.frag's LAYOUT 2 branch. cube-v1:
         the same with the scale input and an inner rectangle (pyramid over all of state,
         output only for state[..., y0:y1, x0:x1])."""
@@ -327,8 +331,8 @@ class Net(nn.Module):
 
         inv_self = filled[:, INV:INV + 1]
         features = [filled[:, RGB], inv_self * self.near, filled[:, HID], m, weight]
-        for level, dx, dy in self.taps:
-            value, covered = read_v2(mips[level], cut(self.grid(h, w, dx, dy, state.device)))
+        for k, (level, dx, dy) in enumerate(self.taps):
+            value, covered = read_v2(mips[level], grids[k] if grids is not None else cut(self.grid(h, w, dx, dy, state.device)))
             features += [value[:, RGB], (value[:, INV:INV + 1] - inv_self) * self.near * covered.clamp(max=1),
                          value[:, HID.start:self.channels], value[:, -3:], covered]
         one = torch.ones_like(weight)

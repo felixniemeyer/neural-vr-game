@@ -68,39 +68,6 @@ impl City {
             .fold(range, f32::min);
         (nearest < range).then(|| origin + dir * nearest)
     }
-
-    /// Push a sphere (centre p) out of the blocks it overlaps: the corrected centre and
-    /// the push directions (for removing velocity into the walls).
-    pub fn collide(&self, mut p: Vec3, radius: f32) -> (Vec3, Vec<Vec3>) {
-        let mut normals = Vec::new();
-        // The cells within reach of the sphere (blocks are smaller than a cell).
-        let here = (Vec2::new(p.x, p.z) / self.cell).floor().as_ivec2();
-        let reach = 1 + (radius / self.cell).ceil() as i32;
-        for dy in -reach..=reach {
-            for dx in -reach..=reach {
-                let Some((lo, hi)) = self.block(here + IVec2::new(dx, dy)) else { continue };
-                let closest = p.clamp(lo, hi);
-                let out = p - closest;
-                let distance = out.length();
-                let normal = if distance > 1e-5 {
-                    if distance >= radius {
-                        continue;
-                    }
-                    out / distance
-                } else {
-                    // Inside (e.g. a block rose around us): leave through the nearest face.
-                    let faces = [p.x - lo.x, hi.x - p.x, hi.y - p.y, p.z - lo.z, hi.z - p.z];
-                    let normals = [Vec3::NEG_X, Vec3::X, Vec3::Y, Vec3::NEG_Z, Vec3::Z];
-                    let (i, _) = faces.iter().enumerate().fold((0, f32::MAX), |m, (i, &f)| if f < m.1 { (i, f) } else { m });
-                    p += normals[i] * faces[i];
-                    normals[i]
-                };
-                p += normal * (radius - (p - p.clamp(lo, hi)).length());
-                normals.push(normal);
-            }
-        }
-        (p, normals)
-    }
 }
 
 #[cfg(test)]
@@ -124,15 +91,5 @@ mod tests {
         assert!(roofs > 5, "{roofs} roofs");
         // Horizontal through a row of blocks ends at a wall.
         assert!(city.hit(Vec3::new(0., 0.3, 2.), Vec3::X, 150.).is_some());
-        // Whatever we zip into, the collision puts us outside every block, at the radius.
-        for i in 0..200 {
-            let p = Vec3::new(i as f32 * 0.37 - 37., (i % 9) as f32, (i * 7 % 50) as f32 * 0.9 - 22.);
-            let (q, _) = city.collide(p, 0.3);
-            for cell in city.cells() {
-                if let Some((lo, hi)) = city.block(cell) {
-                    assert!((q - q.clamp(lo, hi)).length() > 0.299, "{p} -> {q} in {lo}..{hi}");
-                }
-            }
-        }
     }
 }

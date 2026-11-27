@@ -7,7 +7,16 @@
     "training",
     "infra"
   ],
-  "supportingConnections": [],
+  "supportingConnections": [
+    {
+      "ideaId": "3ad6e36d-da89-4512-aca3-2d2326c8cdfe",
+      "relativePosition": [
+        -2.0,
+        2.0
+      ],
+      "weight": 1
+    }
+  ],
   "supportedIdeas": [
     "069be3ea-befd-4613-b5d1-d2af9c76e2f4"
   ],

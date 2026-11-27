@@ -28,7 +28,7 @@
 use crate::gpu::{Gpu, Resources};
 use crate::shared::{self, env_or};
 use crate::world::{self, World, EYES, PANORAMA_PUSH};
-use crate::{camera, collide, panel, rule, swarm, NetClock, Zip, START_HEIGHT};
+use crate::{camera, panel, rule, swarm, NetClock, Zip, START_HEIGHT};
 use anyhow::{bail, ensure, Context, Result};
 use ash::vk;
 use glam::{Mat3, Quat, Vec3};
@@ -487,23 +487,22 @@ pub fn run(shaders: &Path) -> Result<()> {
         let turn = zip.turn();
         let (scale, moved) = adaptive.update(world.mean_inverse_depth(), Vec3::from(pose.position), dt, controls.on("adaptive"));
         let intended = zip.position + turn * moved;
-        // Collisions with the sphere's sensor field (the last update's probe, collide.rs),
-        // positions relative to the centre it was seen from: the reach is
+        // Collisions with the sphere's sensor field (the last update's probe, collide.rs):
+        // the reach is
         // the body (scaled with the adaptive speed: a camera that moves 10x faster keeps 10x
         // the distance) plus 0.15 s of the camera's speed, so it brakes before it touches.
         // Moving closer is braked (none within half the reach), departing is free, and a
         // gentle push (the push fader: of the penetration per second) eases it back out.
         let speed = last_intended.map_or(0., |p: Vec3| p.distance(intended) / dt.max(1e-3));
         let sensors = world.sensors();
-        let centre = world.probe_centre().unwrap_or(intended);
         if controls.on("collide") {
             let reach = controls.get("body") * scale + speed * 0.15;
             if let Some(last) = last_intended {
                 let step = intended - last;
-                pushed += collide::brake(&sensors, last + pushed - centre, step, reach) - step;
+                pushed += sensors.brake(last + pushed, step, reach, 0.5 * reach) - step;
             }
             let ease = 1. - (-controls.get("push") * dt).exp();
-            pushed += collide::push(&sensors, intended + pushed - centre, reach) * ease;
+            pushed += sensors.push(intended + pushed, reach) * ease;
             if !pushed.is_finite() {
                 pushed = Vec3::ZERO;
             }
@@ -527,14 +526,21 @@ pub fn run(shaders: &Path) -> Result<()> {
         let settings = shared::settings(&controls, seconds, tau, None);
         shared::update_creatures(&controls, &mut swarm, &mut world, seconds, dt, zip.position);
 
-        // The picture: the camera's axes in the world, the dome's attention.
+        // The picture: the camera's axes in the world (right, up, back); the dome's turned by
+        // its attention (the camera's forward sits that far from the zenith, towards the
+        // bottom edge), so the shader maps a dome direction with one matrix.
         let axes = Mat3::from_quat(turn * look);
+        let (x, mut y, mut z) = (axes.x_axis, axes.y_axis, axes.z_axis);
+        if dome {
+            let (s, c) = controls.get("attention").to_radians().sin_cos();
+            (y, z) = (c * y + s * z, s * y - c * z);
+        }
         let shape = if dome { vk::Extent2D { width, height: width } } else { vk::Extent2D { width, height: width / 2 } };
         let mut push = [0f32; PANORAMA_PUSH];
-        push[0..3].copy_from_slice(&axes.x_axis.to_array());
-        push[4..7].copy_from_slice(&axes.y_axis.to_array());
-        push[8..11].copy_from_slice(&axes.z_axis.to_array());
-        push[12..16].copy_from_slice(&[controls.get("attention").to_radians(), dome_angle, dome as u8 as f32, 0.]);
+        push[0..3].copy_from_slice(&x.to_array());
+        push[4..7].copy_from_slice(&y.to_array());
+        push[8..11].copy_from_slice(&z.to_array());
+        push[12..16].copy_from_slice(&[dome_angle * 0.5, 0., dome as u8 as f32, 0.]);
         push[16..20].copy_from_slice(&[shape.width as f32, shape.height as f32, 0., width as f32]);
         // From the state before into the latest over one update's time; the rates (or hidden).
         push[3] = if finished > before { (seconds - finished) / (finished - before) } else { 1. };
@@ -622,7 +628,7 @@ pub fn run(shaders: &Path) -> Result<()> {
                 cube_fps += (1. / between - cube_fps) * (1. - (-between / 2.).exp());
             }
         }
-        let nearest = collide::nearest(&sensors, origin - centre);
+        let nearest = sensors.nearest(origin);
         if let (true, Some(child)) = (record_video, &mut ffmpeg) {
             let bytes = unsafe { std::slice::from_raw_parts(video_pixels, 4 * (shape.width * shape.height) as usize) };
             child.stdin.as_mut().context("ffmpeg stdin")?.write_all(bytes)?;

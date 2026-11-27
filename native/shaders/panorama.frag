@@ -14,10 +14,10 @@
 // the window's and the cube's frames per second, drawn top left (negative: hidden).
 
 layout(push_constant) uniform Push {
-    vec4 right;
-    vec4 up;
+    vec4 right; // equirect: the camera's right, up, back in the world; dome: its x, y, zenith
+    vec4 up;    // (desktop.rs turns them by the attention)
     vec4 back;
-    vec4 view; // attention, dome angle across (radians), kind (0 equirect, 1 dome), mode
+    vec4 view; // half the dome angle across (radians), 0, kind (0 equirect, 1 dome), mode
     vec4 size; // pixels of the image (width, height); the square's offset, side (dome)
 } pc;
 layout(location = 0) out vec4 color;
@@ -57,7 +57,7 @@ float text(vec2 p) {
 
 void main() {
     vec2 p = gl_FragCoord.xy;
-    vec3 local; // camera coordinates: x right, y up, -z forward
+    vec3 local; // equirect: camera coordinates (x right, y up, -z forward); dome: its own
     if (pc.view.z > 0.5) {
         vec2 uv = (p - pc.size.z) / pc.size.w * 2.0 - 1.0;
         uv.y = -uv.y;
@@ -67,10 +67,8 @@ void main() {
             color = vec4(vec3(max(t, 0.0)), 1.0);
             return;
         }
-        float theta = r * pc.view.y * 0.5;
-        vec3 dome = r > 0.0 ? vec3(sin(theta) * uv / r, cos(theta)) : vec3(0.0, 0.0, 1.0);
-        float s = sin(pc.view.x), c = cos(pc.view.x);
-        local = vec3(dome.x, dot(dome, vec3(0.0, c, s)), -dot(dome, vec3(0.0, -s, c)));
+        float theta = r * pc.view.x;
+        local = r > 0.0 ? vec3(sin(theta) * uv / r, cos(theta)) : vec3(0.0, 0.0, 1.0);
     } else {
         float lon = p.x / pc.size.x * 2.0 * PI - PI;
         float lat = 0.5 * PI - p.y / pc.size.y * PI;

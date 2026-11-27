@@ -31,11 +31,15 @@ def cube():
     cell with a gutter). Each face
     runs through the torch net on its own (forward_v2 with the scale input); taps that
     leave a face read the neighbour face on the GPU and the face's border in torch, so
-    only texels at least MARGIN from the face edges count. The GPU also gives texels with
-    a weight below 1 some of the scene's depth (net.frag), which torch doesn't: reported
-    over all interior texels and over those with weight >= 0.999."""
+    only texels at least MARGIN from the face edges count. The taps sit in each texel's
+    gravity frame: the world's up (+y) in the face's coords (x its right, y its up, z
+    forward: cube.glsl FACE_*). The app dumps without the observation (net.frag's, after
+    the net). Reported over all interior texels and over those with weight >= 0.999."""
     import math
     from sunk.model import scale_code
+    from sunk.sphere import tap_grids
+    forward = [(1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1)]
+    face_up = [(0, 1, 0), (0, 1, 0), (0, 0, 1), (0, 0, -1), (0, 1, 0), (0, 1, 0)]
     MARGIN = 40
     h, w = meta["height"], meta["width"]
     f, g = meta["face"], meta["gutter"]  # faces sit in cells of f + 2 g (a gutter around each)
@@ -61,7 +65,12 @@ def cube():
         for face in range(6):
             y, x = (face // 3) * (f + 2 * g) + g, (face % 3) * (f + 2 * g) + g
             cut = lambda t: t[..., y:y + f, x:x + f]
-            ref = net(cut(state), tau, cut(motion), scale)
+            fw, fu = torch.tensor(forward[face], dtype=torch.float32), torch.tensor(face_up[face], dtype=torch.float32)
+            right = torch.linalg.cross(fw, fu)
+            world_up = torch.tensor([0.0, 1.0, 0.0])
+            up = torch.stack([world_up @ right, world_up @ fu, world_up @ fw])[None]
+            grids = tap_grids(net.taps, torch.tensor([math.pi / 2 / f]), torch.zeros(1, 2), up, f, f)
+            ref = net(cut(state), tau, cut(motion), scale, grids=grids)
             ref = torch.cat([ref[:, RGB], ref[:, INV:INV + 1], ref[:, VEL], ref[:, HID]], 1)
             inner = lambda t: t[..., MARGIN:-MARGIN, MARGIN:-MARGIN]
             diffs.append(inner((cut(gpu) - ref).abs()))

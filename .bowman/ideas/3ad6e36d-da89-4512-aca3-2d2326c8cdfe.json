@@ -1,0 +1,27 @@
+{
+  "id": "3ad6e36d-da89-4512-aca3-2d2326c8cdfe",
+  "text": "Parameterize the tap levels and everything that follows from them, for a larger net on a bigger GPU",
+  "description": "net.levels (with net.points) decides much more than the taps: the tap count (levels x points, at most MAX_TAPS = 32 in net.frag's uniforms), the cube atlas's gutter (2^(levels-1) texels around each face), the face size (a multiple of 2^(levels-1): at 8 levels faces jump in steps of 128, i.e. 384 / 512 / 640 ...), the training context ring (train.context = 104 is set by hand to cover the coarsest tap's reach 2^(levels-1) plus its bilinear footprint), the band and with it training memory and time, the mip count, and the collision probe level. Today some of these are derived (gutter, face divisibility) and some are hand-tuned constants or config values that silently go wrong when levels change. Goal: one source of truth (net.levels, net.points, net.hidden) with the rest derived or checked: train.context defaulting to the coarsest reach, an assert in rule.rs / net.json loading for MAX_TAPS, MAX_LAYERS and the units, cube_face rounding that warns when the face leaves the trained scale range, and a short table in the docs of what each level costs (atlas texels, training s/it and GB). Then a slightly larger net (more levels or wider layers) can be tried on the 16 GB GPU by changing one config line.",
+  "archived": false,
+  "color": "#2e7046",
+  "tags": [
+    "training",
+    "infra"
+  ],
+  "supportingConnections": [],
+  "supportedIdeas": [
+    "8427528c-d9d4-488e-9efb-0de0d1bb91b8"
+  ],
+  "committedIn": [],
+  "status": {
+    "state": "open",
+    "comment": "",
+    "date": 1795742208367
+  },
+  "intrinsicValue": 0,
+  "cost": 2,
+  "selfWeight": 1,
+  "duration": 1,
+  "costVariance": 0,
+  "valueVariance": 0
+}

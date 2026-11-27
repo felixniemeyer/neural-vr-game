@@ -18,11 +18,12 @@
 //!
 //! cube-v1 (net layout 3, shaders/cube.glsl): the state is one head-centred sphere fixed
 //! to the world instead, an equi-angular cubemap in a 3 x 2 atlas of F x F faces. On the
-//! frames where the net runs: scene -> cube_forward (where each texel moves) + mips ->
-//! cube_pull (pull reprojection + scene blend, premultiplied like v2's resolve) + mips ->
-//! net (LAYOUT 3) -> per eye cube_display (a direction lookup). On the other frames only
+//! frames where the net runs: scene -> cube_splat + cube_fold (splat reprojection; or
+//! cube_forward + mips + cube_pull), premultiplied like v2's resolve, + mips -> net (LAYOUT
+//! 3, then the observation: the scene blends in) -> per eye cube_display (a direction lookup). On the other frames only
 //! the display runs: the store is fixed to the world, so head rotation needs no update.
 
+use crate::collide::Sensors;
 use crate::gpu::{image_range, Resource, Resources, Shader};
 use crate::rule::{MAX_LAYERS, MAX_TAPS, RuleFrame};
 use anyhow::Result;
@@ -66,6 +67,23 @@ const LAST_BINDING: u32 = CUBE_BINDING + CUBE_IMAGES - 1;
 pub static CAPTURE_STATS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// How fast the display exposure follows its measurement (1/s).
 const EXPOSURE_RATE: f32 = 1.5;
+/// cube-v1: the world's up, for the net's gravity frames (the store's axes are the world's;
+/// the desktop's dome only turns the picture).
+const WORLD_UP: Vec3 = Vec3::Y;
+
+/// A unit vector perpendicular to `up`: the gravity frames' axis at the poles (as
+/// sphere.py front_of).
+fn front_of(up: Vec3) -> Vec3 {
+    let f = up.cross(Vec3::X);
+    if f.length() > 1e-3 { f.normalize() } else { up.cross(Vec3::Z).normalize() }
+}
+
+/// cube-v1's taps for net.frag: (level, tan(dx * texel angle), tan(dy * texel angle)), the
+/// offsets in each texel's tangent plane (sphere.py tap_tangents).
+fn cube_taps(taps: &[[f32; 4]; MAX_TAPS], texel_angle: f32) -> [[f32; 4]; MAX_TAPS] {
+    taps.map(|[level, dx, dy, w]| [level, (dx * texel_angle).tan(), (dy * texel_angle).tan(), w])
+}
+
 /// cube-v1 face frames (cube.glsl FACE_FORWARD, FACE_UP).
 const CUBE_FORWARD: [Vec3; 6] = [Vec3::X, Vec3::NEG_X, Vec3::Y, Vec3::NEG_Y, Vec3::Z, Vec3::NEG_Z];
 const CUBE_UP: [Vec3; 6] = [Vec3::Y, Vec3::Y, Vec3::Z, Vec3::NEG_Z, Vec3::Y, Vec3::Y];
@@ -134,11 +152,14 @@ struct Uniforms {
     cube: [f32; 4],
     head: [f32; 4],
     head_move: [f32; 4],
+    up: [f32; 4],
+    front: [f32; 4],
 }
-const _: () = assert!(size_of::<Uniforms>() == 480 + (2 + MAX_LAYERS + MAX_TAPS + 10) * 16);
+const _: () = assert!(size_of::<Uniforms>() == 480 + (2 + MAX_LAYERS + MAX_TAPS + 12) * 16);
 
-/// panorama.frag's push constants (floats): camera right, up, back (vec4 each), view
-/// (attention, dome angle, kind, mode), size (width, height, square offset, side).
+/// panorama.frag's push constants (floats): camera right, up, back (vec4 each; the dome's
+/// x, y, zenith instead), view (half the dome angle, 0, kind, mode), size (width, height,
+/// square offset, side).
 pub const PANORAMA_PUSH: usize = 20;
 
 /// DESKTOP's whole-sphere view (panorama.frag) into an image of `format`.
@@ -255,6 +276,8 @@ pub struct World {
     cube_clear: bool,
     /// The store's centre: the head at the last update (None: no update yet).
     cube_centre: Option<Vec3>,
+    /// cube-v1: when the last update started (its observation covers the time since).
+    cube_time: Option<f32>,
     /// The centre the probe was seen from: `cube_centre` when its update finished (a split
     /// update moves `cube_centre` at its start, while the probe still holds the last one's).
     probe_centre: Option<Vec3>,
@@ -283,7 +306,7 @@ struct Cube {
     acc_views: [vk::ImageView; CUBE_ACCS],
     splat_target: vk::Framebuffer,
     /// Collisions: mid A and B at a coarse mip level (about CUBE_PROBE texels per face),
-    /// read back after every update (World::surroundings).
+    /// read back after every update (World::sensors).
     probe: (vk::Buffer, *mut [u16; 4]),
     probe_level: u32,
     /// net_targets[parity] writes state[1 - parity].
@@ -909,6 +932,7 @@ impl World {
             cube,
             cube_clear: true,
             cube_centre: None,
+            cube_time: None,
             probe_centre: None,
             linear,
             dump_capacity,
@@ -1058,7 +1082,7 @@ impl World {
         }
         self.weight_count = weight_count;
         if (old[7] == 3) != (spec[7] == 3) {
-            (self.cube_centre, self.probe_centre) = (None, None); // a new store starts where the head is
+            (self.cube_centre, self.probe_centre, self.cube_time) = (None, None, None); // a new store starts where the head is
         }
         Ok(())
     }
@@ -1077,7 +1101,7 @@ impl World {
         cube.bind(&r.gpu.device, self.sets, self.linear);
         self.cube = cube;
         self.cube_clear = true;
-        (self.cube_centre, self.probe_centre) = (None, None);
+        (self.cube_centre, self.probe_centre, self.cube_time) = (None, None, None);
         Ok(())
     }
 
@@ -1085,7 +1109,7 @@ impl World {
     /// one: an update in flight is dropped) and the store recentred on the head.
     pub fn reset_cube(&mut self) {
         self.cube_clear = true;
-        (self.cube_centre, self.probe_centre) = (None, None);
+        (self.cube_centre, self.probe_centre, self.cube_time) = (None, None, None);
         self.stage = None;
     }
 
@@ -1127,10 +1151,17 @@ impl World {
             self.cube_centre = Some(head);
         }
         let centre = self.cube_centre.unwrap_or(head);
+        // The observation (net.frag, after the net) runs once per update: its blend covers
+        // the time since the last one (frames in between don't observe).
+        let since_update = self.cube_time.map(|t| (time - t).clamp(0., 1.));
+        if update {
+            self.cube_time = Some(time);
+        }
         let texel_angle = std::f32::consts::FRAC_PI_2 / self.cube.face as f32;
         let arcmin = (1f32 / 60.).to_radians();
         let (previous, last_time) = self.previous.replace((cameras, time)).unwrap_or((cameras, time));
         let dt = (time - last_time).clamp(0., 0.1);
+        let observe_dt = if cube { since_update.unwrap_or(dt) } else { dt };
         // Exposure glides toward the last measurement every frame (no steps when measured).
         let follow = 1. - (-EXPOSURE_RATE * dt).exp();
         for (tone, goal) in self.tone.iter_mut().zip(self.tone_goal) {
@@ -1154,10 +1185,10 @@ impl World {
             net: rule.net,
             net_run: [rule.run[0], settings.gate, rule.run[2], 0.],
             net_layers: rule.layers,
-            net_taps: rule.taps,
+            net_taps: if cube { cube_taps(&rule.taps, texel_angle) } else { rule.taps },
             city: [settings.cell, settings.height, settings.crystals, settings.blocks as f32],
             // Per-second rates as this frame's blend weights (frame-rate independent).
-            mixing: [1. - (-settings.color * dt).exp(), if settings.sky > 0. { 1. / settings.sky.max(1.) } else { 0. }, 1. - (-settings.depth * dt).exp(), settings.focus],
+            mixing: [1. - (-settings.color * observe_dt).exp(), if settings.sky > 0. { 1. / settings.sky.max(1.) } else { 0. }, 1. - (-settings.depth * observe_dt).exp(), settings.focus],
             player: {
                 let ground = |c: [EyeCamera; EYES]| (c[0].position + c[1].position) * 0.5;
                 let (now, before) = (ground(cameras), ground(previous));
@@ -1181,6 +1212,8 @@ impl World {
             cube: [self.cube.face as f32, settings.tau / rule.run[2].max(1e-3), (texel_angle / arcmin).log2() / 4., texel_angle],
             head: centre.extend(self.cube.gutter as f32).to_array(),
             head_move: head_move.extend(0.).to_array(),
+            up: WORLD_UP.extend(0.).to_array(),
+            front: front_of(WORLD_UP).extend(0.).to_array(),
         };
         let zero = [vk::ClearValue {
             color: vk::ClearColorValue { float32: [0.; 4] },
@@ -1453,7 +1486,8 @@ impl World {
                 copy_to_buffer(d, cmd, image, self.cube.atlas, 0, self.dump.0, i as u64 * bytes);
             }
         }
-        // The probe: this update's pulled/splatted state (scene blended in) at a coarse level.
+        // The probe: this update's splatted/pulled state (the last update's observation moved
+        // forward) at a coarse level.
         let level = self.cube.probe_level;
         let texels = mip_extent(self.cube.atlas, level);
         let bytes = 8 * (texels.width * texels.height) as u64;
@@ -1485,12 +1519,30 @@ impl World {
         if self.spec[7] == 3 { self.cube.atlas } else { self.size }
     }
 
-    /// World points of the image's geometry around both eyes, from the last frame's
-    /// probe (call after its commands finished): one per covered probe pixel.
-    pub fn surroundings(&self) -> Vec<Vec3> {
+    /// The image's geometry as a sensor field (collide.rs; call after the frame's commands
+    /// finished). cube-v1: per face texel of the sphere's probe level with weight >= 0.3
+    /// (holes and sky give none), seen from where the probe was. Per-eye nets: per covered
+    /// pixel of the last frame's probe, seen from between the eyes.
+    pub fn sensors(&self) -> Sensors {
         if self.spec[7] == 3 {
-            return self.cube_surroundings();
+            return self.cube_sensors();
         }
+        let centre = (self.probe_cameras[0].position + self.probe_cameras[1].position) * 0.5;
+        let field = self
+            .eye_points()
+            .into_iter()
+            .filter_map(|p| {
+                let to = p - centre;
+                let distance = to.length();
+                (distance > 1e-3).then(|| (to / distance, distance))
+            })
+            .collect();
+        Sensors { centre, field }
+    }
+
+    /// Per-eye nets: world points of the image's geometry around both eyes, from the last
+    /// frame's probe: one per covered probe pixel.
+    fn eye_points(&self) -> Vec<Vec3> {
         let size = mip_extent(self.size, self.probe_level);
         let (w, h) = (size.width as usize, size.height as usize);
         let probe = unsafe { std::slice::from_raw_parts(self.probe.1, EYES * 2 * w * h) };
@@ -1548,21 +1600,13 @@ impl World {
         (weight > 1e-3).then(|| inv / weight)
     }
 
-    /// cube-v1: where the probe was seen from (None: no update finished yet).
-    pub fn probe_centre(&self) -> Option<Vec3> {
-        self.probe_centre
-    }
-
-    /// cube-v1: the sphere probe as a sensor field around `probe_centre`: per face texel of
-    /// the probe level with weight >= 0.3 (holes and sky give none), its direction and the
-    /// distance to the geometry along it (m).
-    pub fn sensors(&self) -> Vec<(Vec3, f32)> {
-        if self.probe_centre.is_none() {
-            return Vec::new();
-        }
+    /// cube-v1: the sphere probe's sensors (World::sensors).
+    fn cube_sensors(&self) -> Sensors {
+        let Some(centre) = self.probe_centre else { return Sensors::default() };
         let step = (1u32 << self.cube.probe_level) as f32;
         let angle = std::f32::consts::FRAC_PI_2 / self.cube.face as f32;
-        self.cube_probe()
+        let field = self
+            .cube_probe()
             .filter_map(|(f, lx, ly, a, weight)| {
                 let inv = a / weight;
                 if !(weight >= 0.3 && inv > 0.) {
@@ -1574,13 +1618,8 @@ impl World {
                 let (forward, up) = (CUBE_FORWARD[f], CUBE_UP[f]);
                 Some(((forward.cross(up) * t.x - up * t.y + forward).normalize(), 1. / inv))
             })
-            .collect()
-    }
-
-    /// cube-v1: the sensors as world points (the VR brake).
-    fn cube_surroundings(&self) -> Vec<Vec3> {
-        let Some(centre) = self.probe_centre else { return Vec::new() };
-        self.sensors().into_iter().map(|(dir, distance)| centre + dir * distance).collect()
+            .collect();
+        Sensors { centre, field }
     }
 
     fn captured(&self) -> &[[u16; 4]] {

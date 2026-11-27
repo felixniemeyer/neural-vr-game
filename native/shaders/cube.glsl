@@ -77,6 +77,16 @@ vec3 faceDir(int f, vec2 x) {
     return normalize(faceRight(f) * t.x - FACE_UP[f] * t.y + FACE_FORWARD[f]);
 }
 
+// The gravity frame at the unit direction d: the image's right and up there (u.up the
+// world's up; at the poles u.front stands in). The net's taps and motion live in it
+// (sphere.py local_frame; its canvas coords are left-handed, so its crosses swap).
+void localFrame(vec3 d, out vec3 right, out vec3 up) {
+    vec3 r = cross(d, u.up.xyz);
+    if (dot(r, r) <= 1e-8) r = cross(d, u.front.xyz);
+    right = normalize(r);
+    up = cross(right, d);
+}
+
 // Face f's texel coords of a direction / point p (in front of the face).
 vec2 faceTexel(int f, vec3 p) {
     float z = dot(p, FACE_FORWARD[f]);

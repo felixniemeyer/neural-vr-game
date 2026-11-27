@@ -437,8 +437,10 @@ impl Zip {
         self.yaw += (look - self.yaw) * follow;
     }
 
-    /// pull (m/s²), drag (1/s), body: the collision sphere's radius (m); `eye` the tracked eye centre after the head
-    /// scaling (tracking space).
+    /// pull (m/s²), drag (1/s), body: the collision sphere's radius (m), brake: the braking
+    /// distance beyond it (m), push: how fast a head inside the body's reach of the image's
+    /// geometry is eased out (of the shortfall per second); `eye` the tracked eye centre
+    /// after the head scaling (tracking space); `sensors` the image's geometry (collide.rs).
     fn update(
         &mut self,
         held: &[Held; 2],
@@ -448,8 +450,8 @@ impl Zip {
         head: Vec3,
         eye: Vec3,
         city: &city::City,
-        [pull, drag, body, brake]: [f32; 4],
-        walls: &[Vec3],
+        [pull, drag, body, brake, push]: [f32; 5],
+        sensors: &collide::Sensors,
         auto: Option<f32>,
         swing: Option<f32>,
     ) {
@@ -513,17 +515,10 @@ impl Zip {
         if auto.is_none() {
             self.velocity *= (-drag * dt).exp();
         }
-        // The image's own geometry (last frame's depth probe): within `brake` of the body,
-        // the velocity toward a point fades out (fully at the body's surface).
-        for point in walls {
-            let to = *point - player;
-            let distance = to.length();
-            let reach = body + brake;
-            if brake > 0. && distance < reach && distance > 1e-3 {
-                let toward = to / distance;
-                let closing = self.velocity.dot(toward).max(0.);
-                self.velocity -= toward * closing * ((reach - distance) / brake).min(1.);
-            }
+        // The image's own geometry (the last probe's sensor field): within `brake` of the
+        // body, the velocity toward it fades out (fully at the body's surface or past it).
+        if brake > 0. {
+            self.velocity = sensors.brake(player, self.velocity, body + brake, body);
         }
         self.position += self.velocity * dt;
         if swing.is_some() && auto.is_none() {
@@ -534,16 +529,9 @@ impl Zip {
                 }
             }
         }
-        self.keep_out(city, eye, body);
-    }
-
-    /// Keep the head out of the blocks: push it out, and drop the velocity into the walls.
-    fn keep_out(&mut self, city: &city::City, eye: Vec3, body: f32) {
-        let (free, normals) = city.collide(self.position + eye, body);
-        self.position = free - eye;
-        for normal in normals {
-            self.velocity -= normal * self.velocity.dot(normal).min(0.);
-        }
+        // A head that got within the body of the geometry (or through it) is eased back out,
+        // the way it came; the brake keeps that rare, so it can be gentle.
+        self.position += sensors.push(self.position + eye, body) * (1. - (-push * dt).exp());
         self.keep_above_floor(eye);
     }
 
@@ -557,7 +545,7 @@ impl Zip {
     }
 
     /// The autopilot alone (no controllers): one step of `dt` seconds (desktop.rs). Only the
-    /// floor holds it: the blocks are the sphere's job (desktop.rs collides with its
+    /// floor holds it: the blocks are the image's job (desktop.rs collides with its
     /// sensors, like everything else it shows).
     fn fly(&mut self, dt: f32, eye: Vec3, height: f32, speed: f32) {
         let eye = self.turn() * eye;
@@ -635,6 +623,10 @@ fn panel(rule: &rule::Rule, desktop: bool) -> av_controls::Controls {
         .fader_with("body", 0.05, 5., initial("body", 0.3), 2)
         // Braking distance (m) to the net's own geometry (the image's depth), 0 = off.
         .fader_with("brake", 0., 5., initial("brake", 1.5), 2)
+        // How fast a head within the body's reach of the image's geometry (or through it) is
+        // eased back out (of the shortfall per second); moving closer is braked, so this
+        // can stay gentle.
+        .fader_with("push", 0., 5., initial("push", 0.5), 2)
         // exposure off: the state's colour shown 1:1 (a trained net stays in the video's
         // range); on: automatic per-channel exposure (mid, clip, black, tint).
         .section("display")
@@ -646,7 +638,8 @@ fn panel(rule: &rule::Rule, desktop: bool) -> av_controls::Controls {
     let panel = if desktop {
         // keySpeed (m/s) and rotationSpeed: the controller's Player3D reads these sibling
         // faders by id (else both are its moveSpeed); collide: the camera's brake and push
-        // at the sphere's geometry (desktop.rs, collide.rs), body its radius (motion tab).
+        // at the sphere's geometry (desktop.rs, collide.rs), body its radius and push its
+        // rate (motion tab).
         panel
             .section("camera")
             .player3d("camera", 1., 0.0025, true)
@@ -654,9 +647,6 @@ fn panel(rule: &rule::Rule, desktop: bool) -> av_controls::Controls {
             .fader_with("rotationSpeed", 0.5, 10., initial("rotationSpeed", 4.), 1)
             .fader_with("attention", 0., 90., initial("attention", 30.), 0)
             .switch("collide", initial("collide", 1.) > 0.5)
-            // How fast the camera is eased out of the geometry it is in (of the penetration
-            // per second); moving closer is braked, so this can stay gentle.
-            .fader_with("push", 0., 5., initial("push", 0.5), 2)
             // The controller's speed and the body's radius scaled by the distance around the
             // camera (desktop.rs).
             .switch("adaptive", initial("adaptive", 1.) > 0.5)
@@ -819,8 +809,8 @@ fn run(shaders: &Path) -> Result<()> {
     let mut swarm = swarm::Swarm::new()?;
     // Grip: personal time-stop, and the previous frame's time for its dt.
     let (mut time_stop, mut last_seconds) = (timestop::TimeStop::default(), None::<f32>);
-    // The image's geometry around the player, from the last frame (for the brake).
-    let mut walls: Vec<Vec3> = Vec::new();
+    // The image's geometry around the player as sensors, from the last frame (collisions).
+    let mut sensors = collide::Sensors::default();
     let mut zip = Zip { position: Vec3::new(0., START_HEIGHT, 0.), anywhere: env::var("ZIP_ANYWHERE").map_or(true, |v| v != "0"), ..Zip::default() };
     let controls = panel(&rule, false);
     // MOVE scales head translation: 0 rotation only (default), 1 real scale, more =
@@ -949,8 +939,8 @@ fn run(shaders: &Path) -> Result<()> {
         let held = hands.sync(&session, &space, time)?;
         let frame_dt = (seconds - last_seconds.replace(seconds).unwrap_or(seconds)).clamp(0., 0.1);
         let stopped = time_stop.update(held.iter().any(|h| h.stop), frame_dt);
-        let motion = [controls.get("pull"), controls.get("drag"), controls.get("body"), controls.get("brake")];
-        zip.update(&held, &hands, &session, seconds, head, eye, &city, motion, &walls, controls.on("auto").then(|| controls.get("speed")),
+        let motion = ["pull", "drag", "body", "brake", "push"].map(|name| controls.get(name));
+        zip.update(&held, &hands, &session, seconds, head, eye, &city, motion, &sensors, controls.on("auto").then(|| controls.get("speed")),
             controls.on("swing").then(|| controls.get("reel")));
         let (origin, turn) = (zip.position, zip.turn());
         let cameras = [camera(&views[0], head, origin, turn), camera(&views[1], head, origin, turn)];
@@ -958,7 +948,11 @@ fn run(shaders: &Path) -> Result<()> {
         let tau = clock.tick(seconds, controls.get("timescale") * stopped, controls.get("netfps"), &rule, dumping);
         // A point 50 m along the gaze in the world (as the hands' rays, zip.update).
         let gaze = hands.gaze(&space, time).map(|(from, dir)| origin + turn * (from - head) + turn * dir * 50.);
-        let settings = shared::settings(&controls, seconds, tau, gaze);
+        let mut settings = shared::settings(&controls, seconds, tau, gaze);
+        if dumping && rule.layout == 3 {
+            // cube-v1 observes after the net (net.frag): the dump shows the net alone (parity.py).
+            (settings.color, settings.depth) = (0., 0.);
+        }
         shared::update_creatures(&controls, &mut swarm, &mut world, seconds, frame_dt.max(1e-3), zip.position + zip.turn() * eye);
         let mut indices = [0; EYES];
         for (swapchain, index) in swapchains.iter_mut().zip(&mut indices) {
@@ -1012,7 +1006,7 @@ fn run(shaders: &Path) -> Result<()> {
             )?;
             println!("Dumped to {}", dir.display());
         }
-        walls = world.surroundings();
+        sensors = world.sensors();
         if world.capture {
             shared::expose(&controls, &mut world);
             if let (true, Some(path)) = (frames % 296 == 0, &snapshot) {
@@ -1056,13 +1050,13 @@ fn run(shaders: &Path) -> Result<()> {
             let net_run = net_run_ms / net_runs.max(1) as f64;
             let net_fill = (net * 120. - net_run_ms) / (120 - net_runs).max(1) as f64;
             println!(
-                "{frames} frames, GPU {:.3} ms/frame at {fps:.0} fps (both eyes: scene {scene:.2} splat {splat:.2} resolve {resolve:.2} net {net:.2} [{net_runs} runs {net_run:.2}, fill {net_fill:.2}] display {display:.2}), looking ({:.2}, {:.2}, {:.2}), exposure r {r} g {g} b {b}, image geometry {} points, nearest {:.1} m",
+                "{frames} frames, GPU {:.3} ms/frame at {fps:.0} fps (both eyes: scene {scene:.2} splat {splat:.2} resolve {resolve:.2} net {net:.2} [{net_runs} runs {net_run:.2}, fill {net_fill:.2}] display {display:.2}), looking ({:.2}, {:.2}, {:.2}), exposure r {r} g {g} b {b}, image geometry {} sensors, nearest {:.1} m",
                 scene + splat + resolve + net + display,
                 forward.x,
                 forward.y,
                 forward.z,
-                walls.len(),
-                walls.iter().map(|p| p.distance(cameras[0].position)).fold(f32::INFINITY, f32::min),
+                sensors.len(),
+                sensors.nearest((cameras[0].position + cameras[1].position) * 0.5),
             );
             gpu_ms = [0.; world::STAMPS as usize - 1];
             (net_runs, net_run_ms) = (0, 0.);

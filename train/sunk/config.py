@@ -90,8 +90,9 @@ class Train:
     scales: list = field(default_factory=lambda: [128, 816])  # square frame size (px) range clips are cut at, log-uniform: data.size .. native centre crop
     clips: int = 64             # clips (one stream's footage, ~4 MB each) kept in RAM, refreshed in the background
     trim: float = 300.0         # seconds frames.sh dropped from each video's start (TRIM): finds chunks in train/videos
-    context: int = 24           # texels of footage around the canvas each side: the coarse taps' surroundings (not pulled from)
+    context: int = 24           # texels of footage around the canvas each side: the coarse taps' surroundings, splatted in like the rest
     context_weight: float = 0.5  # weight of that ring in the pyramid
+    band: int = 16              # texels of the ring next to the canvas that the net evolves too (carried state, no loss): what moves in arrives with its own hidden state
     recall: float = 4.0         # pixel-loss weight factor on texels back in view after being out of it
     periods: list = field(default_factory=lambda: [1])  # per 8x8 tile update period (ticks), drawn per stream: evaluate with tau * P, then blend 1/P .. 1/1
     cameras: str = "fixed"      # "fixed": data.fov everywhere, prepare.py's cameras; "measured" (cube-v1): per-frame FOV
